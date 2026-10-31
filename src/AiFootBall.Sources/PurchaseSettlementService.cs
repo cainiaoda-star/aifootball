@@ -105,6 +105,7 @@ public sealed class PurchaseSettlementService
         var legs = new List<(bool hit, decimal? odds)>();
         var pending = 0;
         var missing = 0;
+        var noHandicap = 0;
 
         foreach (var line in p.Lines.OrderBy(l => l.Seq))
         {
@@ -116,9 +117,23 @@ public sealed class PurchaseSettlementService
                 continue;
             }
 
-            // 胜平负按实际比分，不用完场表上的让球盘。让球玩法才取行上盘口，没有再用完场盘口。
+            // 竞彩胜平负按实际比分，不用完场表上的让球盘。让球玩法才取行上盘口，没有再用完场盘口。
+            // 北单只有让球胜平负：票面写「胜平负」也按北单开出的让球数结算，不能用完场表（竞彩）的盘口。
+            var bd = string.Equals(p.Board, Boards.Bd, StringComparison.OrdinalIgnoreCase);
             var plain = string.Equals(p.PlayType, "胜平负", StringComparison.Ordinal);
-            var hcp = plain ? null : line.Handicap ?? m.Handicap;
+            decimal? hcp;
+            if (bd && plain)
+            {
+                hcp = line.Handicap ?? await _football.GetBdHandicapAsync(line.MatchId.Value, ct);
+                if (hcp is null)
+                {
+                    noHandicap++;
+                    legs.Add((false, null));
+                    continue;
+                }
+            }
+            else
+                hcp = plain ? null : line.Handicap ?? m.Handicap;
             var score = new PurchaseSettleMath.MatchScore
             {
                 Home = m.HomeScore!.Value,
@@ -128,7 +143,7 @@ public sealed class PurchaseSettlementService
                 Handicap = hcp
             };
             // 玩法以选项为准纠偏（避免「让胜」被错误 playType 当比分）
-            var play = ResolvePlayType(p.PlayType, line);
+            var play = bd && plain ? "让球胜平负" : ResolvePlayType(p.PlayType, line);
             var hit = PurchaseSettleMath.EvaluateLine(play, line, score);
             legs.Add((hit.Hit, hit.Odds));
             lineSettles.Add(new PurchaseLineSettle
@@ -144,13 +159,15 @@ public sealed class PurchaseSettlementService
         if (lineSettles.Count > 0)
             await _purchases.UpdateLineResultsAsync(p.PurchaseId, lineSettles, ct);
 
-        if (pending > 0 || missing > 0 || lineSettles.Count < p.Lines.Count)
+        if (pending > 0 || missing > 0 || noHandicap > 0 || lineSettles.Count < p.Lines.Count)
         {
             return new ItemResult
             {
                 PurchaseId = p.PurchaseId,
                 Status = "WAIT",
-                Message = missing > 0
+                Message = noHandicap > 0
+                    ? $"北单有 {noHandicap} 场找不到让球数，请在票上补填让球后再结算"
+                    : missing > 0
                     ? $"尚有 {missing} 场未关联赛程，{pending} 场未完场"
                     : $"尚有 {pending} 场未完场",
                 LinesReady = lineSettles.Count,

@@ -789,30 +789,41 @@ static async Task<object> JcStakePlanAsync(
         ? new Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>()
         : await jcOdds.GetLatestNspfAsync(ids, ct);
 
-    var legs = new List<(MatchRecommendation Rec, decimal Odds, string Option)>();
+    var legs = new List<(MatchRecommendation Rec, decimal Odds, string Option, decimal? LegP)>();
     foreach (var r in strong)
     {
         if (r.RecResult is not ('3' or '0') || r.MatchId is not long id) continue;
         if (!prices.TryGetValue(id, out var price)) continue;
-        var odds = r.RecResult == '3' ? price.Win : price.Loss;
-        if (odds < RecommendationSelection.JcCoverTicket.MinOdds || odds > RecommendationSelection.JcCoverTicket.MaxOdds) continue;
         if (r.SignalDesc?.Contains("澳超客胜不进精选", StringComparison.Ordinal) == true) continue;
-        legs.Add((r, odds, r.RecResult == '3' ? "让胜" : "让负"));
+        var leg = RecommendationSelection.JcCoverTicket.TryLeg(
+            r.RecResult, r.Handicap, price.Win, price.Draw, price.Loss, r.HitProbability);
+        if (leg is null) continue;
+        var legP = RecommendationSelection.JcCoverTicket.LegProbability(leg.Value.Side, price.Win, price.Draw, price.Loss);
+        legs.Add((r, leg.Value.Odds, leg.Value.Option, legP));
     }
 
-    var picked = RecommendationSelection.JcCoverTicket.Pick(legs, x => x.Odds, x => x.Rec.HitProbability);
-    if (picked.Count < RecommendationSelection.JcCoverTicket.LegCount)
-        return new { ready = false, have = picked.Count };
+    var picked = RecommendationSelection.JcCoverTicket.Pick(legs, x => x.Odds, x => x.LegP * 100m);
+    if (picked.Count == 0)
+        return new { ready = false, have = 0 };
 
+    var n = picked.Count;
     var oddsList = picked.Select(x => x.Odds).ToList();
     var miss = RecommendationSelection.JcCoverTicket.OneMiss(oddsList);
     var miss2 = RecommendationSelection.JcCoverTicket.TwoMiss(oddsList);
+    var chances = picked.All(x => x.LegP is not null)
+        ? RecommendationSelection.JcCoverTicket.Chances(picked.Select(x => (x.Odds, x.LegP!.Value)).ToList())
+        : ((decimal AnyPrize, decimal BackStake, decimal AllHit)?)null;
     return new
     {
         ready = true,
-        passType = RecommendationSelection.JcCoverTicket.Pass,
+        legCount = n,
+        chanceAnyPrize = chances is null ? (decimal?)null : Math.Round(chances.Value.AnyPrize * 100m, 1),
+        chanceBackStake = chances is null ? (decimal?)null : Math.Round(chances.Value.BackStake * 100m, 1),
+        chanceAllHit = chances is null ? (decimal?)null : Math.Round(chances.Value.AllHit * 100m, 1),
+        betCount = RecommendationSelection.JcCoverTicket.BetCountFor(n),
+        passType = RecommendationSelection.JcCoverTicket.PassFor(n),
         multiple = RecommendationSelection.JcCoverTicket.Multiple,
-        stake = RecommendationSelection.JcCoverTicket.Stake,
+        stake = RecommendationSelection.JcCoverTicket.StakeFor(n),
         allHit = RecommendationSelection.JcCoverTicket.AllHit(oddsList),
         missLow = miss.Low,
         missHigh = miss.High,
@@ -826,18 +837,28 @@ static async Task<object> JcStakePlanAsync(
             x.Rec.Handicap,
             option = x.Option,
             odds = x.Odds,
-            hitProbability = x.Rec.HitProbability
+            hitProbability = x.LegP is null ? (decimal?)null : Math.Round(x.LegP.Value * 100m, 1)
         })
     };
 }
 
-static object ToItem(MatchRecommendation r) => new
+static object ToItem(MatchRecommendation r)
+{
+    // 北单只卖让球胜平负：对外的推荐、命中率都换成让球选项，不让球方向只留在说明里。
+    var bd = r.Board == Boards.Bd && r.RecHandicap is not null;
+    var pick = bd ? r.RecHandicap : r.RecResult;
+    return new
 {
     r.MatchNo, r.MatchId, r.LeagueName, r.HomeTeam, r.AwayTeam, r.MatchTime, r.Handicap,
-    result = r.RecResult?.ToString(),
-    resultText = r.RecResult == '3' ? "主胜" : r.RecResult == '0' ? "客胜" : r.RecResult == '1' ? "平局" : "全包",
+    result = pick?.ToString(),
+    resultText = bd
+        ? RecommendationSelection.HandicapOptionName(r.RecHandicap!.Value)
+        : r.RecResult == '3' ? "主胜" : r.RecResult == '0' ? "客胜" : r.RecResult == '1' ? "平局" : "全包",
     r.Confidence, r.SignalLevel, r.SignalDesc,
-    hitProbability = r.HitProbability, hitProbabilityNote = r.HitProbabilityNote,
+    hitProbability = bd ? r.HandicapProbability : r.HitProbability,
+    hitProbabilityNote = bd ? "欧赔去水 + 大小球盘折算到北单让球数" : r.HitProbabilityNote,
+    handicapOdds = bd ? r.HandicapOdds : null,
+    plainResult = bd ? r.RecResult?.ToString() : null,
     homeOddsDelta = r.HomeOddsDelta, drawOddsDelta = r.DrawOddsDelta,
     ratioHome = r.RatioHome, ratioDraw = r.RatioDraw, ratioAway = r.RatioAway,
     scores = r.ScoreCandidates, goals = r.GoalCandidates,
@@ -846,6 +867,7 @@ static object ToItem(MatchRecommendation r) => new
     halfFullPick = r.HalfFullPick,
     r.IsFeatured, r.PublishMarkets
 };
+}
 
 static (double hitRate, double hitLow, double hitHigh) Rate(int hit, int total)
 {

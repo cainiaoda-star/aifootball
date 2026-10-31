@@ -12,7 +12,12 @@ public static class RecommendationSchema
     public static async Task EnsureAsync(SqlConnectionFactory factory, CancellationToken ct = default)
     {
         await using var conn = await factory.OpenAsync(ct);
-        foreach (var file in new[] { "03_recommendation_integrity.sql", "04_lotto_recommendation.sql" })
+        foreach (var file in new[]
+                 {
+                     "03_recommendation_integrity.sql", "04_lotto_recommendation.sql",
+                     "06_recommendation_stale_results.sql", "07_recommendation_handicap.sql",
+                     "08_bd_history.sql"
+                 })
         {
             var sql = LoadScript(file);
             foreach (var batch in GoSplitter.Split(sql).Select(x => x.Trim()).Where(x => x.Length > 0))

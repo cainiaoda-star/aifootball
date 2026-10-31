@@ -41,6 +41,29 @@ public sealed class RecommendationService
             $"竞彩固定奖金采样 {cards.Count} 场（比分 {withBf} / 总进球 {withJq} / 半全场 {withBq}），写入 {rows} 个选项");
     }
 
+    /// <summary>
+    /// 回填某天竞彩已完场场次的最终固定奖金（四类玩法），时间点记为该场截止时间。
+    /// 500 只保留最近约 30 天，再早页面会退回当天在售，此时一行都不写。
+    /// </summary>
+    public async Task<CollectionResult> BackfillJcDayAsync(DateOnly date, CancellationToken ct = default)
+    {
+        var cards = await _cardSource.FetchJcAllPlaysAsync(ct, date);
+        var ended = cards.Where(c => c.IsEnd && c.BuyEndTime is not null && c.MatchId is not null).ToList();
+        var onDay = ended.Where(c => Math.Abs((DateOnly.FromDateTime(c.BuyEndTime!.Value).DayNumber - date.DayNumber)) <= 1).ToList();
+        if (onDay.Count == 0)
+            return CollectionResult.Ok(0, $"{date:yyyy-MM-dd} 没有已完场的竞彩（页面 {cards.Count} 场，可能已超出 500 保留范围）");
+        if (onDay.Count < ended.Count / 2)
+            return CollectionResult.Ok(0, $"{date:yyyy-MM-dd} 页面退回了在售期，不写入");
+
+        var endAt = onDay.ToDictionary(c => c.MatchId!.Value, c => c.BuyEndTime!.Value);
+        var rows = 0;
+        foreach (var g in BettingCardSource.ToSnapshots(onDay).GroupBy(s => endAt[s.MatchId!.Value]))
+            rows += await _jcOdds.SaveSnapshotAsync(g.ToList(), g.Key, ct);
+
+        return CollectionResult.Ok(rows,
+            $"{date:yyyy-MM-dd} 竞彩回填 {onDay.Count} 场（比分 {onDay.Count(c => c.BfOdds.Count > 0)} / 总进球 {onDay.Count(c => c.JqOdds.Count > 0)} / 半全场 {onDay.Count(c => c.BqOdds.Count > 0)}），写入 {rows} 个选项");
+    }
+
     /// <summary>采集三个板块的受注场次并入库，返回各板块场次数</summary>
     public async Task<(int Jc, int Bd, int Sfc)> CollectCardsAsync(CancellationToken ct = default)
     {
@@ -79,6 +102,14 @@ public sealed class RecommendationService
             .Select(c => c.MatchId!.Value).Distinct().ToList();
         var matchTimes = needTime.Count > 0 ? await _repo.GetMatchTimesAsync(needTime, ct) : new();
 
+        var jcSpf = string.Equals(board, Boards.Jc, StringComparison.OrdinalIgnoreCase) && fids.Count > 0
+            ? await _jcOdds.GetLatestSpfAsync(fids, ct)
+            : new Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>();
+
+        var bdSp = string.Equals(board, Boards.Bd, StringComparison.OrdinalIgnoreCase)
+            ? await BdSpAsync(ct)
+            : new Dictionary<long, BdMarketOdds>();
+
         var now = DateTime.Now;
         var result = new List<MatchRecommendation>();
         foreach (var c in cards)
@@ -88,17 +119,32 @@ public sealed class RecommendationService
                 c.MatchTime = mt;
             if (c.MatchTime is not null && c.MatchTime.Value <= now)
                 continue;
-            if (string.Equals(board, Boards.Jc, StringComparison.OrdinalIgnoreCase)
-                && c.MatchTime is DateTime kick
-                && !RecommendationSelection.JcSaleHours.CanStillBuy(RecommendationSelection.JcSaleHours.Now(), kick))
-                continue;
+            if (string.Equals(board, Boards.Jc, StringComparison.OrdinalIgnoreCase))
+            {
+                var beijing = RecommendationSelection.JcSaleHours.Now();
+                if (!RecommendationSelection.JcSaleHours.IsTodaysIssue(c.MatchNo, beijing))
+                    continue;
+                if (c.MatchTime is DateTime kick
+                    && !RecommendationSelection.JcSaleHours.CanStillBuy(beijing, kick))
+                    continue;
+            }
 
             decimal? delta = null, drawDelta = null;
             decimal? rh = null, rd = null, ra = null;
             decimal? line = null;
-            var spfHome = c.SpfHome;
-            var spfDraw = c.SpfDraw;
-            var spfAway = c.SpfAway;
+            decimal? spfHome = null, spfDraw = null, spfAway = null;
+            if (c.MatchId is long spfId && jcSpf.TryGetValue(spfId, out var officialSpf))
+            {
+                spfHome = officialSpf.Win;
+                spfDraw = officialSpf.Draw;
+                spfAway = officialSpf.Loss;
+            }
+            else
+            {
+                spfHome = c.SpfHome;
+                spfDraw = c.SpfDraw;
+                spfAway = c.SpfAway;
+            }
             if (c.MatchId is not null)
             {
                 if (oddsDelta.TryGetValue(c.MatchId.Value, out var od))
@@ -151,12 +197,42 @@ public sealed class RecommendationService
                     rec, delta, ah.Open, ah.Close, lateDelta, homePts, awayPts,
                     spfHome, spfDraw, spfAway);
             }
-            RecommendationEngine.ApplyScoreline(rec, hitSnap.Scores);
+            RecommendationEngine.ApplyScoreline(rec, hitSnap.Scores, spfHome, spfAway);
+
+            if (string.Equals(board, Boards.Bd, StringComparison.OrdinalIgnoreCase))
+            {
+                BdMarketOdds? sp = null;
+                if (c.MatchId is long bdId) bdSp.TryGetValue(bdId, out sp);
+                RecommendationSelection.ApplyBdHandicap(
+                    rec, spfHome, spfDraw, spfAway, line, sp?.Home, sp?.Draw, sp?.Away);
+            }
 
             result.Add(rec);
         }
 
         return result;
+    }
+
+    private static readonly SemaphoreSlim BdSpGate = new(1, 1);
+    private static Dictionary<long, BdMarketOdds> _bdSp = new();
+    private static DateTime _bdSpAt = DateTime.MinValue;
+
+    private async Task<Dictionary<long, BdMarketOdds>> BdSpAsync(CancellationToken ct)
+    {
+        await BdSpGate.WaitAsync(ct);
+        try
+        {
+            if (DateTime.Now - _bdSpAt < TimeSpan.FromMinutes(3)) return _bdSp;
+            try
+            {
+                var map = await _cardSource.FetchBdSpfAsync(ct);
+                if (map.Count > 0) { _bdSp = map; _bdSpAt = DateTime.Now; }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { /* 拿不到 SP 时仍按概率推，只是不显示 SP */ }
+            return _bdSp;
+        }
+        finally { BdSpGate.Release(); }
     }
 
     /// <summary>生成全板块推荐并落库（复盘用）。竞彩最多 8 / 北单最多 11，不够不凑；胜负彩保留全部。</summary>
@@ -197,6 +273,7 @@ public sealed class RecommendationService
                     Goals1 = r.GoalCandidates.Count > 0 ? r.GoalCandidates[0] : null,
                     Goals2 = r.GoalCandidates.Count > 1 ? r.GoalCandidates[1] : null,
                     RecHandicap = r.RecHandicap,
+                    Handicap = r.RecHandicap is null ? null : r.Handicap,
                     RecHalfFull = r.HalfFullPick,
                     RecDate = DateTime.Today
                 });
@@ -230,12 +307,18 @@ public sealed class RecommendationService
             var hit = RecommendationScoring.DirectionalHit(isCover ? null : r.RecResult, isCover, actualResult);
             var counts = RecommendationScoring.CountsInHitRate(isCover ? null : r.RecResult, isCover, r.Confidence);
 
-            await _repo.BackfillResultAsync(r.RecId, actualScore, actualGoals ?? 0, actualResult, hit, ct);
+            bool? handicapHit = null;
+            if (r.RecHandicap is char pick && r.Handicap is decimal hcp && res.Home is int hs && res.Away is int aws)
+                handicapHit = HandicapMath.Result(hs, aws, hcp) == pick;
+
+            await _repo.BackfillResultAsync(r.RecId, actualScore, actualGoals ?? 0, actualResult, hit, handicapHit, ct);
 
             settled.Add(new SettlementItem
             {
                 Board = r.Board, MatchNo = r.MatchNo, HomeTeam = r.HomeTeam, AwayTeam = r.AwayTeam,
-                RecResult = r.RecResult, ActualResult = actualResult, Hit = hit, Counts = counts,
+                RecResult = r.RecResult, ActualResult = actualResult,
+                Hit = r.Board == Boards.Bd && handicapHit is not null ? handicapHit : hit,
+                Counts = r.Board == Boards.Bd && handicapHit is not null || counts,
                 RecScore = $"{r.Score1 ?? "-"}/{r.Score2 ?? "-"}", ActualScore = actualScore,
                 RecGoals = r.Goals1?.ToString() ?? "-", ActualGoals = actualGoals?.ToString() ?? "-"
             });

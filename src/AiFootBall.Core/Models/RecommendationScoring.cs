@@ -8,6 +8,7 @@ public static class RecommendationScoring
 
     /// <summary>
     /// 精选门槛：校准后的预计命中率。写死的 61.3、73.8、85.7 不能代替它。
+    /// 北单 2020–2024 训练、2025–2026 验证：模型让球最高项全样本约 44%，但 ≥55% 这一档验证命中 57.3%（944 场），50–55% 只有 50.9%。门槛停在 55，不降。
     /// </summary>
     public const decimal MinFeaturedHitProbability = 55m;
 

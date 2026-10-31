@@ -84,10 +84,11 @@ public sealed class ScorelineModel
 
     public List<(int Home, int Away)> Top(
         string? league, string home, string away, char direction,
-        decimal? ouLine, decimal? handicap, int take = 2)
+        decimal? ouLine, decimal? handicap, int take = 2, int minMargin = 1)
     {
         if (!Ready || direction is not ('3' or '1' or '0')) return new();
         var (lh, la) = Lambdas(league, home, away, ouLine);
+        var margin = Math.Max(1, minMargin);
         var cells = new List<(int Home, int Away, double P)>();
         for (var h = 0; h <= MaxGoals; h++)
         {
@@ -95,8 +96,8 @@ public sealed class ScorelineModel
             {
                 var keep = direction switch
                 {
-                    '3' => h > a,
-                    '0' => h < a,
+                    '3' => h - a >= margin,
+                    '0' => a - h >= margin,
                     _ => h == a
                 };
                 if (!keep) continue;

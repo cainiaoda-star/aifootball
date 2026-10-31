@@ -50,9 +50,46 @@ public static class RecommendationSelection
             return kickoff.Date.AddDays(-1) + Close.ToTimeSpan();
         }
 
+        /// <summary>
+        /// 开售时段只留当天那一期。9:00 前，当天仍算前一天。
+        /// 停售之后（21:58 到次日 9:00）当天剩下的场次已经买不了，同时带上下一期。
+        /// 周六白天仍不选「周日xxx」。
+        /// </summary>
+        public static bool IsTodaysIssue(string? matchNo, DateTime beijing)
+        {
+            if (string.IsNullOrWhiteSpace(matchNo)) return false;
+            var no = matchNo.Trim();
+            if (no.StartsWith(WeekdayName(SaleDay(beijing)), StringComparison.Ordinal))
+                return true;
+            return !IsOpen(beijing)
+                   && no.StartsWith(WeekdayName(NextSaleDay(beijing)), StringComparison.Ordinal);
+        }
+
+        static DateTime SaleDay(DateTime beijing)
+            => TimeOnly.FromDateTime(beijing) < Open ? beijing.Date.AddDays(-1) : beijing.Date;
+
+        static DateTime NextSaleDay(DateTime beijing)
+        {
+            var clock = TimeOnly.FromDateTime(beijing);
+            if (clock > Close) return beijing.Date.AddDays(1);
+            if (clock < Open) return beijing.Date;
+            return beijing.Date.AddDays(1);
+        }
+
+        static string WeekdayName(DateTime day) => day.DayOfWeek switch
+        {
+            DayOfWeek.Monday => "周一",
+            DayOfWeek.Tuesday => "周二",
+            DayOfWeek.Wednesday => "周三",
+            DayOfWeek.Thursday => "周四",
+            DayOfWeek.Friday => "周五",
+            DayOfWeek.Saturday => "周六",
+            _ => "周日"
+        };
+
         public static string Note(DateTime beijing) => IsOpen(beijing)
-            ? "每天 21:58 停售，次日 9:00 再开。这段时间开赛的，过了 21:58 就不推荐"
-            : "现在停售，9:00 再开。21:58 到 9:00 之间开赛的场次已去掉";
+            ? "只选当天开售的这一期，第二天的不选。21:58 停售，之后开赛的过了 21:58 不推荐"
+            : "现在停售，9:00 再开。当天剩下的已经过了 21:58，名单加上下一期还能买的场次";
     }
 
     /// <summary>
@@ -63,13 +100,65 @@ public static class RecommendationSelection
         if (board != Boards.Jc || featuredCount < 2) return null;
         if (featuredCount == 2) return "建议过关：2串1";
         if (featuredCount == 3) return "建议过关：2串1 + 3串1（防单腿）";
-        return "这几场胜平负是低水，不要串。中高水让球用 74 元票：8 场，6串1+7串1+8串1";
+        return "这几场胜平负是低水，不要串。中高水让球够几场出几场，最多 8 场";
     }
 
-    /// <summary>够格进精选：等级≥2，且校准命中率达标。没有校准命中率不进。</summary>
+    /// <summary>够格进精选：等级≥2，且校准命中率达标。没有校准命中率不进。北单按让球选项的概率筛。</summary>
     public static bool QualifiesForFeatured(MatchRecommendation x)
-        => x.SignalLevel >= 2
-           && x.HitProbability >= RecommendationScoring.MinFeaturedHitProbability;
+    {
+        if (x.Board == Boards.Bd)
+            return x.RecHandicap is not null
+                   && x.HandicapProbability >= RecommendationScoring.MinFeaturedHitProbability
+                   && !DeepHandicapWithoutTotal(x);
+        return x.SignalLevel >= 2
+               && x.HitProbability >= RecommendationScoring.MinFeaturedHitProbability;
+    }
+
+    private static decimal? RankProbability(MatchRecommendation x)
+        => x.Board == Boards.Bd ? x.HandicapProbability : x.HitProbability ?? x.Confidence;
+
+    public static string HandicapOptionName(char option) => option switch
+    {
+        '3' => "让胜",
+        '1' => "让平",
+        _ => "让负"
+    };
+
+    /// <summary>
+    /// 北单只卖让球胜平负：用欧赔去水 + 大小球盘算出这个让球数下三项的概率，推概率最高的一项。
+    /// 不让球方向只作参考写在说明里。没有欧赔或没有让球数时不给。
+    /// </summary>
+    public static void ApplyBdHandicap(
+        MatchRecommendation rec, decimal? spfHome, decimal? spfDraw, decimal? spfAway, decimal? totalLine,
+        decimal? spWin, decimal? spDraw, decimal? spLoss)
+    {
+        rec.RecHandicap = null;
+        rec.HandicapProbability = null;
+        rec.HandicapOdds = null;
+        if (rec.Handicap is not decimal hcp) return;
+        var p = HandicapMath.FromOdds(spfHome, spfDraw, spfAway, totalLine, hcp);
+        if (p is null) return;
+
+        var options = new[] { ('3', p.Value.Win, spWin), ('1', p.Value.Draw, spDraw), ('0', p.Value.Loss, spLoss) };
+        var best = options.OrderByDescending(o => o.Item2).First();
+        rec.RecHandicap = best.Item1;
+        rec.HandicapProbability = Math.Round(best.Item2 * 100m, 1);
+        rec.HandicapOdds = best.Item3 is > 1 ? best.Item3 : null;
+
+        var hcpText = hcp > 0 ? $"+{hcp:0.##}" : $"{hcp:0.##}";
+        var sp = rec.HandicapOdds is decimal o ? $"，北单 SP {o:0.00}（开奖前会变）" : "";
+        var plain = string.IsNullOrWhiteSpace(rec.SignalDesc) ? "" : $"；不让球参考（北单不卖）：{rec.SignalDesc}";
+        var held = Math.Abs(hcp) >= 1.5m && totalLine is not > 0.5m
+            ? "；让球达到 1.5 且没有大小球盘，不进精选" : "";
+        rec.SignalDesc = $"北单让{hcpText}：{HandicapOptionName(best.Item1)} 约 {rec.HandicapProbability:0.0}%{sp}{plain}{held}";
+    }
+
+    /// <summary>
+    /// 让球绝对值达到 1.5、又没有真实大小球盘时，总进球按 2.6 算出的 55% 偏高。
+    /// 2025–2026 验证里这类场实际命中 53.6%，不进精选。有盘口时仍按 55% 进。
+    /// </summary>
+    public static bool DeepHandicapWithoutTotal(MatchRecommendation x)
+        => x.Handicap is decimal h && Math.Abs(h) >= 1.5m && x.TotalLine is not > 0.5m;
 
     /// <summary>录入方案时用的过关字符串（如 2串1#3串1）。</summary>
     public static string? PassTypeValue(string board, int featuredCount)
@@ -99,7 +188,7 @@ public static class RecommendationSelection
         var limit = board == Boards.Bd ? BdPublishLimit : PublishLimit;
         var picked = recs
             .Where(QualifiesForFeatured)
-            .OrderByDescending(x => x.HitProbability ?? x.Confidence ?? decimal.MinValue)
+            .OrderByDescending(x => RankProbability(x) ?? decimal.MinValue)
             .ThenByDescending(x => x.SignalLevel)
             .ThenByDescending(x => x.Confidence ?? decimal.MinValue)
             .ThenBy(x => OfficialMatchOrder(x.MatchNo))
@@ -131,7 +220,7 @@ public static class RecommendationSelection
             r.ScoreCandidates.Clear();
             r.GoalCandidates.Clear();
             r.HalfFullPick = null;
-            r.RecHandicap = null;
+            if (board != Boards.Bd) r.RecHandicap = null;
         }
         return ranked;
     }
@@ -190,9 +279,9 @@ public static class RecommendationSelection
     }
 
     /// <summary>
-    /// 74 元中高水票：8 场让球，6串1+7串1+8串1，1 倍。
-    /// 注数 C(8,6)+C(8,7)+C(8,8)=37，单注 2 元。
-    /// 错一场还剩不含该场的 7串1 和 6串1；错两场还剩其余 6 场的那注 6串1。
+    /// 让球中高水票。够几场出几场，最多 8 场。
+    /// 满 8 场仍是 6串1+7串1+8串1，37 注，74 元。
+    /// 不足 8 场时过关改成 (n-2)串1+(n-1)串1+n串1，金额按注数算。
     /// </summary>
     public static class JcCoverTicket
     {
@@ -204,6 +293,79 @@ public static class RecommendationSelection
         public const string Pass = "6串1#7串1#8串1";
         public const int BetCount = 37;
         public const decimal Stake = 74m;
+
+        /// <summary>n 场的过关。8 场是 6串1#7串1#8串1，6 场是 4串1#5串1#6串1。</summary>
+        public static string PassFor(int n)
+        {
+            if (n <= 1) return "单关";
+            if (n == 2) return "2串1";
+            return $"{n - 2}串1#{n - 1}串1#{n}串1";
+        }
+
+        public static int BetCountFor(int n)
+        {
+            if (n <= 1) return n == 1 ? 1 : 0;
+            if (n == 2) return 1;
+            return Comb(n, 2) + n + 1;
+        }
+
+        public static decimal StakeFor(int n) => BetCountFor(n) * UnitStake;
+
+        /// <summary>让球三个价去水后，这一边打过盘的概率（0–1）。</summary>
+        public static decimal? LegProbability(char side, decimal nspfWin, decimal nspfDraw, decimal nspfLoss)
+        {
+            var p = HitRateMath.Devig(nspfWin, nspfDraw, nspfLoss);
+            if (p is null) return null;
+            return side == '3' ? p.Value.Home : side == '0' ? p.Value.Away : p.Value.Draw;
+        }
+
+        /// <summary>
+        /// 按每场概率独立相乘，列出全部中/不中组合：有奖金、奖金不少于本金、全中三种概率（0–1）。
+        /// </summary>
+        public static (decimal AnyPrize, decimal BackStake, decimal AllHit) Chances(
+            IReadOnlyList<(decimal Odds, decimal P)> legs)
+        {
+            var n = legs.Count;
+            if (n == 0 || n > 12) return (0, 0, 0);
+            var pass = PassFor(n);
+            var stake = StakeFor(n);
+            decimal any = 0, back = 0, all = 0;
+            for (var mask = 0; mask < 1 << n; mask++)
+            {
+                decimal p = 1;
+                var scene = new List<(bool hit, decimal? odds)>(n);
+                for (var i = 0; i < n; i++)
+                {
+                    var hit = (mask & (1 << i)) != 0;
+                    p *= hit ? legs[i].P : 1 - legs[i].P;
+                    scene.Add((hit, legs[i].Odds));
+                }
+                if (p == 0) continue;
+                var prize = PurchaseSettleMath.CalculatePrize(scene, pass, Multiple);
+                if (prize > 0) any += p;
+                if (prize >= stake) back += p;
+                if (mask == (1 << n) - 1) all += p;
+            }
+            return (any, back, all);
+        }
+
+        /// <summary>
+        /// 胜平负方向按 1 球分差折成让球选项，赔率用该选项自己的让球价。
+        /// 让平不算打过盘。预计命中率不到精选线的不进这张票。
+        /// </summary>
+        public static (char Side, decimal Odds, string Option)? TryLeg(
+            char? spf, decimal? handicap,
+            decimal nspfWin, decimal nspfDraw, decimal nspfLoss,
+            decimal? hitProbability)
+        {
+            if (hitProbability is null || hitProbability < RecommendationScoring.MinFeaturedHitProbability)
+                return null;
+            var side = HandicapFromSpf(spf, handicap);
+            if (side is not ('3' or '0')) return null;
+            var odds = side == '3' ? nspfWin : nspfLoss;
+            if (nspfDraw <= 1 || odds < MinOdds || odds > MaxOdds) return null;
+            return (side.Value, odds, side == '3' ? "让胜" : "让负");
+        }
 
         public static List<T> Pick<T>(IEnumerable<T> legs, Func<T, decimal> odds, Func<T, decimal?> hit)
         {
@@ -217,9 +379,9 @@ public static class RecommendationSelection
 
         public static decimal AllHit(IReadOnlyList<decimal> odds)
         {
-            if (odds.Count != LegCount) return 0;
+            if (odds.Count == 0) return 0;
             var legs = odds.Select(o => (hit: true, odds: (decimal?)o)).ToList();
-            return PurchaseSettleMath.CalculatePrize(legs, Pass, Multiple);
+            return PurchaseSettleMath.CalculatePrize(legs, PassFor(odds.Count), Multiple);
         }
 
         public static (decimal Low, decimal High) OneMiss(IReadOnlyList<decimal> odds) => Range(odds, 1);
@@ -228,13 +390,14 @@ public static class RecommendationSelection
 
         private static (decimal Low, decimal High) Range(IReadOnlyList<decimal> odds, int misses)
         {
-            if (odds.Count != LegCount || misses <= 0 || misses >= odds.Count) return (0, 0);
+            if (odds.Count == 0 || misses <= 0 || misses >= odds.Count) return (0, 0);
+            var pass = PassFor(odds.Count);
             var prizes = new List<decimal>();
             foreach (var drop in Combinations(Enumerable.Range(0, odds.Count).ToArray(), misses))
             {
                 var dropped = drop.ToHashSet();
                 var scene = odds.Select((o, i) => (hit: !dropped.Contains(i), odds: (decimal?)o)).ToList();
-                prizes.Add(PurchaseSettleMath.CalculatePrize(scene, Pass, Multiple));
+                prizes.Add(PurchaseSettleMath.CalculatePrize(scene, pass, Multiple));
             }
 
             return (prizes.Min(), prizes.Max());
@@ -255,6 +418,16 @@ public static class RecommendationSelection
                 idx[t]++;
                 for (var j = t + 1; j < k; j++) idx[j] = idx[j - 1] + 1;
             }
+        }
+
+        private static int Comb(int n, int k)
+        {
+            if (k < 0 || k > n) return 0;
+            if (k == 0 || k == n) return 1;
+            var r = 1;
+            for (var i = 1; i <= k; i++)
+                r = r * (n - k + i) / i;
+            return r;
         }
     }
 

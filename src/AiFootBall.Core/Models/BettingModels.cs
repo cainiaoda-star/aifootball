@@ -81,6 +81,11 @@ public sealed class MatchRecommendation
     public decimal? HitProbability { get; set; }
     /// <summary>预计命中率用了哪套算法。</summary>
     public string? HitProbabilityNote { get; set; }
+
+    /// <summary>北单要买的让球选项（RecHandicap）打出的概率，0 到 100。北单只卖让球胜平负，精选按它筛。</summary>
+    public decimal? HandicapProbability { get; set; }
+    /// <summary>北单该让球选项的 SP（开奖前会变）。</summary>
+    public decimal? HandicapOdds { get; set; }
 }
 
 /// <summary>历史比分分布（用于比分预测）</summary>
@@ -107,9 +112,9 @@ public sealed class UserAccount
 /// <summary>竞彩固定奖金玩法常量</summary>
 public static class JcPlayTypes
 {
-    /// <summary>让球胜平负（nspf）</summary>
+    /// <summary>让球胜平负。500 页面上是 data-type="spf"，名字和玩法相反。</summary>
     public const string Nspf = "NSPF";
-    /// <summary>胜平负（spf，不让球）</summary>
+    /// <summary>胜平负（不让球）。500 页面上是 data-type="nspf"。</summary>
     public const string Spf = "SPF";
     /// <summary>全场比分（bf）</summary>
     public const string Bf = "BF";
@@ -150,6 +155,10 @@ public sealed class JcMatchCard
     public string? HomeTeam { get; set; }
     public string? AwayTeam { get; set; }
     public decimal? Handicap { get; set; }
+    /// <summary>竞彩截止时间（data-buyendtime）。回填历史时当作最终奖金的时间点。</summary>
+    public DateTime? BuyEndTime { get; set; }
+    /// <summary>已完场（data-isend=1），此时页面上的奖金是最终奖金。</summary>
+    public bool IsEnd { get; set; }
     /// <summary>让球胜平负：让胜/让平/让负</summary>
     public decimal? NspfWin { get; set; }
     public decimal? NspfDraw { get; set; }
@@ -188,6 +197,10 @@ public sealed class RecommendationRecord
     public int? Goals1 { get; set; }        // 最可能进球数 1
     public int? Goals2 { get; set; }        // 最可能进球数 2
     public char? RecHandicap { get; set; }
+    /// <summary>推荐时的让球数（北单 rangqiuNum）。RecHandicap 按它结算。</summary>
+    public decimal? Handicap { get; set; }
+    /// <summary>北单让球选项是否打出。</summary>
+    public bool? HandicapHit { get; set; }
     public string? RecHalfFull { get; set; }
     public string? ActualScore { get; set; } // 实际比分（赛后可回填）
     public int? ActualGoals { get; set; }   // 实际总进球
@@ -196,4 +209,25 @@ public sealed class RecommendationRecord
     public DateTime RecDate { get; set; }   // 推荐日期
     public DateTime CreatedAt { get; set; }
     public string? LeagueName { get; set; } // 比赛类型（JOIN FbMatch 填充，不落库）
+}
+
+/// <summary>北单历史一场：让球、平均欧赔、比分和开出的让球选项（3/1/0）及 SP。</summary>
+public sealed class BdHistoryRow
+{
+    public int Expect { get; set; }
+    public int MatchNo { get; set; }
+    public long? MatchId { get; set; }
+    public string? LeagueName { get; set; }
+    public DateTime? EndTime { get; set; }
+    public string? HomeTeam { get; set; }
+    public string? AwayTeam { get; set; }
+    public decimal? Handicap { get; set; }
+    public decimal? AvgHome { get; set; }
+    public decimal? AvgDraw { get; set; }
+    public decimal? AvgAway { get; set; }
+    public string? AsianHand { get; set; }
+    public int? HomeScore { get; set; }
+    public int? AwayScore { get; set; }
+    public string? ResultCode { get; set; }
+    public decimal? ResultSp { get; set; }
 }

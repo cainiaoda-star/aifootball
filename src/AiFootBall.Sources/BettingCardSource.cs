@@ -56,6 +56,74 @@ public sealed class BettingCardSource
         return map;
     }
 
+    /// <summary>北单让球胜平负 SP（页面上的胜/平/负就是按 rangqiuNum 让球后的结果）。</summary>
+    public async Task<Dictionary<long, BdMarketOdds>> FetchBdSpfAsync(CancellationToken ct = default)
+    {
+        var map = new Dictionary<long, BdMarketOdds>();
+        ParseBdSpf(await GetGbkAsync("https://trade.500.com/bjdc/", "https://trade.500.com/", ct), map);
+        return map;
+    }
+
+    /// <summary>北单某一期（expect 如 26108）的开奖页。不存在的期号返回空列表。</summary>
+    public async Task<List<BdHistoryRow>> FetchBdIssueAsync(int expect, CancellationToken ct = default)
+    {
+        var html = await GetGbkAsync($"https://trade.500.com/bjdc/?expect={expect}", "https://trade.500.com/bjdc/", ct);
+        return ParseBdHistory(html, expect);
+    }
+
+    /// <summary>
+    /// 开奖页每行：value 里有序号、截止时间、让球数；pjoz 是平均欧赔；a.red.eng 是比分；
+    /// 只有开出的那个选项带 sp_value。延期/取消的场次没有比分，结果留空。
+    /// </summary>
+    public static List<BdHistoryRow> ParseBdHistory(string? html, int expect)
+    {
+        var list = new List<BdHistoryRow>();
+        foreach (var tr in RowsWithFid(html))
+        {
+            var value = tr.GetAttributeValue("value", "");
+            if (!int.TryParse(JsVal(value, "index"), out var no)) continue;
+
+            var row = new BdHistoryRow
+            {
+                Expect = expect,
+                MatchNo = no,
+                MatchId = AttrLong(tr, "fid"),
+                LeagueName = JsVal(value, "leagueName"),
+                HomeTeam = JsVal(value, "homeTeam"),
+                AwayTeam = JsVal(value, "guestTeam"),
+                Handicap = JsValDecimal(value, "rangqiuNum"),
+                EndTime = DateTime.TryParse(JsVal(value, "endTime"), out var end) ? end : null,
+                AsianHand = tr.SelectSingleNode(".//span[contains(@class,'asianhand')]")?.InnerText.Trim()
+            };
+
+            var avg = (tr.SelectNodes(".//span[contains(@class,'pjoz')]") ?? Enumerable.Empty<HtmlNode>())
+                .Select(s => ParseNum(s.InnerText)).ToList();
+            if (avg.Count >= 3) { row.AvgHome = avg[0]; row.AvgDraw = avg[1]; row.AvgAway = avg[2]; }
+
+            var score = Regex.Match(tr.SelectSingleNode(".//a[contains(@class,'red') and contains(@class,'eng')]")?.InnerText ?? "",
+                @"(\d+)\s*:\s*(\d+)");
+            if (score.Success)
+            {
+                row.HomeScore = int.Parse(score.Groups[1].Value);
+                row.AwayScore = int.Parse(score.Groups[2].Value);
+            }
+
+            // 在售场次三个选项都挂着即时 SP，只有开奖后才只剩开出的那一个
+            var priced = Inputs(tr)
+                .Select(i => (Label: i.GetAttributeValue("value", ""),
+                              Sp: ParseNum(i.ParentNode?.SelectSingleNode(".//span[contains(@class,'sp_value')]")?.InnerText)))
+                .Where(x => x.Label is "胜" or "平" or "负" && x.Sp is not null)
+                .ToList();
+            if (score.Success && priced.Count == 1)
+            {
+                row.ResultCode = priced[0].Label == "胜" ? "3" : priced[0].Label == "平" ? "1" : "0";
+                row.ResultSp = priced[0].Sp;
+            }
+            list.Add(row);
+        }
+        return list;
+    }
+
     public static void ParseBdSpf(string? html, Dictionary<long, BdMarketOdds> map)
     {
         foreach (var tr in RowsWithFid(html))
@@ -137,23 +205,33 @@ public sealed class BettingCardSource
     ///   · playid=270 → 总进球(jqs)
     ///   · playid=272 → 半全场(bqc)
     /// </summary>
-    public async Task<List<JcMatchCard>> FetchJcAllPlaysAsync(CancellationToken ct = default)
+    /// <param name="date">取某天的历史页（只保留最近约 30 天，再早会退回当天在售页）。null 为当前在售。</param>
+    public async Task<List<JcMatchCard>> FetchJcAllPlaysAsync(CancellationToken ct = default, DateOnly? date = null)
     {
         var baseUrl = "https://trade.500.com/jczq/";
         var referer = "https://trade.500.com/";
+        var day = date is { } d ? $"date={d:yyyy-MM-dd}" : null;
+        string Url(string? play) =>
+            baseUrl + (play, day) switch
+            {
+                (null, null) => "",
+                (null, _) => "?" + day,
+                (_, null) => "?" + play,
+                _ => "?" + play + "&" + day
+            };
 
         // 逐个请求并加延迟，避免 500.com 对连续请求限流导致页面返回空
-        var main = await GetGbkAsync(baseUrl, referer, ct);
+        var main = await GetGbkAsync(Url(null), referer, ct);
         await Task.Delay(500, ct);
 
         // 比分页单独重试（偶发被限流返回空）
-        var bf = await GetGbkAsync(baseUrl + "?playid=271&g=2", baseUrl, ct);
-        if (bf is null) { await Task.Delay(800, ct); bf = await GetGbkAsync(baseUrl + "?playid=271&g=2", baseUrl, ct); }
+        var bf = await GetGbkAsync(Url("playid=271&g=2"), baseUrl, ct);
+        if (bf is null) { await Task.Delay(800, ct); bf = await GetGbkAsync(Url("playid=271&g=2"), baseUrl, ct); }
         await Task.Delay(500, ct);
 
-        var jq = await GetGbkAsync(baseUrl + "?playid=270&g=2", baseUrl, ct);
+        var jq = await GetGbkAsync(Url("playid=270&g=2"), baseUrl, ct);
         await Task.Delay(500, ct);
-        var bq = await GetGbkAsync(baseUrl + "?playid=272&g=2", baseUrl, ct);
+        var bq = await GetGbkAsync(Url("playid=272&g=2"), baseUrl, ct);
 
         // 以默认页为主，建立每场的卡片
         var cards = ParseJcCards(main);
@@ -167,7 +245,7 @@ public sealed class BettingCardSource
     }
 
     /// <summary>解析默认页为 JcMatchCard（含让球胜平负 + 胜平负）</summary>
-    private static List<JcMatchCard> ParseJcCards(string? html)
+    public static List<JcMatchCard> ParseJcCards(string? html)
     {
         var list = new List<JcMatchCard>();
         if (html is null) return list;
@@ -187,18 +265,20 @@ public sealed class BettingCardSource
                 MatchNo = no,
                 HomeTeam = Attr(tr, "data-homesxname"),
                 AwayTeam = Attr(tr, "data-awaysxname"),
-                Handicap = AttrDecimal(tr, "data-rangqiu")
+                Handicap = AttrDecimal(tr, "data-rangqiu"),
+                IsEnd = Attr(tr, "data-isend") == "1",
+                BuyEndTime = DateTime.TryParse(Attr(tr, "data-buyendtime"), out var buyEnd) ? buyEnd : null
             };
 
-            // 让球胜平负 nspf
-            var nspf = tr.SelectNodes(".//p[@data-type='nspf']") ?? Enumerable.Empty<HtmlNode>();
-            var nv = nspf.Select(p => AttrDecimal(p, "data-sp")).Where(v => v is not null).ToList();
-            if (nv.Count >= 3) { card.NspfWin = nv[0]; card.NspfDraw = nv[1]; card.NspfLoss = nv[2]; }
+            // 500 页面的命名和玩法相反：data-type="nspf" 是不让球（itm-rangA1「0」），
+            // data-type="spf" 才是让球（itm-rangA2，盘口见 data-rangqiu）。
+            var plain = tr.SelectNodes(".//p[@data-type='nspf']") ?? Enumerable.Empty<HtmlNode>();
+            var pv = plain.Select(p => AttrDecimal(p, "data-sp")).Where(v => v is not null).ToList();
+            if (pv.Count >= 3) { card.SpfWin = pv[0]; card.SpfDraw = pv[1]; card.SpfLoss = pv[2]; }
 
-            // 胜平负 spf
-            var spf = tr.SelectNodes(".//p[@data-type='spf']") ?? Enumerable.Empty<HtmlNode>();
-            var sv = spf.Select(p => AttrDecimal(p, "data-sp")).Where(v => v is not null).ToList();
-            if (sv.Count >= 3) { card.SpfWin = sv[0]; card.SpfDraw = sv[1]; card.SpfLoss = sv[2]; }
+            var handicapRow = tr.SelectNodes(".//p[@data-type='spf']") ?? Enumerable.Empty<HtmlNode>();
+            var hv = handicapRow.Select(p => AttrDecimal(p, "data-sp")).Where(v => v is not null).ToList();
+            if (hv.Count >= 3) { card.NspfWin = hv[0]; card.NspfDraw = hv[1]; card.NspfLoss = hv[2]; }
 
             list.Add(card);
         }
@@ -324,7 +404,7 @@ public sealed class BettingCardSource
 
     /* ---------------- 竞彩：data-* 属性解析 ---------------- */
 
-    private static List<BettingCardRecord> ParseJc(string html)
+    public static List<BettingCardRecord> ParseJc(string html)
     {
         var list = new List<BettingCardRecord>();
         var doc = new HtmlDocument();
@@ -353,21 +433,14 @@ public sealed class BettingCardSource
             if (date.Length > 0 && time.Length > 0 &&
                 DateTime.TryParse($"{date} {time}", out var dt)) rec.MatchTime = dt;
 
-            // 让球胜平负：data-type="nspf" 的三个 data-sp
-            var nspf = tr.SelectNodes(".//p[@data-type='nspf']") ?? Enumerable.Empty<HtmlNode>();
-            var nspfVals = nspf.Select(p => AttrDecimal(p, "data-sp")).Where(v => v is not null).ToList();
-            if (nspfVals.Count >= 3)
+            // 胜平负（不让球）在 data-type="nspf" 那一行。data-type="spf" 是让球，不能写进这里。
+            var plain = tr.SelectNodes(".//p[@data-type='nspf']") ?? Enumerable.Empty<HtmlNode>();
+            var plainVals = plain.Select(p => AttrDecimal(p, "data-sp")).Where(v => v is not null).ToList();
+            if (plainVals.Count >= 3)
             {
-                rec.SpfHome = nspfVals[0];
-                rec.SpfDraw = nspfVals[1];
-                rec.SpfAway = nspfVals[2];
-            }
-            else
-            {
-                // 无让球胜平负则取胜平负 data-type="spf"
-                var spf = tr.SelectNodes(".//p[@data-type='spf']") ?? Enumerable.Empty<HtmlNode>();
-                var spfVals = spf.Select(p => AttrDecimal(p, "data-sp")).Where(v => v is not null).ToList();
-                if (spfVals.Count >= 3) { rec.SpfHome = spfVals[0]; rec.SpfDraw = spfVals[1]; rec.SpfAway = spfVals[2]; }
+                rec.SpfHome = plainVals[0];
+                rec.SpfDraw = plainVals[1];
+                rec.SpfAway = plainVals[2];
             }
 
             // 单关：data-kdg 或 data-subactive 含单关标记

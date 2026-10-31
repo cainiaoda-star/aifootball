@@ -56,19 +56,44 @@ public sealed class SummaryRepository
                 new { ids = matchIds }, cancellationToken: ct))).ToList();
         var exchangeMap = exchange.ToDictionary(e => e.MatchId);
 
-        // 只取和当日比赛对得上的购买明细
+        // 购买明细：MatchId、当天开赛，或队名能对上（含 FC / 空格这类写法差）。
+        // 真正算「买了这场」还要再过一遍队名键，避免「曼城」带上「曼城青年」。
         var bought = (await conn.QueryAsync<BoughtLine>(new CommandDefinition(
             @"SELECT pl.MatchNo, pl.Option1, pl.Option2, pl.HomeTeam, pl.AwayTeam, pl.MatchId
               FROM dbo.PurchaseLine pl
               WHERE pl.MatchId IN @ids
+                 OR (pl.MatchTime >= @d AND pl.MatchTime < @next)
                  OR EXISTS (
                      SELECT 1
-                     FROM dbo.Recommendation r
-                     INNER JOIN dbo.FbMatch m ON m.MatchId = r.MatchId
-                     WHERE r.RecDate = @d
-                       AND m.HomeTeamName = pl.HomeTeam
-                       AND m.AwayTeamName = pl.AwayTeam)",
-            new { ids = matchIds.Length == 0 ? new long[] { -1 } : matchIds, d = date.Date }, cancellationToken: ct))).ToList();
+                     FROM dbo.FbMatch m
+                     WHERE m.MatchId IN @ids
+                       AND LEN(LTRIM(RTRIM(pl.HomeTeam))) >= 2
+                       AND LEN(LTRIM(RTRIM(pl.AwayTeam))) >= 2
+                       AND (
+                             LTRIM(RTRIM(m.HomeTeamName)) = LTRIM(RTRIM(pl.HomeTeam))
+                          OR LTRIM(RTRIM(m.HomeTeamName)) LIKE LTRIM(RTRIM(pl.HomeTeam)) + N'%'
+                          OR LTRIM(RTRIM(pl.HomeTeam)) LIKE LTRIM(RTRIM(m.HomeTeamName)) + N'%'
+                       )
+                       AND (
+                             LTRIM(RTRIM(m.AwayTeamName)) = LTRIM(RTRIM(pl.AwayTeam))
+                          OR LTRIM(RTRIM(m.AwayTeamName)) LIKE LTRIM(RTRIM(pl.AwayTeam)) + N'%'
+                          OR LTRIM(RTRIM(pl.AwayTeam)) LIKE LTRIM(RTRIM(m.AwayTeamName)) + N'%'
+                       ))",
+            new
+            {
+                ids = matchIds.Length == 0 ? new long[] { -1 } : matchIds,
+                d = date.Date,
+                next = date.Date.AddDays(1)
+            }, cancellationToken: ct))).ToList();
+
+        var finishedTeamKeys = finished.Values
+            .Select(m => TeamNames.PairKey(m.HomeTeamName, m.AwayTeamName))
+            .Where(k => k.Length > 0)
+            .ToHashSet(StringComparer.Ordinal);
+        bought = bought.Where(b =>
+                (b.MatchId is long id && finished.ContainsKey(id))
+                || finishedTeamKeys.Contains(TeamNames.PairKey(b.HomeTeam, b.AwayTeam)))
+            .ToList();
         var boughtMap = bought
             .Where(b => !string.IsNullOrWhiteSpace(b.MatchNo))
             .GroupBy(b => b.MatchNo!.Trim(), StringComparer.OrdinalIgnoreCase)
@@ -78,7 +103,7 @@ public sealed class SummaryRepository
                 .Select(o => o!)
                 .ToList(), StringComparer.OrdinalIgnoreCase);
 
-        // 已购场次用「主客球队名对」匹配（MatchNo 在不同板块格式不同，球队名更稳定）
+        // 已购场次：MatchId 优先，其次对齐后的队名，最后场次号
         // 同时把购买选项按球队名对映射，便于展示「你买了什么」
         var boughtByMatch = bought
             .Where(b => b.MatchId is not null)
@@ -93,7 +118,8 @@ public sealed class SummaryRepository
 
         var boughtTeams = bought
             .Where(b => !string.IsNullOrWhiteSpace(b.HomeTeam) && !string.IsNullOrWhiteSpace(b.AwayTeam))
-            .GroupBy(b => $"{b.HomeTeam!.Trim().ToLowerInvariant()}|{b.AwayTeam!.Trim().ToLowerInvariant()}")
+            .GroupBy(b => TeamNames.PairKey(b.HomeTeam, b.AwayTeam))
+            .Where(g => g.Key.Length > 0)
             .ToDictionary(
                 g => g.Key,
                 g => g.SelectMany(b => new[] { b.Option1, b.Option2 })
@@ -161,7 +187,7 @@ public sealed class SummaryRepository
                 item.IsBought = true;
                 item.BoughtOptions = boughtById;
             }
-            var teamKey = $"{m.HomeTeamName?.Trim().ToLowerInvariant()}|{m.AwayTeamName?.Trim().ToLowerInvariant()}";
+            var teamKey = TeamNames.PairKey(m.HomeTeamName, m.AwayTeamName);
             if (!item.IsBought && boughtTeams.TryGetValue(teamKey, out var boughtOptsByTeam))
             {
                 item.IsBought = true;

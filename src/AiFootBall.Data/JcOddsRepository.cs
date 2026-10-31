@@ -137,9 +137,18 @@ public sealed class JcOddsRepository
             new { ids }, cancellationToken: ct))).ToList();
     }
 
-    /// <summary>各场让球胜平负的最新价。键是 MatchId，值是让胜/让平/让负。</summary>
-    public async Task<Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>> GetLatestNspfAsync(
+    /// <summary>各场胜平负的最新价。键是 MatchId，值是胜/平/负。</summary>
+    public Task<Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>> GetLatestSpfAsync(
         IEnumerable<long> matchIds, CancellationToken ct = default)
+        => GetLatestPlayAsync(matchIds, "SPF", ct);
+
+    /// <summary>各场让球胜平负的最新价。键是 MatchId，值是让胜/让平/让负。</summary>
+    public Task<Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>> GetLatestNspfAsync(
+        IEnumerable<long> matchIds, CancellationToken ct = default)
+        => GetLatestPlayAsync(matchIds, "NSPF", ct);
+
+    private async Task<Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>> GetLatestPlayAsync(
+        IEnumerable<long> matchIds, string playType, CancellationToken ct)
     {
         var ids = matchIds.Distinct().ToArray();
         var map = new Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>();
@@ -152,10 +161,10 @@ public sealed class JcOddsRepository
                   SELECT MatchId, OptionCode, Odds,
                          ROW_NUMBER() OVER (PARTITION BY MatchId, OptionCode ORDER BY CapturedAt DESC) AS rn
                   FROM dbo.FbJcOddsHistory
-                  WHERE PlayType = 'NSPF' AND MatchId IN @ids AND OptionCode IN ('3','1','0')
+                  WHERE PlayType = @play AND MatchId IN @ids AND OptionCode IN ('3','1','0') AND Odds > 1
               ) t
               WHERE rn = 1",
-            new { ids }, cancellationToken: ct));
+            new { ids, play = playType }, cancellationToken: ct));
 
         foreach (var g in rows.GroupBy(r => r.MatchId))
         {

@@ -603,7 +603,7 @@ public static class RecommendationEngine
     ///   3. 让球盘 handicap：主让越深（越负）→ 主队越强，比分差越大
     ///   4. 大小球盘口线 totalLine（若有）决定总进球档位
     /// </summary>
-    private static void PredictScoreAndGoals(MatchRecommendation rec, decimal? totalLine, decimal? handicap)
+    private static void PredictScoreAndGoals(MatchRecommendation rec, decimal? totalLine, decimal? handicap, int minMargin = 1)
     {
         // 全局比分频率表（基于历史完场统计，值越大越常见）
         var baseScores = new Dictionary<(int, int), int>
@@ -637,26 +637,20 @@ public static class RecommendationEngine
         //   净胜恰好 1 球（1:0、2:1）在让球盘上是「让平」，并不算让球主胜。
         //   因此：先按让球盘把「让球后仍算胜」的比分保留、其余硬性剔除，
         //   再在满足条件的比分层内，用目标净胜差加权排序。
-        //   受让盘（handicap>0，主队是弱队受让）时让球主胜只需净胜 ≥ -handicap+1，门槛更宽松。
+        //   盘口按所选一方看：选的一方让球才抬净胜；选的一方受让，按小胜（净胜 1）即可。
+        //   禁止受让一方用 |让球|+1 当目标差（2026-10-30 布里斯班 0-1 教训）；
+        //   客队让球时不能当成主受让，否则巴黎让 2 球还推 1:2、0:1（2026-10-31 勒阿弗尔 1-5）。
         if (dir == '3' || dir == '0')
         {
-            int minDiff = 1;   // 无让球/平手盘：净胜 1 球即可
-            int targetDiff = 1;
+            int minDiff = Math.Max(1, minMargin);
+            int targetDiff = minDiff;
             if (handicap is not null)
             {
-                decimal h = handicap.Value;
-                if (h < 0)
+                var give = dir == '3' ? -handicap.Value : handicap.Value;
+                if (give > 0)
                 {
-                    // 主让 |h| 球：让球主胜需净胜 ≥ |h|+1；目标差跟门槛走
-                    minDiff = Math.Abs((int)Math.Round(h)) + 1;
+                    minDiff = Math.Max(minDiff, Math.Abs((int)Math.Round(give)) + 1);
                     targetDiff = minDiff;
-                }
-                else if (h > 0)
-                {
-                    // 主受让：胜平负主胜按小胜（净胜 1）即可。
-                    // 禁止用 |让球|+1 当目标差，否则受让 +1 会把 2:0、3:1 抬成首选（2026-10-30 布里斯班 0-1 教训）。
-                    minDiff = 1;
-                    targetDiff = 1;
                 }
                 if (targetDiff > 4) targetDiff = 4;
             }
@@ -796,8 +790,24 @@ public static class RecommendationEngine
         ApplyALeagueCaution(rec);
     }
 
+    public const decimal BigWinFavouriteOdds = 1.35m;
+    public const decimal BigWinTotalLine = 3.25m;
+
+    /// <summary>
+    /// 选的是强热门（胜平负 ≤1.35）且大小球盘 ≥3.25：比分只看净胜 2 球以上。
+    /// 2026-10-22 起 208 场：热门净胜 2+ 占 67.8%，只赢 1 球约 15%。
+    /// </summary>
+    public static int BigWinMargin(char? dir, decimal? spfHome, decimal? spfAway, decimal? totalLine)
+    {
+        if (totalLine is not { } line || line < BigWinTotalLine) return 1;
+        var odds = dir == '3' ? spfHome : dir == '0' ? spfAway : null;
+        return odds is > 1 and <= BigWinFavouriteOdds ? 2 : 1;
+    }
+
     /// <summary>有球队攻防时用它替换全局比分表。没有则仍用原来的频率表。</summary>
-    internal static void ApplyScoreline(MatchRecommendation rec, ScorelineModel? model)
+    internal static void ApplyScoreline(
+        MatchRecommendation rec, ScorelineModel? model,
+        decimal? spfHome = null, decimal? spfAway = null)
     {
         if (rec.RecResult is null)
         {
@@ -810,9 +820,13 @@ public static class RecommendationEngine
         if (IsSerieA(rec.LeagueName))
             line = Math.Max(line ?? 3.0m, 3.0m);
 
+        var margin = BigWinMargin(rec.RecResult, spfHome, spfAway, rec.TotalLine);
+        if (margin > 1 && !rec.SignalDesc.Contains("强热门大球", StringComparison.Ordinal))
+            rec.SignalDesc += $"；强热门大球（大小球 {rec.TotalLine:0.##}），比分看净胜 2 球以上";
+
         if (model is { Ready: true })
         {
-            var top = model.Top(rec.LeagueName, rec.HomeTeam, rec.AwayTeam, rec.RecResult.Value, line, rec.Handicap);
+            var top = model.Top(rec.LeagueName, rec.HomeTeam, rec.AwayTeam, rec.RecResult.Value, line, rec.Handicap, minMargin: margin);
             if (top.Count > 0)
             {
                 rec.ScoreCandidates = top.Select(s => $"{s.Home}:{s.Away}").ToList();
@@ -823,6 +837,6 @@ public static class RecommendationEngine
             }
         }
 
-        PredictScoreAndGoals(rec, rec.TotalLine, rec.Handicap);
+        PredictScoreAndGoals(rec, rec.TotalLine, rec.Handicap, margin);
     }
 }

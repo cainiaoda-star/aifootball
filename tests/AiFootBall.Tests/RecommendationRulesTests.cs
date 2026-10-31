@@ -346,6 +346,46 @@ public class RecommendationRulesTests
         Assert.Equal('1', RecommendationSelection.HandicapFromSpf('3', -1m));
         Assert.Equal('3', RecommendationSelection.HandicapFromSpf('3', -0.5m));
         Assert.Equal('0', RecommendationSelection.HandicapFromSpf('0', -1m));
+        // 主受让 +1：主胜 1:0 是让胜；客胜 0:1 是让平，不是让负
+        Assert.Equal('3', RecommendationSelection.HandicapFromSpf('3', 1m));
+        Assert.Equal('1', RecommendationSelection.HandicapFromSpf('0', 1m));
+    }
+
+    [Fact]
+    public void CoverLeg_PlusOne_UsesTheHandicapPrice()
+    {
+        // 不来梅 +1：胜平负 2.45 / 3.77 / 2.15，让球 1.50 / 4.40 / 4.08。
+        // 让胜只有 1.50，不是中高水，不能拿胜平负的 2.45 贴成让胜。
+        Assert.Null(RecommendationSelection.JcCoverTicket.TryLeg('3', 1m, 1.50m, 4.40m, 4.08m, 59m));
+        // 客胜按 0:1 折，+1 后是让平，不算打过盘。
+        Assert.Null(RecommendationSelection.JcCoverTicket.TryLeg('0', 1m, 1.50m, 4.40m, 4.08m, 60m));
+
+        var leg = RecommendationSelection.JcCoverTicket.TryLeg('3', 1m, 2.30m, 3.40m, 2.60m, 59m);
+        Assert.NotNull(leg);
+        Assert.Equal('3', leg.Value.Side);
+        Assert.Equal(2.30m, leg.Value.Odds);
+        Assert.Equal("让胜", leg.Value.Option);
+        Assert.Null(RecommendationSelection.JcCoverTicket.TryLeg('3', 1m, 2.30m, 3.40m, 2.60m, 32m));
+    }
+
+    [Fact]
+    public void CoverTicket_Chances_FourLegs()
+    {
+        // 4 场 2串1+3串1+4串1，11 注 22 元。每场 3.00、各一半机会：
+        // 中 2 场奖金 18（不回本），中 3 场 108，全中 486。
+        var legs = Enumerable.Repeat((3.00m, 0.5m), 4).ToList();
+        var c = RecommendationSelection.JcCoverTicket.Chances(legs);
+        Assert.Equal(11m / 16m, c.AnyPrize);
+        Assert.Equal(5m / 16m, c.BackStake);
+        Assert.Equal(1m / 16m, c.AllHit);
+    }
+
+    [Fact]
+    public void CoverTicket_LegProbability_FromHandicapPrices()
+    {
+        var p = RecommendationSelection.JcCoverTicket.LegProbability('3', 1.50m, 4.40m, 4.08m);
+        Assert.NotNull(p);
+        Assert.InRange(p!.Value, 0.58m, 0.64m);
     }
 
     [Fact]
@@ -376,7 +416,9 @@ public class RecommendationRulesTests
             RecResult = '3',
             SignalLevel = 3,
             Confidence = 85.7m,
-            HitProbability = 70m
+            HitProbability = 70m,
+            RecHandicap = '3',
+            HandicapProbability = 70m
         };
 
         var shown = RecommendationSelection.ForDisplay(Boards.Bd, weak.Append(strong).ToList());
@@ -499,6 +541,8 @@ public class RecommendationRulesTests
             SignalLevel = 2,
             Confidence = 70,
             HitProbability = 60m,
+            RecHandicap = '3',
+            HandicapProbability = 60m,
             ScoreCandidates = new List<string> { "1:0" }
         }).ToList();
 
@@ -510,7 +554,8 @@ public class RecommendationRulesTests
         {
             Assert.Empty(x.ScoreCandidates);
             Assert.False(x.PublishMarkets);
-            Assert.Null(x.RecHandicap);
+            // 北单只卖让球胜平负，要买的就是让球选项，不能清掉。
+            Assert.NotNull(x.RecHandicap);
         });
         Assert.Equal(RecommendationSelection.BdStrongLimit, shown.Count(x => x.IsFeatured));
         Assert.All(shown.Where(x => x.IsFeatured), x => Assert.True(int.Parse(x.MatchNo!) <= RecommendationSelection.BdStrongLimit));
@@ -527,19 +572,19 @@ public class RecommendationRulesTests
         var weak = Enumerable.Range(1, 10).Select(i =>
         {
             var r = Rec(Boards.Bd, i.ToString(), 2, 60m + i);
-            r.HitProbability = 55m + i;
+            r.HandicapProbability = 55m + i;
             return r;
         });
         var strong = Enumerable.Range(100, 5).Select(i =>
         {
             var r = Rec(Boards.Bd, i.ToString(), 3, 80m);
-            r.HitProbability = 80m;
+            r.HandicapProbability = 80m;
             return r;
         });
         var shown = RecommendationSelection.ForDisplay(Boards.Bd, weak.Concat(strong).ToList());
         Assert.Equal(RecommendationSelection.BdPublishLimit, shown.Count);
         Assert.Equal(RecommendationSelection.BdStrongLimit, shown.Count(x => x.IsFeatured));
-        Assert.All(shown.Where(x => x.HitProbability >= 80m), x => Assert.True(x.IsFeatured));
+        Assert.All(shown.Where(x => x.HandicapProbability >= 80m), x => Assert.True(x.IsFeatured));
     }
 
     [Fact]
@@ -574,6 +619,8 @@ public class RecommendationRulesTests
         SignalLevel = level,
         Confidence = conf,
         HitProbability = 60m,
+        RecHandicap = board == Boards.Bd ? '3' : null,
+        HandicapProbability = board == Boards.Bd ? 60m : null,
         ScoreCandidates = new List<string> { "1:0" }
     };
 
@@ -706,7 +753,7 @@ public class RecommendationRulesTests
     [Theory]
     [InlineData(Boards.Jc, 2, "2串1")]
     [InlineData(Boards.Jc, 3, "2串1 + 3串1")]
-    [InlineData(Boards.Jc, 4, "74 元")]
+    [InlineData(Boards.Jc, 4, "够几场出几场")]
     [InlineData(Boards.Bd, 4, null)]
     public void Jingcai_PassTip_SuggestsLowParlay(string board, int n, string? contains)
     {
@@ -729,6 +776,19 @@ public class RecommendationRulesTests
             DateTime.Parse(now), DateTime.Parse(kickoff)));
     }
 
+    [Theory]
+        [InlineData("周六017", "2026-10-31 17:56", true)]
+        [InlineData("周日001", "2026-10-31 17:56", false)]
+        [InlineData("周日001", "2026-10-31 22:10", true)]
+        [InlineData("周六020", "2026-11-01 08:30", true)]
+        [InlineData("周日001", "2026-11-01 08:30", true)]
+        [InlineData("周日001", "2026-11-01 09:00", true)]
+        [InlineData("周六017", "2026-11-01 09:00", false)]
+    public void JcSaleHours_Only_Todays_Issue(string matchNo, string now, bool today)
+    {
+        Assert.Equal(today, RecommendationSelection.JcSaleHours.IsTodaysIssue(matchNo, DateTime.Parse(now)));
+    }
+
     [Fact]
     public void CoverTicket_Is_Eight_Leg_74_Yuan()
     {
@@ -738,6 +798,10 @@ public class RecommendationRulesTests
 
         Assert.Equal(74m, RecommendationSelection.JcCoverTicket.Stake);
         Assert.Equal("6串1#7串1#8串1", RecommendationSelection.JcCoverTicket.Pass);
+        Assert.Equal("4串1#5串1#6串1", RecommendationSelection.JcCoverTicket.PassFor(6));
+        Assert.Equal(22, RecommendationSelection.JcCoverTicket.BetCountFor(6));
+        Assert.Equal(44m, RecommendationSelection.JcCoverTicket.StakeFor(6));
+        Assert.Equal(992m, RecommendationSelection.JcCoverTicket.AllHit(Enumerable.Repeat(2.00m, 6).ToArray()));
         Assert.Equal(6144m, ticket);
         Assert.Equal((1152m, 1152m), one);
         Assert.Equal((128m, 128m), two);

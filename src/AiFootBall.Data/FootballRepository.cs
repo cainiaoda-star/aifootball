@@ -160,6 +160,17 @@ WHEN NOT MATCHED THEN INSERT
         return map;
     }
 
+    /// <summary>北单这场开出的让球数（最近一张北单受注卡）。</summary>
+    public async Task<decimal?> GetBdHandicapAsync(long matchId, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.ExecuteScalarAsync<decimal?>(new CommandDefinition(
+            @"SELECT TOP 1 Handicap FROM dbo.BettingCard
+              WHERE Board = 'bd' AND MatchId = @id AND Handicap IS NOT NULL
+              ORDER BY CapturedAt DESC",
+            new { id = matchId }, cancellationToken: ct));
+    }
+
     /// <summary>场次号 → 最近一张受注卡的 MatchId（结算补链）。</summary>
     public async Task<long?> ResolveMatchIdByNoAsync(string? matchNo, CancellationToken ct = default)
     {
@@ -172,16 +183,35 @@ WHEN NOT MATCHED THEN INSERT
             new { no = matchNo.Trim() }, cancellationToken: ct));
     }
 
-    /// <summary>主客队名模糊匹配最近完场/赛程。</summary>
+    /// <summary>主客队名对齐最近一场。忽略空格和 FC、俱乐部、队这类后缀，不猜别名。</summary>
     public async Task<long?> ResolveMatchIdByTeamsAsync(string? home, string? away, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(home) || string.IsNullOrWhiteSpace(away)) return null;
+        var homeKey = TeamNames.Key(home);
+        var awayKey = TeamNames.Key(away);
+        if (homeKey.Length < 2 || awayKey.Length < 2) return null;
+
         await using var conn = await _factory.OpenAsync(ct);
-        return await conn.ExecuteScalarAsync<long?>(new CommandDefinition(
-            @"SELECT TOP 1 MatchId FROM dbo.FbMatch
-              WHERE HomeTeamName=@h AND AwayTeamName=@a
-              ORDER BY CASE WHEN Status=3 THEN 0 ELSE 1 END, MatchTime DESC",
-            new { h = home.Trim(), a = away.Trim() }, cancellationToken: ct));
+        var rows = await conn.QueryAsync<TeamNameHit>(new CommandDefinition(
+            @"SELECT TOP 80 MatchId, HomeTeamName, AwayTeamName
+              FROM dbo.FbMatch
+              WHERE (HomeTeamName = @h OR HomeTeamName LIKE @hLike)
+                AND (AwayTeamName = @a OR AwayTeamName LIKE @aLike)
+              ORDER BY CASE WHEN Status = 3 THEN 0 ELSE 1 END, MatchTime DESC",
+            new
+            {
+                h = home!.Trim(),
+                a = away!.Trim(),
+                hLike = TeamNames.ContainsPattern(homeKey),
+                aLike = TeamNames.ContainsPattern(awayKey)
+            }, cancellationToken: ct));
+
+        foreach (var row in rows)
+        {
+            if (TeamNames.Same(home, row.HomeTeamName) && TeamNames.Same(away, row.AwayTeamName))
+                return row.MatchId;
+        }
+
+        return null;
     }
 
     public async Task<List<LeagueStat>> GetLeagueStatsAsync(DateOnly from, DateOnly to, CancellationToken ct = default)
@@ -221,5 +251,12 @@ SELECT (SELECT COUNT(*) FROM dbo.FbMatch)                          AS MatchCount
        (SELECT CONVERT(varchar(10), MIN(MatchTime), 23) FROM dbo.FbMatch) AS FirstDate,
        (SELECT CONVERT(varchar(10), MAX(MatchTime), 23) FROM dbo.FbMatch) AS LastDate");
         return rows.ToList();
+    }
+
+    private sealed class TeamNameHit
+    {
+        public long MatchId { get; set; }
+        public string HomeTeamName { get; set; } = "";
+        public string AwayTeamName { get; set; } = "";
     }
 }

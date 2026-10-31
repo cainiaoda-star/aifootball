@@ -124,6 +124,87 @@ internal static class Program
                     return 0;
                 }
 
+                case "jcback":
+                {
+                    // 竞彩历史最终固定奖金：jcback --date 2026-10-30，或 --from 2026-10-01 --to 2026-10-30
+                    var to = opts.TryGetValue("to", out var toText) && DateOnly.TryParse(toText, out var toDay)
+                        ? toDay : DateOnly.FromDateTime(DateTime.Today.AddDays(-1));
+                    var from = opts.TryGetValue("from", out var fromText) && DateOnly.TryParse(fromText, out var fromDay)
+                        ? fromDay : to;
+                    if (opts.TryGetValue("date", out var oneText) && DateOnly.TryParse(oneText, out var one))
+                        from = to = one;
+                    var total = 0;
+                    for (var day = to; day >= from; day = day.AddDays(-1))
+                    {
+                        var r = await recService.BackfillJcDayAsync(day);
+                        Console.WriteLine(r.Message);
+                        total += r.Rows;
+                        await Task.Delay(1500);
+                    }
+                    Console.WriteLine($"竞彩回填完成，共写入 {total} 个选项");
+                    return 0;
+                }
+
+                case "bdback":
+                {
+                    // 北单历史开奖：bdback --expect 26108，或 --from 2024-01 --to 2026-10（逐月试第 1..9 期）。
+                    // 期号 = 两位年 + 两位月 + 期序：26091 是 2026 年 9 月第 1 期，26011 是 1 月第 1 期。
+                    await RecommendationSchema.EnsureAsync(factory);
+                    var bdRepo = new BdHistoryRepository(factory);
+                    var expects = new List<int>();
+                    if (opts.TryGetValue("expect", out var exText) && int.TryParse(exText, out var ex))
+                        expects.Add(ex);
+                    else
+                    {
+                        var toMonth = opts.TryGetValue("to", out var tm) && DateTime.TryParse(tm + "-01", out var tmd)
+                            ? tmd : new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+                        var fromMonth = opts.TryGetValue("from", out var fm) && DateTime.TryParse(fm + "-01", out var fmd)
+                            ? fmd : toMonth;
+                        for (var m = toMonth; m >= fromMonth; m = m.AddMonths(-1))
+                            expects.Add(-int.Parse($"{m:yyMM}"));
+                    }
+
+                    var done = opts.ContainsKey("force") ? new HashSet<int>() : await bdRepo.GetExpectsAsync();
+                    int issues = 0, saved = 0;
+                    async Task<int> One(int expect)
+                    {
+                        var watch = System.Diagnostics.Stopwatch.StartNew();
+                        var rows = await cardSource.FetchBdIssueAsync(expect);
+                        await Task.Delay(1500);
+                        // 被限流时页面也是空的，和期号不存在分不开，先等一会再试一次
+                        if (rows.Count == 0)
+                        {
+                            await Task.Delay(5000);
+                            rows = await cardSource.FetchBdIssueAsync(expect);
+                            await Task.Delay(1500);
+                        }
+                        if (rows.Count == 0)
+                        {
+                            Console.WriteLine($"北单 {expect}：空（{watch.Elapsed.TotalSeconds:F0}s）");
+                            return 0;
+                        }
+                        var n = await bdRepo.UpsertAsync(rows);
+                        issues++; saved += n;
+                        Console.WriteLine($"北单 {expect}：{rows.Count} 场，有比分 {rows.Count(r => r.HomeScore != null)}，有开奖 SP {rows.Count(r => r.ResultSp != null)}（{watch.Elapsed.TotalSeconds:F0}s）");
+                        return rows.Count;
+                    }
+
+                    foreach (var e in expects)
+                    {
+                        if (e > 0) { await One(e); continue; }
+                        var prefix = -e;
+                        var misses = 0;
+                        for (var k = 1; k <= 9 && misses < 2; k++)
+                        {
+                            var expect = prefix * 10 + k;
+                            if (done.Contains(expect)) { misses = 0; continue; }
+                            misses = await One(expect) == 0 ? misses + 1 : 0;
+                        }
+                    }
+                    Console.WriteLine($"北单回填完成：{issues} 期，写入 {saved} 场");
+                    return 0;
+                }
+
                 case "cards":
                 {
                     var (jc, bd, sfc) = await recService.CollectCardsAsync();

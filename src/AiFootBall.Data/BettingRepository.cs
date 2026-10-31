@@ -324,7 +324,12 @@ public sealed class BettingRepository
                      END AS Band,
                      COUNT(*) AS Total,
                      SUM(CASE WHEN r.Hit = 1 THEN 1 ELSE 0 END) AS Hits
-              FROM dbo.Recommendation r
+              FROM (
+                  SELECT *, ROW_NUMBER() OVER (
+                      PARTITION BY Board, MatchId ORDER BY CreatedAt DESC, RecId DESC) AS rn
+                  FROM dbo.Recommendation
+                  WHERE MatchId IS NOT NULL
+              ) r
               JOIN (
                   SELECT MatchId,
                          MAX(CASE WHEN IsOpening = 0 THEN HomeWin END) AS HomeWin,
@@ -338,7 +343,8 @@ public sealed class BettingRepository
                                WHEN '3' THEN eu.HomeWin
                                WHEN '1' THEN eu.Draw
                                ELSE eu.AwayWin END AS picked) p
-              WHERE r.IsCoverAll = 0
+              WHERE r.rn = 1
+                AND r.IsCoverAll = 0
                 AND r.RecResult IN ('3','1','0')
                 AND r.Hit IS NOT NULL
                 AND r.Confidence >= 60
@@ -473,19 +479,24 @@ public sealed class BettingRepository
                     Expect=@e, MatchId=@mid, HomeTeam=@h, AwayTeam=@a, MatchTime=@mt,
                     RecResult=@r, Confidence=@c, SignalLevel=@lv, IsCoverAll=@cover, SignalDesc=@desc,
                     Score1=@s1, Score2=@s2, Goals1=@g1, Goals2=@g2, RecHandicap=@rh, RecHalfFull=@hf,
+                    Handicap=@hcp,
+                    ActualScore = CASE WHEN t.MatchId = @mid THEN t.ActualScore END,
+                    ActualGoals = CASE WHEN t.MatchId = @mid THEN t.ActualGoals END,
+                    ActualResult = CASE WHEN t.MatchId = @mid THEN t.ActualResult END,
                     Hit = CASE
-                        WHEN @cover = 1 OR @r IS NULL OR t.ActualResult IS NULL THEN NULL
-                        WHEN t.ActualResult = @r THEN 1 ELSE 0 END
+                        WHEN @cover = 1 OR @r IS NULL OR t.ActualResult IS NULL OR t.MatchId <> @mid OR @mid IS NULL THEN NULL
+                        WHEN t.ActualResult = @r THEN 1 ELSE 0 END,
+                    HandicapHit = NULL
                   WHEN NOT MATCHED THEN INSERT
-                    (Board, Expect, MatchId, MatchNo, HomeTeam, AwayTeam, MatchTime, RecResult, Confidence, SignalLevel, IsCoverAll, SignalDesc, Score1, Score2, Goals1, Goals2, RecHandicap, RecHalfFull, RecDate)
-                    VALUES (@b, @e, @mid, @no, @h, @a, @mt, @r, @c, @lv, @cover, @desc, @s1, @s2, @g1, @g2, @rh, @hf, @rd);",
+                    (Board, Expect, MatchId, MatchNo, HomeTeam, AwayTeam, MatchTime, RecResult, Confidence, SignalLevel, IsCoverAll, SignalDesc, Score1, Score2, Goals1, Goals2, RecHandicap, RecHalfFull, Handicap, RecDate)
+                    VALUES (@b, @e, @mid, @no, @h, @a, @mt, @r, @c, @lv, @cover, @desc, @s1, @s2, @g1, @g2, @rh, @hf, @hcp, @rd);",
                 new
                 {
                     b = r.Board, e = r.Expect, mid = r.MatchId, no = r.MatchNo,
                     h = r.HomeTeam, a = r.AwayTeam, mt = r.MatchTime, r = r.RecResult,
                     c = r.Confidence, lv = r.SignalLevel, cover = r.IsCoverAll, desc = r.SignalDesc,
                     s1 = r.Score1, s2 = r.Score2, g1 = r.Goals1, g2 = r.Goals2,
-                    rh = r.RecHandicap, hf = r.RecHalfFull, rd = r.RecDate
+                    rh = r.RecHandicap, hf = r.RecHalfFull, hcp = r.Handicap, rd = r.RecDate
                 }, cancellationToken: ct));
         }
     }
@@ -544,14 +555,15 @@ public sealed class BettingRepository
     }
 
     /// <summary>回填一条推荐的实际赛果与命中</summary>
-    public async Task BackfillResultAsync(long recId, string actualScore, int actualGoals, char actualResult, bool? hit, CancellationToken ct = default)
+    public async Task BackfillResultAsync(long recId, string actualScore, int actualGoals, char actualResult, bool? hit,
+        bool? handicapHit = null, CancellationToken ct = default)
     {
         await using var conn = await _factory.OpenAsync(ct);
         await conn.ExecuteAsync(new CommandDefinition(
             @"UPDATE dbo.Recommendation
-              SET ActualScore=@s, ActualGoals=@g, ActualResult=@r, Hit=@h
+              SET ActualScore=@s, ActualGoals=@g, ActualResult=@r, Hit=@h, HandicapHit=@hh
               WHERE RecId=@id",
-            new { id = recId, s = actualScore, g = actualGoals, r = actualResult, h = hit }, cancellationToken: ct));
+            new { id = recId, s = actualScore, g = actualGoals, r = actualResult, h = hit, hh = handicapHit }, cancellationToken: ct));
     }
 
     /// <summary>取某日已保存的推荐记录（含赛果，用于复盘）</summary>
@@ -563,12 +575,19 @@ public sealed class BettingRepository
             new { d = date.Date }, cancellationToken: ct))).ToList();
     }
 
-    /// <summary>取尚未回填赛果的推荐记录</summary>
+    /// <summary>取尚未回填赛果、或回填的比分和完场比分对不上的推荐记录</summary>
     public async Task<List<RecommendationRecord>> GetUnsettledRecommendationsAsync(CancellationToken ct = default)
     {
         await using var conn = await _factory.OpenAsync(ct);
         return (await conn.QueryAsync<RecommendationRecord>(new CommandDefinition(
-            @"SELECT * FROM dbo.Recommendation WHERE ActualResult IS NULL AND MatchId IS NOT NULL",
+            @"SELECT r.* FROM dbo.Recommendation r
+              LEFT JOIN dbo.FbMatch f ON f.MatchId = r.MatchId AND f.Status = 3
+              WHERE r.MatchId IS NOT NULL
+                AND (r.ActualResult IS NULL
+                     OR (r.RecHandicap IS NOT NULL AND r.Handicap IS NOT NULL AND r.HandicapHit IS NULL)
+                     OR (f.MatchId IS NOT NULL AND (
+                         ISNULL(r.ActualScore, '') <> CONCAT(f.HomeScore, '-', f.AwayScore)
+                         OR r.ActualResult <> f.ResultSpf)))",
             cancellationToken: ct))).ToList();
     }
 

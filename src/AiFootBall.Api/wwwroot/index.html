@@ -615,9 +615,10 @@ $('#refreshBtn').onclick = () => {
 
 const RESULT_TEXT = {'3':'主胜','1':'平局','0':'客胜'};
 
-function resultTag(r){
+function resultTag(r, text){
   if(!r) return '<span class="result-tag r-all">全包</span>';
-  return `<span class="result-tag r-${r}">${RESULT_TEXT[r]}</span>`;
+  const label = text && String(text).startsWith('让') ? text : RESULT_TEXT[r];
+  return `<span class="result-tag r-${r}">${label}</span>`;
 }
 function lvlTag(l){
   const label = l===3?'强信号':l===2?'信号':'弱';
@@ -652,18 +653,24 @@ function stakePlanHtml(b){
   const p = b.stakePlan;
   if(b.board !== 'jc' || !p) return '';
   if(!p.ready){
-    return `<div class="stake-box"><h3>74 元票组不出来</h3>
-      <p>要 8 场让球中高水（2.20–4.20），现在只有 ${p.have || 0} 场。上面的低水胜平负不拿来凑。</p></div>`;
+    return `<div class="stake-box"><h3>让球中高水还没有场</h3>
+      <p>水位要在 2.20–4.20，低水胜平负不拿来凑。</p></div>`;
   }
+  const n = p.legCount || (p.lines || []).length;
   const lines = (p.lines || []).map(l =>
     `<li>${esc(l.matchNo || '')} ${esc(l.homeTeam || '')} vs ${esc(l.awayTeam || '')} · ${esc(l.option || '')} ${Number(l.odds).toFixed(2)}${l.handicap != null && l.handicap !== '' ? ' · 让' + hcpText(l.handicap) : ''}${l.hitProbability != null ? ' · 预计 ' + Number(l.hitProbability).toFixed(1) + '%' : ''}</li>`
   ).join('');
+  const pct = v => v == null ? '—' : Number(v).toFixed(1) + '%';
+  const chance = p.chanceBackStake != null
+    ? `<p class="stake-chance">按让球赔率去水估：有奖金 <b>${pct(p.chanceAnyPrize)}</b> · 奖金不少于 ${p.stake} 元 <b>${pct(p.chanceBackStake)}</b> · 全中 <b>${pct(p.chanceAllHit)}</b>。这是盘口给的概率，不是保证。</p>`
+    : '';
   return `<div class="stake-box">
-    <h3>74 元票 · 8 场让球中高水 · 6串1+7串1+8串1</h3>
-    <p>37 注，每注 2 元，共 74 元。让球要打过盘口才算中。上面那 8 场低水胜平负不进这张票。</p>
+    <h3>${p.stake} 元票 · ${n} 场让球中高水 · ${esc(p.passType || '')}</h3>
+    <p>${p.betCount} 注，每注 2 元，共 ${p.stake} 元。让球要打过盘口才算中。够几场出几场，最多 8 场。低水胜平负不进这张票。</p>
+    ${chance}
     <ul class="stake-lines">${lines}</ul>
-    <p>八场都过盘约 <b>${p.allHit}</b> 元。错一场还剩 <b>${p.missLow}</b>–<b>${p.missHigh}</b> 元。错两场还剩 <b>${p.miss2Low}</b>–<b>${p.miss2High}</b> 元。</p>
-    <button type="button" class="btn btn-primary" data-fill-stake="1">把这 8 场填进投注单</button>
+    <p>${n} 场都过盘约 <b>${p.allHit}</b> 元。错一场还剩 <b>${p.missLow}</b>–<b>${p.missHigh}</b> 元。错两场还剩 <b>${p.miss2Low}</b>–<b>${p.miss2High}</b> 元。</p>
+    <button type="button" class="btn btn-primary" data-fill-stake="1">把这 ${n} 场填进投注单</button>
   </div>`;
 }
 function slateMeta(b, items){
@@ -674,7 +681,7 @@ function slateMeta(b, items){
   }
   if(b.board === 'bd'){
     const strong = items.filter(it => it.isFeatured).length;
-    return ` · 最多 11 场 · 强推荐 <b>${strong}</b> 场 · 只发胜平负`;
+    return ` · 最多 11 场 · 强推荐 <b>${strong}</b> 场 · 北单只卖让球胜平负，按开出的让球数推`;
   }
   return '';
 }
@@ -776,7 +783,7 @@ function renderBoard(b, strongOnly){
   } else {
     html += `<table class="tbl"><thead><tr>
         ${pickable ? '<th>勾选</th>' : ''}
-        <th>场次</th><th>对阵</th><th>胜平负</th>
+        <th>场次</th><th>对阵</th><th>${bd ? '让球胜平负' : '胜平负'}</th>
         <th>预计命中</th><th>水位</th><th>依据</th>
       </tr></thead><tbody>`;
     for(const it of items){
@@ -789,7 +796,7 @@ function renderBoard(b, strongOnly){
         <td class="match-no">${it.matchNo}${feat}</td>
         <td><div class="teams">${it.homeTeam}<span class="vs">VS</span>${it.awayTeam}</div>
             <div class="league">${it.leagueName||''} ${tm}${hcp ? ' · 让' + hcp : ''}</div></td>
-        <td>${resultTag(it.result)}</td>
+        <td>${resultTag(it.result, it.resultText)}${it.handicapOdds ? `<div class="league">SP ${Number(it.handicapOdds).toFixed(2)}</div>` : ''}</td>
         <td><span class="conf"><b>${rate}</b></span>${lvlTag(it.signalLevel)}</td>
         <td class="water" data-mid="${it.matchId||''}" data-mno="${it.matchNo||''}"></td>
         <td class="signal">${it.signalDesc}</td>
@@ -809,7 +816,7 @@ function renderBoard(b, strongOnly){
         ${pickable ? `<div class="pick-cell" style="margin:6px 0">${pickCheckboxHtml(b.board,'spf',it)}</div>` : ''}
         <div class="m-teams">${it.homeTeam}<span class="vs">VS</span>${it.awayTeam}</div>
         <div class="m-time">${tm}${hcp ? ' · 让球 ' + hcp : ''}</div>
-        <div class="m-row"><span class="lbl">胜平负</span>${resultTag(it.result)}</div>
+        <div class="m-row"><span class="lbl">${bd ? '让球胜平负' : '胜平负'}</span>${resultTag(it.result, it.resultText)}${it.handicapOdds ? ` SP ${Number(it.handicapOdds).toFixed(2)}` : ''}</div>
         <div class="m-row"><span class="lbl">预计命中</span><span class="val">${it.hitProbability!=null ? Number(it.hitProbability).toFixed(1)+'%' : confText(it.confidence)}${lvlTag(it.signalLevel)}</span></div>
         <div class="m-row"><span class="lbl">水位</span><span class="water" data-mid="${it.matchId||''}" data-mno="${it.matchNo||''}"></span></div>
         <div class="m-signal">${it.signalDesc}</div>
@@ -1146,7 +1153,7 @@ function goBetFromPicks(board, kind){
         matchNo: it.matchNo,
         home: it.homeTeam,
         away: it.awayTeam,
-        handicap: '',
+        handicap: board === 'bd' && !isScore && it.handicap != null ? String(it.handicap) : '',
         option1: isScore ? (scores[0] || '') : spfOptionFromItem(it),
         option2: isScore ? (scores[1] || '') : '',
         odds1: '', odds2: ''
@@ -1796,9 +1803,9 @@ async function fillJcStakePlan(plan){
     if(!$('#nbBoard')){ setTimeout(tryFill, 50); return; }
     $('#nbBoard').value = 'jc';
     $('#nbPlay').value = '让球胜平负';
-    $('#nbPass').value = plan.passType || '6串1#7串1#8串1';
+    $('#nbPass').value = plan.passType || '';
     $('#nbMult').value = plan.multiple || 1;
-    $('#nbAmount').value = plan.stake || 74;
+    $('#nbAmount').value = plan.stake || '';
     $('#nbExpected').value = plan.allHit || '';
     const tbody = $('#nbLines');
     tbody.innerHTML = '';
@@ -1812,7 +1819,7 @@ async function fillJcStakePlan(plan){
       option2: ''
     }));
     const msg = $('#nbMsg');
-    if(msg) msg.textContent = `已填入 74 元中高水让球票，${plan.passType}，${plan.multiple} 倍。全中约 ${plan.allHit} 元，错一场约 ${plan.missLow}–${plan.missHigh} 元，错两场约 ${plan.miss2Low}–${plan.miss2High} 元。请核对后保存`;
+    if(msg) msg.textContent = `已填入 ${plan.stake} 元中高水让球票，${(plan.lines||[]).length} 场，${plan.passType}，${plan.multiple} 倍。全中约 ${plan.allHit} 元，错一场约 ${plan.missLow}–${plan.missHigh} 元，错两场约 ${plan.miss2Low}–${plan.miss2High} 元。请核对后保存`;
     const form = document.querySelector('details.bet-form');
     if(form) form.open = true;
   };
