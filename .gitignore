@@ -1,0 +1,16 @@
+bin/
+obj/
+node_modules/
+_run/
+.vs/
+*.user
+.workbuddy/
+
+# 数据库口令只留在本机，不进仓库
+**/appsettings.json
+
+# 这几个探针源码里写了连接串
+_probe/SqlProbe/Program.cs
+_probe/RecDiag/Program.cs
+_probe/BdTop11/Program.cs
+_probe/JcDiag/Program.cs

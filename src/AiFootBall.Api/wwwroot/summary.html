@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AiFootBall · 复盘总结</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c232c; --line:#272e38;
+    --text:#e6edf3; --dim:#8b949e; --accent:#4c9aff;
+    --red:#ff6b6b; --green:#3fb950; --amber:#f0a04b; --purple:#b48cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;font-size:14px}
+  button{font-family:inherit}
+
+  .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(1200px 600px at 50% -10%, #1a2333 0%, #0d1117 60%)}
+  .login-card{width:360px;max-width:calc(100vw - 40px);background:var(--panel);border:1px solid var(--line);
+    border-radius:16px;padding:36px 32px}
+  .login-card h1{margin:0 0 6px;font-size:22px}
+  .login-card h1 span{color:var(--accent)}
+  .login-card .sub{color:var(--dim);font-size:13px;margin-bottom:26px}
+  .login-card label{display:block;font-size:12px;color:var(--dim);margin:14px 0 6px}
+  .login-card input{width:100%;padding:11px 12px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:8px;color:var(--text);font-size:14px;outline:none}
+  .login-card input:focus{border-color:var(--accent)}
+  .login-card button{width:100%;padding:12px;margin-top:22px;background:var(--accent);
+    color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}
+  .login-card .msg{color:var(--red);font-size:12px;margin-top:12px;min-height:16px}
+  .login-card .hint{color:var(--dim);font-size:12px;margin-top:16px;text-align:center}
+
+  header{display:flex;align-items:center;justify-content:space-between;
+    padding:14px 24px;border-bottom:1px solid var(--line);background:var(--panel);
+    position:sticky;top:0;z-index:10}
+  header h1{margin:0;font-size:18px}
+  header h1 span{color:var(--accent)}
+  .user-box{display:flex;align-items:center;gap:12px}
+  .user-box .nick{color:var(--dim);font-size:13px}
+  .user-box button{padding:6px 14px;background:transparent;border:1px solid var(--line);
+    color:var(--dim);border-radius:6px;cursor:pointer;font-size:13px}
+  .user-box button:hover{color:var(--text)}
+
+  main{padding:18px 24px 60px;max-width:1100px;margin:0 auto}
+
+  .topbar{display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap}
+  .topbar .date{color:var(--dim);font-size:13px}
+  .topbar a{color:var(--accent);text-decoration:none;font-size:13px}
+  .topbar a:hover{text-decoration:underline}
+  .topbar button{padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer}
+  .topbar button:disabled{opacity:.4;cursor:default}
+
+  .stats{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:22px}
+  .stat-card{flex:1;min-width:140px;background:var(--panel);border:1px solid var(--line);
+    border-radius:12px;padding:16px 20px}
+  .stat-card .s-label{font-size:12px;color:var(--dim)}
+  .stat-card .s-val{font-size:26px;font-weight:700;margin-top:4px}
+  .stat-card .s-val.win{color:var(--red)}
+  .stat-card .s-val.lose{color:var(--green)}
+
+  .match-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    margin-bottom:18px;overflow:hidden}
+  .match-head{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line);
+    flex-wrap:wrap}
+  .match-head .no{font-size:12px;color:var(--dim)}
+  .match-head .lg{font-size:12px;color:var(--dim)}
+  .match-head .time{font-size:12px;color:var(--dim)}
+  .hit-badge{display:inline-block;padding:4px 12px;border-radius:6px;font-weight:700;font-size:13px}
+  .hit-badge.yes{background:#3a2323;color:#ff8080}
+  .hit-badge.no{background:#233a2b;color:#5ccd75}
+
+  .match-body{padding:18px 20px}
+  .teams{font-size:18px;font-weight:600;text-align:center;margin-bottom:16px}
+  .teams .vs{color:var(--dim);font-weight:400;margin:0 10px}
+
+  .score-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}
+  .score-cell{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+    padding:14px;text-align:center}
+  .score-cell .k{font-size:12px;color:var(--dim);margin-bottom:8px}
+  .score-cell .v{font-size:24px;font-weight:700;letter-spacing:1px}
+  .score-cell .v.big{font-size:30px;color:var(--amber)}
+
+  .cmp-table{width:100%;border-collapse:collapse;font-size:13px}
+  .cmp-table th{color:var(--dim);font-size:12px;font-weight:500;text-align:left;
+    padding:8px 10px;border-bottom:1px solid var(--line)}
+  .cmp-table td{padding:8px 10px;border-bottom:1px solid var(--line)}
+  .cmp-table tr:last-child td{border-bottom:none}
+  .cmp-table .lbl{color:var(--dim)}
+  .cmp-table .rec{color:var(--accent)}
+  .cmp-table .act{color:var(--amber);font-weight:600}
+  .cmp-table .hit-y{color:var(--red);font-weight:700}
+  .cmp-table .hit-n{color:var(--green);font-weight:700}
+
+  .signal{margin-top:14px;font-size:12px;color:var(--dim);line-height:1.5}
+  .odds-note{color:var(--dim);font-weight:650}
+  .odds-note.hit{color:#ff8080;background:#3a2323;border-radius:4px;padding:1px 6px}
+  .analysis{margin-top:12px;padding:12px 14px;border-radius:8px;font-size:13px;line-height:1.7;
+    background:#1f2b3d;border:1px solid #2c3a52;color:var(--text)}
+  .analysis::before{content:"复盘分析";display:block;font-size:11px;font-weight:700;
+    color:var(--accent);margin-bottom:6px;letter-spacing:1px}
+  .bought{margin-top:10px;font-size:12px;color:var(--dim)}
+  .bought .opt{display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:5px;
+    background:var(--panel2);border:1px solid var(--line);color:var(--text)}
+
+  .empty{padding:40px;text-align:center;color:var(--dim);background:var(--panel);
+    border:1px solid var(--line);border-radius:14px}
+
+  @media (max-width: 640px){
+    main{padding:14px 12px 60px}
+    .score-grid{grid-template-columns:repeat(3,1fr);gap:8px}
+    .score-cell .v{font-size:20px}
+    .score-cell .v.big{font-size:24px}
+    .teams{font-size:16px}
+  }
+</style>
+</head>
+<body>
+
+<div id="loginView" class="login-wrap" style="display:none">
+  <div class="login-card">
+    <h1>AiFoot<span>Ball</span></h1>
+    <div class="sub">复盘总结 · 已完场推荐回顾</div>
+    <label>用户名</label>
+    <input id="loginUser" type="text" placeholder="请输入用户名" autocomplete="username" />
+    <label>密码</label>
+    <input id="loginPass" type="password" placeholder="请输入密码" autocomplete="current-password" />
+    <button id="loginBtn">登 录</button>
+    <div class="msg" id="loginMsg"></div>
+    <div class="hint">首次使用？输入用户名和密码后点击登录，将自动注册新账号。</div>
+  </div>
+</div>
+
+<div id="mainView" style="display:none">
+  <header>
+    <h1>AiFoot<span>Ball</span> · 复盘总结</h1>
+    <div class="user-box">
+      <span class="nick" id="nickName"></span>
+      <button id="logoutBtn">退出</button>
+    </div>
+  </header>
+  <main>
+    <div class="topbar">
+      <button type="button" id="sumPrev">前一天</button>
+      <span class="date" id="dateLabel"></span>
+      <button type="button" id="sumNext">后一天</button>
+      <a href="/">← 返回今日推荐</a>
+    </div>
+    <div id="stats"></div>
+    <div id="list"></div>
+  </main>
+</div>
+
+<script>
+const API = '';
+const $ = s => document.querySelector(s);
+const TOKEN_KEY = 'aifb_token';
+
+function getStoredToken(){ return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || ''; }
+function storeToken(t){ if(t) localStorage.setItem(TOKEN_KEY, t); }
+function clearToken(){ localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); }
+
+let token = getStoredToken();
+
+function showLogin(){ $('#loginView').style.display='flex'; $('#mainView').style.display='none'; }
+function showMain(){ $('#loginView').style.display='none'; $('#mainView').style.display='block'; }
+
+async function api(path, opts={}){
+  const headers = {'Content-Type':'application/json'};
+  if(token) headers['Authorization'] = 'Bearer ' + token;
+  const res = await fetch(API + path, {...opts, headers});
+  if(res.status === 401){ token=''; clearToken(); showLogin(); throw new Error('unauthorized'); }
+  return res.json();
+}
+
+$('#loginBtn').onclick = async () => {
+  const u = $('#loginUser').value.trim();
+  const p = $('#loginPass').value;
+  if(!u || !p){ $('#loginMsg').textContent = '请输入用户名和密码'; return; }
+  $('#loginMsg').textContent = '';
+  try{
+    let res = await fetch(API + '/api/auth/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({userName:u, password:p})
+    });
+    if(res.status === 401){
+      res = await fetch(API + '/api/auth/register', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({userName:u, password:p, nickName:u})
+      });
+    }
+    if(!res.ok){ const e = await res.json(); $('#loginMsg').textContent = e.message || '登录失败'; return; }
+    const data = await res.json();
+    token = data.token;
+    storeToken(token);
+    $('#nickName').textContent = data.nickName || data.userName;
+    showMain();
+    loadSummary();
+  }catch(err){ $('#loginMsg').textContent = '网络错误：' + err.message; }
+};
+
+$('#loginPass').onkeydown = e => { if(e.key==='Enter') $('#loginBtn').click(); };
+
+$('#logoutBtn').onclick = () => { token=''; clearToken(); showLogin(); };
+
+const SPF = {'3':'主胜','1':'平局','0':'客胜'};
+
+function fmtTime(t){
+  if(!t) return '';
+  return new Date(t).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+
+function renderStats(d){
+  const win = d.hitRate >= 50;
+  $('#stats').innerHTML = `<div class="stats">
+    <div class="stat-card"><div class="s-label">已完场推荐</div><div class="s-val">${d.total}</div></div>
+    <div class="stat-card"><div class="s-label">命中场次</div><div class="s-val win">${d.hit}</div></div>
+    <div class="stat-card"><div class="s-label">命中率</div><div class="s-val ${win?'win':'lose'}">${d.hitRate}%</div><div class="s-sub">${d.hitLow!=null ? `区间 ${d.hitLow}%–${d.hitHigh}%` : ''}</div></div>
+  </div>`;
+}
+
+function oddsNoteHit(note, it){
+  const label = String(note).split('：')[0];
+  const full = `${it.fullHome}:${it.fullAway}`;
+  if(label.startsWith('最终比分')) return true;
+  if(label.startsWith('比分 ')) return label.slice(3).trim() === full;
+  if(label.includes('/')) return label === it.halfFull;
+  return !!it.hit && label === it.recResultText;
+}
+function renderItem(it){
+  const hcp = it.handicap==null ? '' : (it.handicap>0?'+'+it.handicap:it.handicap);
+  const half = it.halfHome!=null && it.halfAway!=null ? `${it.halfHome}:${it.halfAway}` : '—';
+  const full = `${it.fullHome}:${it.fullAway}`;
+  const halfFull = it.halfFull || '—';
+  const goals = it.totalGoals ?? '—';
+  const bought = it.boughtOptions && it.boughtOptions.length
+    ? it.boughtOptions.map(o=>`<span class="opt">${o}</span>`).join('') : '未投注';
+
+  const recScore = [it.recScore1, it.recScore2].filter(Boolean).join('、') || '—';
+  const recGoals = [it.recGoals1, it.recGoals2].filter(g=>g!=null).join('、') || '—';
+
+  return `<div class="match-card">
+    <div class="match-head">
+      <span class="no">${it.matchNo||''}</span>
+      <span class="lg">${it.leagueName||''}</span>
+      <span class="time">${fmtTime(it.matchTime)}${hcp?' · 让球 '+hcp:''}</span>
+      <span style="flex:1"></span>
+      <span class="hit-badge ${it.hit?'yes':'no'}">${it.hit?'✓ 命中':'✗ 未中'}</span>
+    </div>
+    <div class="match-body">
+      <div class="teams">${it.homeTeam}<span class="vs">VS</span>${it.awayTeam}</div>
+      ${(it.oddsNotes && it.oddsNotes.length) ? `<div class="signal">赔率：${it.oddsNotes.map(x => `<span class="odds-note${oddsNoteHit(x, it)?' hit':''}">${x}</span>`).join(' · ')}</div>` : ''}
+      <div class="score-grid">
+        <div class="score-cell"><div class="k">全场比分</div><div class="v big">${full}</div></div>
+        <div class="score-cell"><div class="k">半场比分</div><div class="v">${half}</div></div>
+        <div class="score-cell"><div class="k">半全场</div><div class="v">${halfFull}</div></div>
+      </div>
+      <table class="cmp-table">
+        <thead><tr><th>维度</th><th>推荐</th><th>实际</th><th>结果</th></tr></thead>
+        <tbody>
+          <tr><td class="lbl">胜平负</td><td class="rec">${it.recResultText}</td><td class="act">${it.actualResultText}</td>
+            <td class="${it.hit?'hit-y':'hit-n'}">${it.hit?'命中':'未中'}</td></tr>
+          <tr><td class="lbl">比分</td><td class="rec">${recScore}</td><td class="act">${full}</td>
+            <td class="lbl">${it.recScore1===full || it.recScore2===full ? '命中' : '未中'}</td></tr>
+          <tr><td class="lbl">总进球</td><td class="rec">${recGoals}</td><td class="act">${goals}</td>
+            <td class="lbl">${(it.recGoals1===it.totalGoals||it.recGoals2===it.totalGoals)?'命中':'未中'}</td></tr>
+          <tr><td class="lbl">置信度</td><td class="rec">${Math.round(it.confidence||0)}%</td><td class="act">—</td><td class="lbl">—</td></tr>
+        </tbody>
+      </table>
+      ${it.signalDesc ? `<div class="signal">信号依据：${it.signalDesc}</div>` : ''}
+      ${it.analysis ? `<div class="analysis">${it.analysis}</div>` : ''}
+      <div class="bought">你购买的选项：${bought}</div>
+    </div>
+  </div>`;
+}
+
+function localYmd(d){
+  const z = new Date(d.getTime() - d.getTimezoneOffset()*60000);
+  return z.toISOString().slice(0,10);
+}
+function shiftYmd(ymd, days){
+  const [y,m,da] = ymd.split('-').map(Number);
+  const dt = new Date(y, m-1, da);
+  dt.setDate(dt.getDate()+days);
+  return localYmd(dt);
+}
+function defaultSummaryDate(){
+  const d = new Date();
+  if(d.getHours() < 12) d.setDate(d.getDate()-1);
+  return localYmd(d);
+}
+let summaryDate = defaultSummaryDate();
+
+async function loadSummary(){
+  try{
+    const d = await api('/api/summary/finished?date=' + encodeURIComponent(summaryDate));
+    summaryDate = d.date || summaryDate;
+    $('#dateLabel').textContent = '复盘日期：' + d.date;
+    const next = $('#sumNext');
+    if(next) next.disabled = d.date >= localYmd(new Date());
+    renderStats(d);
+    if(!d.items || d.items.length === 0){
+      $('#list').innerHTML = `<div class="empty">${d.date} 还没有已完场的推荐场次</div>`;
+      return;
+    }
+    $('#list').innerHTML = d.items.map(renderItem).join('');
+  }catch(err){
+    if(err.message !== 'unauthorized') $('#list').innerHTML = `<div class="empty">加载失败：${err.message}</div>`;
+  }
+}
+
+$('#sumPrev').onclick = () => { summaryDate = shiftYmd(summaryDate, -1); loadSummary(); };
+$('#sumNext').onclick = () => { if(!$('#sumNext').disabled){ summaryDate = shiftYmd(summaryDate, 1); loadSummary(); } };
+
+if(token){
+  showMain();
+  api('/api/auth/me').then(d=>{ $('#nickName').textContent = d.nickName || d.userName; }).catch(()=>{});
+  loadSummary();
+} else { showLogin(); }
+</script>
+</body>
+</html>

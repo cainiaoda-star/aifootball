@@ -1,0 +1,26 @@
+[
+  {
+    "name": "odds-sample",
+    "cron": "5 * * * *",
+    "enabled": true,
+    "hours": 72,
+    "recheckMinutes": 55
+  },
+  {
+    "name": "exchange",
+    "cron": "12,42 * * * *",
+    "enabled": true,
+    "hours": 72,
+    "recheckMinutes": 15
+  },
+  {
+    "name": "cards-daily",
+    "cron": "30 8,11,16,20 * * *",
+    "enabled": true
+  },
+  {
+    "name": "save-recommendations",
+    "cron": "40 8,11,16,20 * * *",
+    "enabled": true
+  }
+]

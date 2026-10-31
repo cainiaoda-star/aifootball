@@ -1,0 +1,22 @@
+info: Microsoft.Hosting.Lifetime[14]
+      Now listening on: http://localhost:5088
+info: Microsoft.Hosting.Lifetime[0]
+      Application started. Press Ctrl+C to shut down.
+info: Microsoft.Hosting.Lifetime[0]
+      Hosting environment: Production
+info: Microsoft.Hosting.Lifetime[0]
+      Content root path: D:/AiFootBall/src/AiFootBall.Api
+info: Scheduler[0]
+      调度器已启动（6 个作业）：
+info: Scheduler[0]
+        lotto-daily        45 21 * * *      下次 2026-10-28 21:45
+info: Scheduler[0]
+        football-daily     10 8 * * *       下次 2026-10-29 08:10
+info: Scheduler[0]
+        odds-sample        5 * * * *        下次 2026-10-28 17:05
+info: Scheduler[0]
+        odds-sample-late   */20 * * * *     下次 2026-10-28 17:00
+info: Scheduler[0]
+        exchange           12,42 * * * *    下次 2026-10-28 17:12
+info: Scheduler[0]
+        odds-backfill      20 3 * * *       下次 2026-10-29 03:20

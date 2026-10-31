@@ -1,0 +1,100 @@
+﻿WITH fin AS (
+  SELECT MatchId, ResultSpf FROM dbo.FbMatch WHERE Status=3 AND ResultSpf IS NOT NULL
+),
+od AS (
+  SELECT m.MatchId, c.HomeWin - o.HomeWin AS homeDelta
+  FROM fin m
+  JOIN dbo.FbOdds o ON o.MatchId=m.MatchId AND o.OddsType='EU' AND o.IsOpening=1 AND o.CompanyId=0
+  JOIN dbo.FbOdds c ON c.MatchId=m.MatchId AND c.OddsType='EU' AND c.IsOpening=0 AND c.CompanyId=0
+  WHERE o.HomeWin IS NOT NULL AND c.HomeWin IS NOT NULL
+),
+ex AS (
+  SELECT e.MatchId, e.RatioHome, e.RatioAway,
+         ROW_NUMBER() OVER (PARTITION BY e.MatchId ORDER BY e.CapturedAt DESC) rn
+  FROM dbo.FbExchange e WHERE e.MatchId IN (SELECT MatchId FROM fin)
+),
+x AS (
+  SELECT f.ResultSpf, od.homeDelta, e.RatioHome, e.RatioAway,
+    CASE WHEN od.homeDelta < -0.05 THEN 1 ELSE 0 END AS oddsDown,
+    CASE WHEN od.homeDelta >  0.05 THEN 1 ELSE 0 END AS oddsUp,
+    CASE WHEN od.homeDelta <= -0.20 THEN 1 ELSE 0 END AS oddsBigDown,
+    CASE WHEN od.homeDelta >   0.20 THEN 1 ELSE 0 END AS oddsBigUp,
+    CASE WHEN od.homeDelta < -0.05 AND od.homeDelta > -0.20 THEN 1 ELSE 0 END AS oddsSmallDown,
+    CASE WHEN e.RatioHome >= 60 THEN 1 ELSE 0 END AS homeHot60,
+    CASE WHEN e.RatioAway >= 60 THEN 1 ELSE 0 END AS awayHot60,
+    CASE WHEN e.RatioHome >= 75 THEN 1 ELSE 0 END AS homeHot75,
+    CASE WHEN e.RatioAway >= 75 THEN 1 ELSE 0 END AS awayHot75
+  FROM fin f
+  JOIN od ON f.MatchId=od.MatchId
+  JOIN ex e ON f.MatchId=e.MatchId AND e.rn=1
+)
+SELECT 'oddsDown+homeHot60 (current L3 home)' tag, COUNT(*) n,
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1) homePct,
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1) awayPct,
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1) drawPct
+FROM x WHERE oddsDown=1 AND homeHot60=1
+UNION ALL SELECT 'oddsUp+awayHot60 (current L3 away)', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE oddsUp=1 AND awayHot60=1
+UNION ALL SELECT 'oddsDown+awayHot60 (conflict->home)', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE oddsDown=1 AND awayHot60=1
+UNION ALL SELECT 'oddsUp+homeHot60 (conflict->away)', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE oddsUp=1 AND homeHot60=1
+UNION ALL SELECT 'smallDrop+homeHot60 (proposed L3)', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE oddsSmallDown=1 AND homeHot60=1
+UNION ALL SELECT 'bigDrop alone (current still->home BAD)', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE oddsBigDown=1
+UNION ALL SELECT 'bigRise alone (->away GOOD)', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE oddsBigUp=1
+UNION ALL SELECT 'bigRise+awayHot60', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE oddsBigUp=1 AND awayHot60=1
+UNION ALL SELECT 'bigDrop+homeHot60 (trap?)', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE oddsBigDown=1 AND homeHot60=1
+UNION ALL SELECT 'awayHot75 (strong away)', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE awayHot75=1
+UNION ALL SELECT 'homeHot75 alone', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE homeHot75=1
+UNION ALL SELECT 'oddsDown alone (current L2)', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE oddsDown=1 AND homeHot60=0 AND awayHot60=0
+UNION ALL SELECT 'oddsUp alone (current L2)', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE oddsUp=1 AND homeHot60=0 AND awayHot60=0
+UNION ALL SELECT 'smallDrop alone', COUNT(*),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='3' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='0' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1),
+  ROUND(100.0*SUM(CASE WHEN ResultSpf='1' THEN 1 ELSE 0 END)/NULLIF(COUNT(*),0),1)
+FROM x WHERE oddsSmallDown=1 AND homeHot60=0 AND awayHot60=0

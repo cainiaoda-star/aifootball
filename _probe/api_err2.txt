@@ -1,0 +1,2 @@
+Unhandled exception. System.IO.FileLoadException: Could not load file or assembly 'D:\AiFootBall\_run\api\AiFootBall.Api.dll'. 应用程序控制策略已阻止此文件。 (0x800711C7)
+File name: 'D:\AiFootBall\_run\api\AiFootBall.Api.dll'

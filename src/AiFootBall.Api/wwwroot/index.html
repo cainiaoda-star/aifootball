@@ -1,0 +1,2565 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AiFootBall · 今日推荐</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c232c; --line:#272e38;
+    --text:#e6edf3; --dim:#8b949e; --accent:#4c9aff;
+    --red:#ff6b6b; --green:#3fb950; --amber:#f0a04b; --purple:#b48cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;font-size:14px}
+  button{font-family:inherit}
+  input{font-family:inherit}
+
+  .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(1200px 600px at 50% -10%, #1a2333 0%, #0d1117 60%)}
+  .login-card{width:360px;max-width:calc(100vw - 40px);background:var(--panel);border:1px solid var(--line);
+    border-radius:16px;padding:36px 32px}
+  .login-card input{font-size:16px}  /* 移动端避免 iOS 缩放 */
+  .login-card h1{margin:0 0 6px;font-size:22px;letter-spacing:.5px}
+  .login-card h1 span{color:var(--accent)}
+  .login-card .sub{color:var(--dim);font-size:13px;margin-bottom:26px}
+  .login-card label{display:block;font-size:12px;color:var(--dim);margin:14px 0 6px}
+  .login-card input{width:100%;padding:11px 12px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:8px;color:var(--text);font-size:14px;outline:none}
+  .login-card input:focus{border-color:var(--accent)}
+  .login-card button{width:100%;padding:12px;margin-top:22px;background:var(--accent);
+    color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}
+  .login-card button:hover{filter:brightness(1.1)}
+  .login-card .msg{color:var(--red);font-size:12px;margin-top:12px;min-height:16px}
+  .login-card .hint{color:var(--dim);font-size:12px;margin-top:16px;text-align:center}
+  .login-card label.remember{display:flex;align-items:center;gap:8px;margin-top:16px;
+    color:var(--dim);font-size:13px;cursor:pointer}
+  .login-card label.remember input{width:auto;margin:0}
+
+  header{display:flex;align-items:center;flex-wrap:wrap;gap:10px 16px;
+    padding:14px 24px;border-bottom:1px solid var(--line);background:var(--panel);
+    position:sticky;top:0;z-index:10}
+  header h1{margin:0;font-size:18px;letter-spacing:.5px;margin-right:auto}
+  header h1 span{color:var(--accent)}
+  .user-box{display:flex;align-items:center;gap:12px}
+  .user-box .nick{color:var(--dim);font-size:13px}
+  .user-box button{padding:6px 14px;background:transparent;border:1px solid var(--line);
+    color:var(--dim);border-radius:6px;cursor:pointer;font-size:13px}
+  .user-box button:hover{color:var(--text);border-color:var(--dim)}
+  .pwd-wrap{position:fixed;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55)}
+  .pwd-wrap .login-card button.ghost{background:transparent;color:var(--dim);border:1px solid var(--line);margin-top:8px}
+
+  main{padding:18px 24px 60px;max-width:1500px;margin:0 auto}
+
+  .topbar{display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap}
+  .topbar .date{color:var(--dim);font-size:13px}
+  .topbar .refresh{padding:7px 16px;background:var(--accent);color:#fff;border:none;
+    border-radius:7px;cursor:pointer;font-size:13px;font-weight:500}
+  .topbar .refresh:hover{filter:brightness(1.1)}
+  .topbar .filter{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:13px;cursor:pointer}
+  .topbar .filter input{width:auto;margin:0;accent-color:var(--accent)}
+
+  .board{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    margin-bottom:22px;overflow:hidden}
+  .board-scroll{overflow-x:auto}
+  .board-head{display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line)}
+  .board-head .badge{font-size:15px;font-weight:700;padding:4px 12px;border-radius:6px}
+  .badge-jc{background:#3a2a2a;color:var(--red)}
+  .badge-bd{background:#2a3a2a;color:var(--green)}
+  .badge-sfc{background:#2a2a3a;color:var(--purple)}
+  .board-head .meta{color:var(--dim);font-size:12px}
+  .board-head .meta b{color:var(--text)}
+  .board-head .pass-tip{color:var(--accent,#c9a227);font-weight:600}
+
+  .tbl{width:100%;border-collapse:collapse}
+  .tbl th{color:var(--dim);font-size:12px;font-weight:500;text-align:left;
+    padding:10px 14px;border-bottom:1px solid var(--line)}
+  .tbl td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
+  .tbl tr:last-child td{border-bottom:none}
+  .tbl tr:hover{background:var(--panel2)}
+
+  .match-no{font-size:12px;color:var(--dim);white-space:nowrap}
+  .teams{font-weight:500}
+  .teams .vs{color:var(--dim);margin:0 6px;font-weight:400}
+  .league{font-size:12px;color:var(--dim)}
+  .hcp{font-size:12px;color:var(--dim);white-space:nowrap}
+
+  .result-tag{display:inline-block;padding:4px 10px;border-radius:6px;font-weight:600;font-size:13px}
+  .r-3{background:#3a2323;color:#ff8080}
+  .r-0{background:#233a2b;color:#5ccd75}
+  .r-1{background:#3a3423;color:#e0b45c}
+  .r-all{background:#2a2a3a;color:#9aa4b5}
+
+  .conf{font-weight:600}
+  .conf b{font-size:16px}
+  .lvl{display:inline-block;margin-left:6px;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600}
+  .lvl-3{background:#2a1f3a;color:var(--purple)}
+  .lvl-2{background:#1f2f3a;color:#5cb0e0}
+  .lvl-1{background:#333;color:var(--dim)}
+
+  .signal{font-size:12px;color:var(--dim);max-width:260px;line-height:1.45;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .predict{font-weight:600;color:var(--amber);white-space:nowrap}
+
+  /* 推荐勾选投注 */
+  .pick-cell{white-space:nowrap;font-size:12px}
+  .pick-cell label{display:inline-flex;align-items:center;gap:3px;margin-right:8px;cursor:pointer;color:var(--dim)}
+  .pick-cell label.on{color:var(--amber);font-weight:650}
+  .pick-cell input{accent-color:var(--amber)}
+  .pick-cell label.dis{opacity:.35;cursor:not-allowed}
+  .bet-pick-bar{position:sticky;bottom:0;z-index:40;margin-top:16px;padding:12px 16px;
+    background:linear-gradient(180deg,rgba(15,20,27,.92),#0f141b 40%);border:1px solid var(--line);
+    border-radius:14px 14px 0 0;display:none;flex-wrap:wrap;align-items:center;gap:10px 16px;
+    box-shadow:0 -8px 24px rgba(0,0,0,.35)}
+  .bet-pick-bar.show{display:flex}
+  .bet-pick-bar .bp-title{font-weight:700;font-size:14px}
+  .bet-pick-bar .bp-meta{color:var(--dim);font-size:12px}
+  .bet-pick-bar .bp-meta b{color:var(--text)}
+  .bet-pick-bar .bp-pass{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .bet-pick-bar .bp-pass label{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;
+    border-radius:8px;border:1px solid var(--line);background:var(--panel);font-size:12px;cursor:pointer}
+  .bet-pick-bar .bp-pass label.on{border-color:var(--amber);color:var(--amber)}
+  .bet-pick-bar .bp-pass label.dis{opacity:.35;pointer-events:none}
+  .bet-pick-bar .bp-acts{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
+  .bet-pick-bar .bp-acts .btn{padding:8px 14px}
+
+  /* ============ 水位变化（胜平负 + 必发）============ */
+  .water{font-size:12px;line-height:1.7;white-space:nowrap}
+  .water .w-row{display:flex;align-items:center;gap:5px}
+  .water .w-name{color:var(--dim);width:14px;text-align:center}
+  .water .w-val{color:var(--text);font-variant-numeric:tabular-nums}
+  .arrow-up{color:var(--red);font-weight:700}
+  .arrow-down{color:var(--green);font-weight:700}
+  .arrow-flat{color:var(--dim)}
+  .water .w-delta{font-variant-numeric:tabular-nums;font-weight:600}
+  .water .w-time{color:var(--dim);font-size:11px}
+  .water-loading{color:var(--dim);font-size:11px}
+
+  /* ============ 竞彩固定奖金四类玩法即时水位 ============ */
+  .jc-water{font-size:12px;line-height:1.7;white-space:normal;min-width:230px}
+  .jc-grp{display:flex;align-items:center;gap:7px;flex-wrap:wrap;white-space:nowrap}
+  .jc-label{display:inline-block;color:var(--accent);font-size:11px;font-weight:600;
+    padding:1px 6px;border-radius:4px;background:#1f2b3d;margin-right:2px}
+  .jc-opt{display:inline-flex;align-items:center;gap:3px;color:var(--text)}
+  .jc-opt b{color:var(--dim);font-weight:500;font-variant-numeric:tabular-nums}
+  .jc-opt .arrow-up,.jc-opt .arrow-down,.jc-opt .arrow-flat{margin-left:1px}
+  .jc-more{display:flex;align-items:center;gap:7px;color:var(--dim);cursor:help}
+  .jc-more-info{font-size:11px;color:var(--dim)}
+  .jc-time{color:var(--dim);font-size:11px}
+  .w-divider{border-top:1px dashed var(--line);margin:4px 0}
+
+  .empty{padding:28px;text-align:center;color:var(--dim)}
+
+  /* ================= 大类 + 功能页签 ================= */
+  .nav-cats{display:flex;gap:6px;align-items:center}
+  .nav-cats button{padding:8px 18px;background:transparent;border:1px solid var(--line);
+    color:var(--dim);border-radius:9px;cursor:pointer;font-size:14px;font-weight:650;letter-spacing:.5px}
+  .nav-cats button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .nav-cats button:hover{color:var(--text)}
+  .nav-tabs{display:flex;gap:8px;margin:0;flex:1 1 100%;order:3;flex-wrap:wrap}
+  .nav-tabs button{padding:7px 16px;background:transparent;border:1px solid var(--line);
+    color:var(--dim);border-radius:8px;cursor:pointer;font-size:13px;font-weight:500}
+  .nav-tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .nav-tabs button:hover{color:var(--text)}
+  .cat-placeholder{padding:48px 24px;text-align:center;color:var(--dim);
+    background:var(--panel);border:1px dashed var(--line);border-radius:14px}
+  .cat-placeholder h2{margin:0 0 8px;font-size:18px;color:var(--text);font-weight:650}
+  .cat-placeholder p{margin:0;font-size:13px;line-height:1.6}
+
+  /* ================= 数字彩 ================= */
+  .lotto-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  .lotto-toolbar .nav-tabs{flex:1 1 auto;order:0}
+  .lotto-note{color:var(--dim);font-size:12px;margin:0 0 16px;line-height:1.5}
+  .lotto-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:14px}
+  .lotto-card.primary{border-color:#ffb347}
+  .lotto-card .lc-head{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+  .lotto-card .lc-rank{font-weight:700;font-size:13px}
+  .lotto-card .lc-play{font-size:12px;color:var(--dim)}
+  .lotto-card .lc-score{margin-left:auto;font-size:12px;color:var(--dim)}
+  .lotto-balls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+  .ball{width:36px;height:36px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:14px}
+  .ball-red{background:#3a2323;color:#ff8080;border:1px solid #ff8080}
+  .ball-blue{background:#1f2b3d;color:#4c9aff;border:1px solid #4c9aff}
+  .ball-digit{background:#2a2a3a;color:var(--amber);border:1px solid var(--amber)}
+  .lotto-desc{font-size:12px;color:var(--dim);line-height:1.5}
+  .lotto-meta{font-size:13px;color:var(--dim);margin-bottom:14px}
+  .lotto-draw{background:var(--panel2);border:1px dashed var(--line);border-radius:14px;padding:16px 18px;margin-top:8px}
+  .lotto-draw .ld-title{font-size:13px;font-weight:650;margin-bottom:10px;color:var(--text)}
+  .lotto-draw .ld-title span{color:var(--dim);font-weight:500;margin-left:8px}
+
+  /* ================= 大奶观察 ================= */
+  .milk-panel{background:var(--panel);border:1px dashed var(--line);border-radius:14px;padding:16px 18px;margin:18px 0 8px}
+  .milk-panel .milk-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+  .milk-panel .milk-head h3{margin:0;font-size:15px;font-weight:650}
+  .milk-panel .milk-note{font-size:12px;color:var(--dim);margin:0 0 12px;line-height:1.5}
+  .milk-tags{display:inline-flex;flex-wrap:wrap;gap:6px}
+  .milk-tag{font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid #8a6a2a;color:#e6c36a;background:#2a2418}
+  .milk-row-meta{font-size:12px;color:var(--dim);margin-top:4px}
+  .milk-stats-bar{font-size:12px;color:var(--dim);margin-bottom:10px}
+  .milk-stats-bar button{margin-left:8px;font-size:12px;padding:3px 10px}
+
+  .bet-stats{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+  .stat-card{flex:1;min-width:120px;background:var(--panel);border:1px solid var(--line);
+    border-radius:12px;padding:14px 18px}
+  .stat-card .s-label{font-size:12px;color:var(--dim)}
+  .stat-card .s-val{font-size:22px;font-weight:700;margin-top:4px}
+  .stat-card .s-val.win{color:var(--red)}
+  .stat-card .s-val.lose{color:var(--green)}
+  .stat-card .s-sub{font-size:11px;color:var(--dim);margin-top:3px}
+  .bought-tag{display:inline-block;margin-left:6px;padding:2px 8px;border-radius:5px;
+    font-size:11px;font-weight:700;background:#4a2f1a;color:#ffb347;border:1px solid #ffb347}
+  .feat-tag{display:inline-block;margin-left:6px;padding:2px 8px;border-radius:5px;
+    font-size:11px;font-weight:700;background:#3a2323;color:#ff8080;border:1px solid #ff8080}
+  .strong-tag{background:#4a2f1a;color:#ffb347;border-color:#ffb347}
+  .lowconf-tag{display:inline-block;margin-left:6px;padding:2px 8px;border-radius:5px;
+    font-size:11px;background:#2a2a3a;color:var(--dim);border:1px solid var(--line)}
+  .summary-item.is-bought{border-color:#ffb347}
+
+  .bet-form{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:20px;margin-bottom:20px}
+  .bet-form h3{margin:0 0 16px;font-size:15px;color:var(--text)}
+  .bet-form h3 span{color:var(--dim);font-weight:400;font-size:12px}
+  .f-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;align-items:flex-end}
+  .f-group{display:flex;flex-direction:column;gap:5px}
+  .f-group label{font-size:12px;color:var(--dim)}
+  .f-group input,.f-group select{background:var(--panel2);border:1px solid var(--line);
+    border-radius:7px;color:var(--text);padding:8px 10px;font-size:13px;outline:none;min-width:90px}
+  .f-group input:focus,.f-group select:focus{border-color:var(--accent)}
+
+  .line-table{width:100%;border-collapse:collapse;margin-bottom:12px}
+  .line-table th{color:var(--dim);font-size:12px;font-weight:500;text-align:left;
+    padding:7px 8px;border-bottom:1px solid var(--line)}
+  .line-table td{padding:6px 8px;border-bottom:1px solid var(--line)}
+  .line-table input{width:100%;background:var(--panel2);border:1px solid var(--line);
+    border-radius:6px;color:var(--text);padding:6px 8px;font-size:12px;outline:none}
+  .line-table input:focus{border-color:var(--accent)}
+  .line-table .rm-btn{background:#3a2020;color:var(--red);border:none;border-radius:6px;
+    padding:4px 10px;cursor:pointer;font-size:12px}
+
+  .btn{display:inline-block;padding:8px 16px;border-radius:7px;border:none;cursor:pointer;
+    font-size:13px;font-weight:500}
+  .btn-primary{background:var(--accent);color:#fff}
+  .btn-primary:hover{filter:brightness(1.1)}
+  .btn-ghost{background:transparent;border:1px solid var(--line);color:var(--dim)}
+  .btn-ghost:hover{color:var(--text)}
+  .btn-danger{background:#3a2020;color:var(--red)}
+
+  .img-upload{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .img-upload .prev{max-width:140px;max-height:90px;border-radius:8px;border:1px solid var(--line);object-fit:cover}
+  .img-upload .no-prev{font-size:12px;color:var(--dim)}
+
+  .b-meta{color:var(--dim);font-size:12px}
+  .stake-box{padding:16px 20px;background:#2a2416;border-bottom:1px solid var(--line)}
+  .stake-box h3{margin:0 0 8px;font-size:16px;color:#e0b45c}
+  .stake-box p{margin:0 0 8px;font-size:14px;line-height:1.55;color:var(--text)}
+  .stake-box .stake-lines{margin:0;padding-left:18px}
+  .stake-box .stake-lines li{margin:4px 0}
+  .bet-form summary{cursor:pointer;font-weight:650;font-size:15px}
+  .bet-form summary span{color:var(--dim);font-weight:400;font-size:12px;margin-left:8px}
+  .ticket{background:var(--panel);border:1px solid var(--line);border-radius:14px;margin-bottom:16px;overflow:hidden;max-width:720px}
+  .ticket-brand{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px 0}
+  .ticket-metrics{display:grid;grid-template-columns:repeat(3,1fr);margin:12px 16px 0;
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel2)}
+  .ticket-metrics > div{padding:14px 8px;text-align:center}
+  .ticket-metrics > div + div{border-left:1px solid var(--line)}
+  .tm-val{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.2}
+  .tm-lbl{margin-top:4px;font-size:12px;color:var(--dim)}
+  .tone-WAIT,.tone-PENDING{color:#e0b45c}
+  .tone-WON,.prize-win{color:var(--red)}
+  .tone-LOST,.prize-lose{color:var(--green)}
+  .tone-CANCELLED{color:var(--dim)}
+  .ticket-sec{padding:16px 16px 0;font-weight:650}
+  .ticket-info{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 16px 8px}
+  .ti-label{font-weight:650;margin-right:4px}
+  .chip{display:inline-block;padding:3px 10px;border-radius:6px;background:#1c3326;color:#7dcea0;font-size:12px;font-weight:650}
+  .ticket-table{width:100%;border-collapse:collapse}
+  .ticket-table th{font-size:12px;color:var(--dim);font-weight:500;text-align:center;padding:8px 10px;border-bottom:1px solid var(--line)}
+  .ticket-table td{padding:12px 10px;border-bottom:1px solid var(--line);text-align:center;vertical-align:middle}
+  .ticket-table tr:last-child td{border-bottom:none}
+  .t-no{color:var(--dim);white-space:nowrap}
+  .t-match{line-height:1.45;font-weight:650}
+  .t-match .vs{color:var(--dim);font-size:11px;font-weight:500}
+  .t-hcp{margin-top:2px;font-size:11px;color:var(--dim);font-weight:400}
+  .t-picks{line-height:1.75;font-variant-numeric:tabular-nums}
+  .t-picks .od{color:var(--dim);margin-left:4px}
+  .t-actual{font-size:12px;font-weight:650}
+  .ticket-expect{text-align:center;padding:14px 16px 4px;color:var(--dim)}
+  .ticket-expect b{color:var(--text);font-size:16px;font-weight:700}
+  .ticket-foot{display:flex;align-items:center;gap:8px;padding:12px 16px 14px;flex-wrap:wrap}
+  .ticket-foot img{height:52px;border-radius:6px;border:1px solid var(--line);vertical-align:middle}
+  .hit-tag{color:var(--red);font-weight:700}
+  .miss-tag{color:var(--green);font-weight:700}
+
+  /* ================= 每日复盘 ================= */
+  .date-nav{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .date-nav button{padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer}
+  .date-nav button:disabled{opacity:.4;cursor:default}
+  .date-nav button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .date-nav input[type=date]{background:var(--panel);color:var(--text);border:1px solid var(--line);
+    border-radius:8px;padding:6px 10px;font-weight:700;color-scheme:dark}
+  .date-field{position:relative;display:inline-flex}
+  .date-field .date-ph{position:absolute;left:1px;right:28px;top:1px;bottom:1px;display:flex;align-items:center;
+    padding-left:10px;background:var(--panel);color:var(--text);font-weight:700;border-radius:8px;pointer-events:none}
+  .date-nav .date-val{font-weight:700;min-width:110px;text-align:center}
+  .page-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  .page-head .meta{color:var(--dim);font-size:12px}
+  .stat-card{min-width:140px}
+  .pill-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;
+    background:var(--panel);border:1px solid var(--line);font-size:12px;color:var(--dim)}
+  .pill b{color:var(--text);font-weight:600}
+  .job-list{display:flex;flex-direction:column;gap:12px;max-width:860px}
+  .job-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+  .job-card h3{margin:0 0 4px;font-size:15px}
+  .job-card .hint{color:var(--dim);font-size:12px;margin-bottom:10px}
+  .job-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}
+  .job-row label{color:var(--dim);font-size:12px}
+  .job-row input[type=time],.job-row input[type=number],.job-row input[type=text]{
+    background:#0f141b;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 8px;width:auto}
+  .job-row input[type=number]{width:72px}
+  .job-next{color:var(--dim);font-size:12px;margin-left:auto}
+  .job-card .msg{min-height:16px;font-size:12px;margin-top:8px;color:var(--green)}
+  .job-card .msg.bad{color:var(--red)}
+  .pill em{font-style:normal}
+  .league-fold{margin:-6px 0 14px}
+  .league-fold summary{cursor:pointer;color:var(--dim);font-size:12px;margin-bottom:8px}
+  .rev{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 16px;
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:12px 14px;margin-bottom:8px}
+  .rev.is-bought{border-left:3px solid #ffb347}
+  .rev-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+  .rev-teams{font-size:15px;font-weight:650;line-height:1.35}
+  .rev-teams .vs{color:var(--dim);font-weight:400;margin:0 6px}
+  .rev-bits{margin-top:6px;font-size:12px;color:var(--dim);line-height:1.6}
+  .rev-bits b{color:var(--text);font-weight:600}
+  .rev-bits b.hit{color:#ff8080;background:#3a2323;border-radius:4px;padding:1px 6px}
+  .rev-odds{margin-top:4px;font-size:13px;line-height:1.7}
+  .rev-odds b{font-weight:650;color:var(--dim)}
+  .rev-odds b.hit{color:#ff8080;background:#3a2323;border-radius:4px;padding:1px 6px}
+  .rev-side{text-align:right}
+  .rev-score{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--amber);line-height:1.1}
+  .rev-half{font-size:11px;color:var(--dim);margin:2px 0 6px}
+  .rev-note{grid-column:1 / -1;margin-top:4px}
+  .rev-note summary{cursor:pointer;color:var(--dim);font-size:12px}
+  .rev-note p{margin:6px 0 0;font-size:12px;line-height:1.6;color:var(--text)}
+  .opt-tag{display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:5px;
+    background:var(--panel2);border:1px solid var(--line);color:var(--text);font-size:12px}
+  .signal-clip{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #analysis{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  #analysis .board{margin-bottom:0}
+  #analysis .board:first-child{grid-column:1 / -1}
+  .dim{color:var(--dim)}
+
+  /* ================= 历史推荐分组 ================= */
+  .history-day{margin-bottom:20px}
+  .history-day-title{font-size:15px;font-weight:700;color:var(--accent);padding:8px 4px;
+    border-bottom:2px solid var(--accent);margin-bottom:12px}
+  .history-board{margin-bottom:16px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .history-board-title{font-size:13px;font-weight:700;padding:10px 16px;color:var(--text);
+    background:var(--panel);border-bottom:1px solid var(--line)}
+  .history-board-title .cnt{font-weight:400;color:var(--dim);font-size:12px;margin-left:6px}
+  .history-board .tbl table{border:none}
+  .history-board .tbl th{background:transparent}
+
+  /* ================= 移动端卡片式推荐 ================= */
+  .cards{display:none}
+  .m-card{background:var(--panel2);border:1px solid var(--line);border-radius:12px;
+    padding:14px;margin-bottom:12px}
+  .m-card .m-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+  .m-card .m-no{font-size:12px;color:var(--dim)}
+  .m-card .m-league{font-size:12px;color:var(--dim)}
+  .m-card .m-teams{font-size:16px;font-weight:600;margin-bottom:6px;line-height:1.4}
+  .m-card .m-teams .vs{color:var(--dim);font-weight:400;margin:0 8px}
+  .m-card .m-time{font-size:12px;color:var(--dim);margin-bottom:12px}
+  .m-card .m-row{display:flex;align-items:center;justify-content:space-between;
+    padding:9px 0;border-top:1px solid var(--line)}
+  .m-card .m-row .lbl{font-size:12px;color:var(--dim)}
+  .m-card .m-row .val{font-size:14px;font-weight:600}
+  .m-card .m-signal{font-size:12px;color:var(--dim);line-height:1.5;margin-top:10px;
+    padding-top:10px;border-top:1px solid var(--line)}
+
+  @media (max-width: 860px){
+    main{padding:14px 12px 60px}
+    header{padding:12px 14px}
+    header h1{font-size:16px}
+    .user-box .nick{font-size:12px}
+    .topbar{gap:10px;margin-bottom:14px}
+    .board > table.tbl{display:none}
+    .cards{display:block}
+    .board-head{padding:14px}
+    .board-head .badge{font-size:14px}
+    .board-head .meta{font-size:11px}
+    #analysis{grid-template-columns:1fr}
+    .rev-side{text-align:left}
+    .tm-val{font-size:16px}
+    .ticket-table{font-size:12px}
+  }
+</style>
+</head>
+<body>
+
+<div id="loginView" class="login-wrap" style="display:none">
+  <div class="login-card">
+    <h1>AiFoot<span>Ball</span></h1>
+    <div class="sub">体育彩票 · 数字彩</div>
+    <label>用户名</label>
+    <input id="loginUser" type="text" placeholder="请输入用户名" autocomplete="username" />
+    <label>密码</label>
+    <input id="loginPass" type="password" placeholder="请输入密码" autocomplete="current-password" />
+    <label class="remember"><input id="rememberMe" type="checkbox" checked /> 记住登录状态</label>
+    <button id="loginBtn">登 录</button>
+    <div class="msg" id="loginMsg"></div>
+    <div class="hint">首次使用？输入用户名和密码后点击登录，将自动注册新账号。</div>
+  </div>
+</div>
+
+<div id="pwdView" class="pwd-wrap" style="display:none">
+  <div class="login-card">
+    <h1>修改密码</h1>
+    <div class="sub">改的是当前登录账号</div>
+    <label>当前密码</label>
+    <input id="pwdOld" type="password" autocomplete="current-password" />
+    <label>新密码</label>
+    <input id="pwdNew" type="password" autocomplete="new-password" />
+    <label>再输入一次</label>
+    <input id="pwdNew2" type="password" autocomplete="new-password" />
+    <button id="pwdSave" type="button">保存</button>
+    <button id="pwdCancel" class="ghost" type="button">取消</button>
+    <div class="msg" id="pwdMsg"></div>
+  </div>
+</div>
+
+<div id="mainView" style="display:none">
+  <header>
+    <h1>AiFoot<span>Ball</span> · <span id="pageTitle">今日推荐</span></h1>
+    <div class="nav-cats" role="tablist" aria-label="彩种大类">
+      <button type="button" id="catSports" class="active" data-cat="sports">体育彩票</button>
+      <button type="button" id="catDigital" data-cat="digital">数字彩</button>
+    </div>
+    <div class="user-box">
+      <span class="nick" id="nickName"></span>
+      <button id="pwdBtn" type="button">改密码</button>
+      <button id="logoutBtn">退出</button>
+    </div>
+    <div class="nav-tabs" id="sportsTabs">
+      <button type="button" id="tabRecommend" class="active">今日推荐</button>
+      <button type="button" id="tabMybets">我的投注</button>
+      <button type="button" id="tabSummary">每日复盘</button>
+      <button type="button" id="tabHistory">历史推荐</button>
+      <button type="button" id="tabReview">复盘查询</button>
+      <button type="button" id="tabJobs">采集设置</button>
+    </div>
+  </header>
+  <main>
+    <div id="sportsView">
+      <div class="topbar">
+        <div class="date-nav">
+          <button type="button" id="recPrev">前一天</button>
+          <input type="date" id="recDate" />
+          <button type="button" id="recNext">后一天</button>
+        </div>
+        <span class="date" id="dateLabel"></span>
+        <button class="refresh" id="refreshBtn">刷新推荐</button>
+        <label class="filter"><input id="strongOnly" type="checkbox" /> 只看命中率≥60%</label>
+        <span class="date" id="refreshStatus"></span>
+      </div>
+      <div id="boards"></div>
+      <div id="milkPanel" class="milk-panel" style="display:none"></div>
+      <div id="betPickBar" class="bet-pick-bar" aria-live="polite"></div>
+      <div id="analysis"></div>
+      <div id="mybets" style="display:none"></div>
+      <div id="summary" style="display:none"></div>
+      <div id="history" style="display:none"></div>
+      <div id="review" style="display:none"></div>
+      <div id="jobs" style="display:none"></div>
+    </div>
+    <div id="digitalView" style="display:none">
+      <div class="lotto-toolbar">
+        <div class="nav-tabs" id="lottoTabs">
+          <button type="button" data-lotto="ssq" class="active">双色球</button>
+          <button type="button" data-lotto="fc3d">福彩3D</button>
+          <button type="button" data-lotto="dlt">大乐透</button>
+          <button type="button" data-lotto="pl3">排列三</button>
+          <button type="button" data-lotto="pl5">排列五</button>
+        </div>
+        <button type="button" class="refresh" id="lottoRefresh">刷新方案</button>
+        <button type="button" class="refresh" id="lottoSave" style="background:#3a5a40">重新生成并保存</button>
+        <span class="date" id="lottoStatus"></span>
+      </div>
+      <p class="lotto-note">选号仅供参考，不构成投注建议。乐透主推 1 注 + 备选 3 注；3D/排三主推直选 + 备选；排五同理。</p>
+      <div id="lottoBoard"></div>
+    </div>
+  </main>
+</div>
+
+<script>
+const API = '';
+const $ = s => document.querySelector(s);
+const TOKEN_KEY = 'aifb_token';
+
+function getStoredToken(){ return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || ''; }
+function storeToken(t, remember){
+  localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY);
+  if(t) (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, t);
+}
+function clearToken(){ localStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(TOKEN_KEY); }
+
+let token = getStoredToken();
+
+function showLogin(){ $('#loginView').style.display='flex'; $('#mainView').style.display='none'; }
+function showMain(){ $('#loginView').style.display='none'; $('#mainView').style.display='block'; }
+
+async function api(path, opts={}){
+  const headers = {'Content-Type':'application/json'};
+  if(token) headers['Authorization'] = 'Bearer ' + token;
+  const res = await fetch(API + path, {...opts, headers});
+  if(res.status === 401){ token=''; clearToken(); showLogin(); throw new Error('unauthorized'); }
+  return res.json();
+}
+
+$('#loginBtn').onclick = async () => {
+  const u = $('#loginUser').value.trim();
+  const p = $('#loginPass').value;
+  if(!u || !p){ $('#loginMsg').textContent = '请输入用户名和密码'; return; }
+  $('#loginMsg').textContent = '';
+  try{
+    let res = await fetch(API + '/api/auth/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({userName:u, password:p})
+    });
+    if(res.status === 401){
+      res = await fetch(API + '/api/auth/register', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({userName:u, password:p, nickName:u})
+      });
+    }
+    if(!res.ok){ const e = await res.json(); $('#loginMsg').textContent = e.message || '登录失败'; return; }
+    const data = await res.json();
+    token = data.token;
+    storeToken(token, $('#rememberMe').checked);
+    $('#nickName').textContent = data.nickName || data.userName;
+    showMain();
+    loadRecommendations();
+  }catch(err){ $('#loginMsg').textContent = '网络错误：' + err.message; }
+};
+
+$('#loginPass').onkeydown = e => { if(e.key==='Enter') $('#loginBtn').click(); };
+
+$('#logoutBtn').onclick = () => {
+  token=''; clearToken();
+  $('#loginUser').value=''; $('#loginPass').value='';
+  showLogin();
+};
+
+function closePassword(){
+  $('#pwdView').style.display = 'none';
+  $('#pwdOld').value = '';
+  $('#pwdNew').value = '';
+  $('#pwdNew2').value = '';
+  $('#pwdMsg').textContent = '';
+}
+$('#pwdBtn').onclick = () => { closePassword(); $('#pwdView').style.display = 'flex'; $('#pwdOld').focus(); };
+$('#pwdCancel').onclick = closePassword;
+$('#pwdSave').onclick = async () => {
+  const currentPassword = $('#pwdOld').value;
+  const newPassword = $('#pwdNew').value;
+  const confirmPassword = $('#pwdNew2').value;
+  const msg = $('#pwdMsg');
+  msg.style.color = 'var(--red)';
+  if(newPassword.length < 6){ msg.textContent = '新密码至少 6 位'; return; }
+  if(newPassword !== confirmPassword){ msg.textContent = '两次输入的新密码不一致'; return; }
+  msg.textContent = '';
+  try{
+    const res = await api('/api/auth/password', {method:'POST', body: JSON.stringify({currentPassword, newPassword, confirmPassword})});
+    if(res.ok === false){ msg.textContent = res.message || '修改失败'; return; }
+    msg.style.color = 'var(--green)';
+    msg.textContent = res.message || '密码已修改';
+    $('#pwdOld').value = '';
+    $('#pwdNew').value = '';
+    $('#pwdNew2').value = '';
+  }catch(err){
+    msg.textContent = err.message === 'unauthorized' ? '请重新登录后再改' : ('修改失败：' + err.message);
+  }
+};
+
+let recommendDate = localYmd(new Date());
+$('#recDate').value = recommendDate;
+$('#recDate').max = recommendDate;
+function syncRecommendDate(){
+  const today = localYmd(new Date());
+  const isToday = recommendDate === today;
+  $('#recDate').value = recommendDate;
+  $('#recNext').disabled = recommendDate >= today;
+  $('#refreshBtn').style.display = isToday ? '' : 'none';
+  const filter = document.querySelector('.topbar .filter');
+  if(filter) filter.style.display = isToday ? '' : 'none';
+  if(!isToday) $('#refreshStatus').textContent = '';
+}
+$('#recPrev').onclick = () => { recommendDate = shiftYmd(recommendDate, -1); loadRecommendations(); };
+$('#recNext').onclick = () => { if(recommendDate >= localYmd(new Date())) return; recommendDate = shiftYmd(recommendDate, 1); loadRecommendations(); };
+$('#recDate').onchange = () => {
+  const today = localYmd(new Date());
+  recommendDate = $('#recDate').value && $('#recDate').value <= today ? $('#recDate').value : today;
+  loadRecommendations();
+};
+
+$('#refreshBtn').onclick = () => {
+  $('#refreshStatus').textContent = '正在采集最新受注场次…';
+  api('/api/recommend/collect', {method:'POST'})
+    .then(()=>{ $('#refreshStatus').textContent = '正在生成推荐…'; })
+    .catch(()=>{ $('#refreshStatus').textContent = '采集失败，使用已有数据'; })
+    .finally(()=> loadRecommendations().then(()=>{ $('#refreshStatus').textContent='已更新 ' + new Date().toLocaleTimeString(); }));
+};
+
+const RESULT_TEXT = {'3':'主胜','1':'平局','0':'客胜'};
+
+function resultTag(r){
+  if(!r) return '<span class="result-tag r-all">全包</span>';
+  return `<span class="result-tag r-${r}">${RESULT_TEXT[r]}</span>`;
+}
+function lvlTag(l){
+  const label = l===3?'强信号':l===2?'信号':'弱';
+  return `<span class="lvl lvl-${l}">${label}</span>`;
+}
+function wilsonText(hits, total){
+  if(!total) return '—';
+  const z = 1.96, p = hits / total, z2 = z * z, n = total;
+  const den = 1 + z2 / n;
+  const centre = p + z2 / (2 * n);
+  const margin = z * Math.sqrt(p * (1 - p) / n + z2 / (4 * n * n));
+  const lo = Math.max(0, (centre - margin) / den);
+  const hi = Math.min(1, (centre + margin) / den);
+  const pct = x => (Math.round(x * 1000) / 10).toFixed(1);
+  return `${pct(p)}%（${pct(lo)}%–${pct(hi)}%）`;
+}
+function hitProbText(it){
+  if(it.hitProbability == null) return '';
+  const note = it.hitProbabilityNote ? ` title="${String(it.hitProbabilityNote).replace(/"/g,'')}"` : '';
+  return `<div class="league"${note}>预计 ${Number(it.hitProbability).toFixed(1)}%</div>`;
+}
+function confText(c){
+  if(c == null || c === 0) return '—';
+  return Math.round(c) + '%';
+}
+
+function hcpText(v){
+  if(v == null || v === '') return '';
+  return (Number(v) > 0 ? '+' : '') + v;
+}
+function stakePlanHtml(b){
+  const p = b.stakePlan;
+  if(b.board !== 'jc' || !p) return '';
+  if(!p.ready){
+    return `<div class="stake-box"><h3>74 元票组不出来</h3>
+      <p>要 8 场让球中高水（2.20–4.20），现在只有 ${p.have || 0} 场。上面的低水胜平负不拿来凑。</p></div>`;
+  }
+  const lines = (p.lines || []).map(l =>
+    `<li>${esc(l.matchNo || '')} ${esc(l.homeTeam || '')} vs ${esc(l.awayTeam || '')} · ${esc(l.option || '')} ${Number(l.odds).toFixed(2)}${l.handicap != null && l.handicap !== '' ? ' · 让' + hcpText(l.handicap) : ''}${l.hitProbability != null ? ' · 预计 ' + Number(l.hitProbability).toFixed(1) + '%' : ''}</li>`
+  ).join('');
+  return `<div class="stake-box">
+    <h3>74 元票 · 8 场让球中高水 · 6串1+7串1+8串1</h3>
+    <p>37 注，每注 2 元，共 74 元。让球要打过盘口才算中。上面那 8 场低水胜平负不进这张票。</p>
+    <ul class="stake-lines">${lines}</ul>
+    <p>八场都过盘约 <b>${p.allHit}</b> 元。错一场还剩 <b>${p.missLow}</b>–<b>${p.missHigh}</b> 元。错两场还剩 <b>${p.miss2Low}</b>–<b>${p.miss2High}</b> 元。</p>
+    <button type="button" class="btn btn-primary" data-fill-stake="1">把这 8 场填进投注单</button>
+  </div>`;
+}
+function slateMeta(b, items){
+  if(b.board === 'jc'){
+    const tip = b.passTip ? ` · <span class="pass-tip">${b.passTip}</span>` : '';
+    const sale = b.saleNote ? ` · ${esc(b.saleNote)}` : '';
+    return ` · 重点最多 8 场 · 精选 <b>${items.length}</b> 场（只发胜平负）${tip}${sale}`;
+  }
+  if(b.board === 'bd'){
+    const strong = items.filter(it => it.isFeatured).length;
+    return ` · 最多 11 场 · 强推荐 <b>${strong}</b> 场 · 只发胜平负`;
+  }
+  return '';
+}
+
+function featTagHtml(board, it){
+  if(!it.isFeatured) return '';
+  if(board === 'bd') return '<span class="feat-tag strong-tag">强推荐</span>';
+  return '<span class="feat-tag">精选</span>';
+}
+
+function pickKey(board, kind, matchNo){ return `${board}|${kind}|${matchNo}`; }
+
+function canPickScore(it){ return !!(it.scores && it.scores.length); }
+function canPickSpf(it){ return it.result === '3' || it.result === '1' || it.result === '0'; }
+
+function pickMax(board){ return board === 'bd' ? 15 : 8; }
+
+function isPicked(board, kind, matchNo){
+  return !!(_betPicks[pickKey(board, kind, matchNo)]);
+}
+
+function setPick(board, kind, it, on){
+  const key = pickKey(board, kind, it.matchNo);
+  if(on){
+    const max = pickMax(board);
+    const n = countPicks(board, kind);
+    if(n >= max && !_betPicks[key]){
+      alert(`${board==='bd'?'北单':'竞彩'}${kind==='score'?'比分':'胜负'}最多勾选 ${max} 场`);
+      return false;
+    }
+    _betPicks[key] = { board, kind, item: it };
+  } else {
+    delete _betPicks[key];
+  }
+  return true;
+}
+
+function countPicks(board, kind){
+  let n = 0;
+  for(const k of Object.keys(_betPicks)){
+    const p = _betPicks[k];
+    if(p.board === board && p.kind === kind) n++;
+  }
+  return n;
+}
+
+/** 官方场次序：北单 1→300；竞彩 周一…周日 + 场次号 */
+function officialMatchOrder(matchNo){
+  const s = String(matchNo || '').trim();
+  if(!s) return Number.MAX_SAFE_INTEGER;
+  if(/^\d+$/.test(s)) return Number(s);
+  const dayMap = {周一:1,周二:2,周三:3,周四:4,周五:5,周六:6,周日:7};
+  let day = 0;
+  for(const k of Object.keys(dayMap)){ if(s.includes(k)){ day = dayMap[k]; break; } }
+  const num = Number((s.match(/\d+/) || ['0'])[0]);
+  return day * 1000 + num;
+}
+function officialMatchSort(a, b){
+  const d = officialMatchOrder(a.matchNo) - officialMatchOrder(b.matchNo);
+  if(d !== 0) return d;
+  return String(a.matchNo||'').localeCompare(String(b.matchNo||''), 'zh');
+}
+
+function listPicks(board, kind){
+  return Object.values(_betPicks).filter(p => p.board === board && p.kind === kind)
+    .map(p => p.item)
+    .sort(officialMatchSort);
+}
+
+function pickCheckboxHtml(board, kind, it){
+  const ok = kind === 'score' ? canPickScore(it) : canPickSpf(it);
+  const checked = isPicked(board, kind, it.matchNo);
+  const label = kind === 'score' ? '比分' : '胜负';
+  if(!ok) return `<label class="dis" title="无推荐${label}"><input type="checkbox" disabled /> ${label}</label>`;
+  return `<label class="${checked?'on':''}"><input type="checkbox" data-pick="${board}" data-kind="${kind}" data-mno="${esc(it.matchNo||'')}" ${checked?'checked':''} /> ${label}</label>`;
+}
+
+function renderBoard(b, strongOnly){
+  const badge = 'badge-' + b.board;
+  let items = (b.items || []).slice();
+  if(strongOnly) items = items.filter(it => it.hitProbability != null && Number(it.hitProbability) >= 60);
+  if(b.board === 'jc' || b.board === 'bd' || b.board === 'sfc') items.sort(officialMatchSort);
+  const jc = b.board === 'jc';
+  const bd = b.board === 'bd';
+  const pickable = jc || bd;
+  // 缓存条目，勾选时取完整对象
+  if(!_boardItemMap[b.board]) _boardItemMap[b.board] = {};
+  for(const it of items){ if(it.matchNo) _boardItemMap[b.board][it.matchNo] = it; }
+
+  let html = `<div class="board" data-board="${b.board}">
+    <div class="board-head">
+      <span class="badge ${badge}">${b.name}</span>
+      <span class="meta">共 <b>${b.total}</b> 场受注 · 发布 <b>${items.length}</b> 场${slateMeta(b, items)}${b.board==='sfc' && b.slateHit!=null ? ` · 整期连乘 <b>${b.slateHit}%</b>` : ''}</span>
+    </div>
+    ${stakePlanHtml(b)}`;
+
+  if(items.length === 0){
+    html += `<div class="empty">${strongOnly ? '没有预计命中率达到 60% 的场' : '今天够格的场次不足，不凑数'}</div>`;
+  } else {
+    html += `<table class="tbl"><thead><tr>
+        ${pickable ? '<th>勾选</th>' : ''}
+        <th>场次</th><th>对阵</th><th>胜平负</th>
+        <th>预计命中</th><th>水位</th><th>依据</th>
+      </tr></thead><tbody>`;
+    for(const it of items){
+      const hcp = hcpText(it.handicap);
+      const tm = it.matchTime ? new Date(it.matchTime).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+      const feat = featTagHtml(b.board, it);
+      const rate = it.hitProbability != null ? Number(it.hitProbability).toFixed(1) + '%' : confText(it.confidence);
+      html += `<tr>
+        ${pickable ? `<td class="pick-cell">${pickCheckboxHtml(b.board,'spf',it)}</td>` : ''}
+        <td class="match-no">${it.matchNo}${feat}</td>
+        <td><div class="teams">${it.homeTeam}<span class="vs">VS</span>${it.awayTeam}</div>
+            <div class="league">${it.leagueName||''} ${tm}${hcp ? ' · 让' + hcp : ''}</div></td>
+        <td>${resultTag(it.result)}</td>
+        <td><span class="conf"><b>${rate}</b></span>${lvlTag(it.signalLevel)}</td>
+        <td class="water" data-mid="${it.matchId||''}" data-mno="${it.matchNo||''}"></td>
+        <td class="signal">${it.signalDesc}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+
+    html += `<div class="cards">`;
+    for(const it of items){
+      const hcp = hcpText(it.handicap);
+      const tm = it.matchTime ? new Date(it.matchTime).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+      html += `<div class="m-card">
+        <div class="m-top">
+          <span class="m-no">${it.matchNo}</span>
+          <span>${featTagHtml(b.board, it)}<span class="m-league">${it.leagueName||''}</span></span>
+        </div>
+        ${pickable ? `<div class="pick-cell" style="margin:6px 0">${pickCheckboxHtml(b.board,'spf',it)}</div>` : ''}
+        <div class="m-teams">${it.homeTeam}<span class="vs">VS</span>${it.awayTeam}</div>
+        <div class="m-time">${tm}${hcp ? ' · 让球 ' + hcp : ''}</div>
+        <div class="m-row"><span class="lbl">胜平负</span>${resultTag(it.result)}</div>
+        <div class="m-row"><span class="lbl">预计命中</span><span class="val">${it.hitProbability!=null ? Number(it.hitProbability).toFixed(1)+'%' : confText(it.confidence)}${lvlTag(it.signalLevel)}</span></div>
+        <div class="m-row"><span class="lbl">水位</span><span class="water" data-mid="${it.matchId||''}" data-mno="${it.matchNo||''}"></span></div>
+        <div class="m-signal">${it.signalDesc}</div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+let _boards = [];
+/** @type {Record<string, {board:string, kind:string, item:any}>} */
+let _betPicks = {};
+/** @type {Record<string, Record<string, any>>} */
+let _boardItemMap = {};
+/** 串关勾选：board|kind → Set of '2串1'… */
+let _betPass = {};
+
+async function loadRecommendations(){
+  syncRecommendDate();
+  const isToday = recommendDate === localYmd(new Date());
+  try{
+    if(!isToday){
+      const data = await api('/api/recommend/history?date=' + encodeURIComponent(recommendDate));
+      $('#dateLabel').textContent = '已保存的推荐';
+      renderSavedRecommend(data);
+      $('#analysis').innerHTML = '';
+      const mp = $('#milkPanel');
+      if(mp){ mp.style.display = 'none'; mp.dataset.hasContent = ''; mp.innerHTML = ''; }
+      return;
+    }
+    const data = await api('/api/recommend');
+    _boards = data.boards || [];
+    $('#dateLabel').textContent = '';
+    renderBoards();
+    loadAnalysis();
+    loadMilkWatch();
+  }catch(err){
+    if(err.message !== 'unauthorized') $('#boards').innerHTML = `<div class="empty">加载失败：${err.message}</div>`;
+  }
+}
+
+async function loadMilkWatch(){
+  const box = $('#milkPanel');
+  if(!box) return;
+  // 只挂在「今日推荐」；其它页签（含我的投注）不展示
+  if(currentSportsTab !== 'recommend'){
+    box.style.display = 'none';
+    return;
+  }
+  try{
+    const data = await api('/api/milk/today');
+    const items = data.items || [];
+    const limit = data.pickLimit || 6;
+    if(!items.length){
+      box.dataset.hasContent = '1';
+      box.style.display = 'block';
+      box.innerHTML = `<div class="milk-head"><h3>大奶精选</h3><span class="dim">今日暂无够格场次</span></div>
+        <p class="milk-note">${esc(data.note || '看 Focus 主观察点；非主推。')}</p>
+        <div class="milk-stats-bar"><button type="button" id="milkStatsBtn">近90天频率</button><span id="milkStatsText"></span></div>`;
+      bindMilkStats();
+      return;
+    }
+    const rows = items.map((it, idx) => {
+      const tags = (it.tags || []).map(t => `<span class="milk-tag" title="${esc(t.note || '')}">${esc(t.label || t.tag)}</span>`).join('');
+      const meta = [
+        it.totalLine != null ? `大小球 ${it.totalLine}` : null,
+        it.jq7Sp != null ? `7+ ${it.jq7Sp}` : null,
+        it.bqWinLoseSp != null ? `胜/负 ${it.bqWinLoseSp}` : null,
+        it.bqLoseWinSp != null ? `负/胜 ${it.bqLoseWinSp}` : null,
+        it.euHome != null ? `主 ${it.euHome}` : null,
+        it.euAway != null ? `客 ${it.euAway}` : null
+      ].filter(Boolean).join(' · ');
+      const board = it.board === 'jc' ? '竞彩' : it.board === 'bd' ? '北单' : (it.board || '');
+      const how = milkHowToUse(it.focus);
+      return `<tr>
+        <td class="match-no">#${idx+1}<br>${esc(board)} ${esc(it.matchNo || '')}</td>
+        <td><div class="teams">${esc(it.home || '')}<span class="vs">VS</span>${esc(it.away || '')}</div>
+          <div class="milk-row-meta">${esc(it.league || '')}${it.matchTime ? ' · ' + esc(String(it.matchTime).replace('T',' ').slice(0,16)) : ''}</div>
+          <div class="milk-row-meta"><b>${esc(it.focus || '')}</b> · 分 ${esc(String(it.score ?? ''))} · ${esc(how)}</div></td>
+        <td><div class="milk-tags">${tags}</div><div class="milk-row-meta">${esc(meta)}</div></td>
+      </tr>`;
+    }).join('');
+    if(currentSportsTab !== 'recommend'){ box.style.display = 'none'; return; }
+    box.dataset.hasContent = '1';
+    box.style.display = 'block';
+    box.innerHTML = `<div class="milk-head"><h3>大奶精选</h3>
+        <span class="dim">最多 ${limit} 场 · 池 ${data.poolCount ?? '—'} → 精选 ${items.length} · 受注 ${data.cardCount || 0}</span></div>
+      <p class="milk-note">${esc(data.note || '')}<br>
+        只看 Focus（爆冷 / 高球 / 翻转 / 非常规比分），赛后对一下有没有打出尾巴；不跟单、不加仓。</p>
+      <div class="milk-stats-bar"><button type="button" id="milkStatsBtn">近90天频率</button><span id="milkStatsText"></span></div>
+      <div class="board-scroll"><table class="tbl"><thead><tr>
+        <th>序号</th><th>对阵 / 怎么看</th><th>标签与水位</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>`;
+    bindMilkStats();
+  }catch(err){
+    if(err.message === 'unauthorized') return;
+    if(currentSportsTab !== 'recommend'){ box.style.display = 'none'; return; }
+    box.dataset.hasContent = '1';
+    box.style.display = 'block';
+    box.innerHTML = `<div class="empty">大奶观察加载失败：${esc(err.message)}</div>`;
+  }
+}
+
+function milkHowToUse(focus){
+  const f = focus || '';
+  if(f.includes('爆冷')) return '观察：大热会不会翻车';
+  if(f.includes('高球')) return '观察：会不会打出 7+ / 大比分';
+  if(f.includes('翻转')) return '观察：会不会胜/负 或 负/胜';
+  if(f.includes('非常规') || f.includes('比分')) return '观察：会不会胜其它 / 负其它';
+  return '仅观察，不投注';
+}
+
+function bindMilkStats(){
+  const btn = $('#milkStatsBtn');
+  if(!btn) return;
+  btn.onclick = async () => {
+    const text = $('#milkStatsText');
+    if(text) text.textContent = '加载中…';
+    try{
+      const s = await api('/api/milk/stats?scope=all');
+      const parts = (s.tags || []).slice(0, 6).map(t => `${t.label} ${t.ratePct}%`).join(' · ');
+      if(text) text.textContent = `全库 ${s.matchCount} 场 · 大奶场 ${s.milkMatchCount} · 有大奶日占比 ${s.milkDayPct90}%` + (parts ? `｜${parts}` : '');
+    }catch(e){
+      if(text) text.textContent = e.message || '失败';
+    }
+  };
+}
+
+function renderSavedRecommend(data){
+  const items = data.items || [];
+  const groups = {jc:[], bd:[], sfc:[]};
+  for(const it of items){ if(groups[it.board]) groups[it.board].push(it); }
+  const order = [['jc','竞彩'],['bd','北单'],['sfc','胜负彩']];
+  if(items.length === 0){
+    $('#boards').innerHTML = `<div class="empty">${esc(data.date)} 没有保存的推荐</div>`;
+    return;
+  }
+  let html = '';
+  for(const [b, name] of order){
+    const list = (groups[b] || []).slice().sort(officialMatchSort);
+    if(!list.length) continue;
+    const scored = list.filter(reviewCounts);
+    const hitN = scored.filter(it => it.hit === true).length;
+    const rate = scored.length ? wilsonText(hitN, scored.length) : null;
+    const meta = `共 ${list.length} 场` + (scored.length ? ` · 计入 ${scored.length} 场 · 命中 ${hitN} 场 · ${rate}` : '');
+    const rows = list.map(it => {
+      const rr = it.isCoverAll || !it.recResult ? '全包' : (RESULT_TEXT[it.recResult] || it.recResult);
+      const ar = it.actualResult ? (RESULT_TEXT[it.actualResult] || it.actualResult) : '—';
+      const counted = reviewCounts(it);
+      const hit = !counted ? '<span class="dim">不计入</span>'
+        : it.hit === true ? '<span class="hit-tag">命中</span>'
+        : it.hit === false ? '<span class="miss-tag">未中</span>'
+        : '<span class="dim">待定</span>';
+      const scores = [it.score1, it.score2].filter(Boolean).join('、') || '—';
+      return `<tr>
+        <td class="match-no">${esc(it.matchNo || '')}</td>
+        <td><div class="teams">${esc(it.homeTeam || '')}<span class="vs">VS</span>${esc(it.awayTeam || '')}</div></td>
+        <td>${esc(rr)}</td>
+        <td>${esc(ar)}</td>
+        <td class="mono">${esc(it.actualScore || '—')}</td>
+        <td class="predict">${esc(scores)}</td>
+        <td><span class="conf"><b>${confText(it.confidence)}</b></span></td>
+        <td>${hit}</td>
+        <td class="signal">${esc(it.signalDesc || '')}</td>
+      </tr>`;
+    }).join('');
+    html += `<div class="board">
+      <div class="board-head"><span class="badge badge-${b}">${name}</span><span class="meta">${meta}</span></div>
+      <div class="board-scroll"><table class="tbl"><thead><tr>
+        <th>场次</th><th>对阵</th><th>推荐</th><th>实际</th><th>比分</th><th>比分候选</th><th>置信度</th><th>结果</th><th>依据</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>
+    </div>`;
+  }
+  $('#boards').innerHTML = html;
+}
+
+function renderBoards(){
+  const strongOnly = $('#strongOnly').checked;
+  $('#boards').innerHTML = _boards.map(b => renderBoard(b, strongOnly)).join('');
+  const planBtn = document.querySelector('[data-fill-stake]');
+  if(planBtn){
+    const jc = _boards.find(b => b.board === 'jc');
+    planBtn.onclick = () => fillJcStakePlan(jc && jc.stakePlan);
+  }
+  bindPickCheckboxes();
+  renderBetPickBar();
+  loadWater();
+  loadJcWater();
+}
+
+$('#strongOnly').onchange = renderBoards;
+
+function bindPickCheckboxes(){
+  document.querySelectorAll('input[data-pick]').forEach(inp => {
+    inp.onchange = () => {
+      const board = inp.getAttribute('data-pick');
+      const kind = inp.getAttribute('data-kind');
+      const mno = inp.getAttribute('data-mno');
+      const it = (_boardItemMap[board] || {})[mno];
+      if(!it){ inp.checked = false; return; }
+      const ok = setPick(board, kind, it, inp.checked);
+      if(!ok){ inp.checked = false; return; }
+      document.querySelectorAll(`input[data-pick="${board}"][data-kind="${kind}"][data-mno="${CSS.escape(mno)}"]`).forEach(el => {
+        el.checked = inp.checked;
+        el.closest('label')?.classList.toggle('on', inp.checked);
+      });
+      renderBetPickBar();
+    };
+  });
+}
+
+function passOptionsFor(n){
+  const opts = [];
+  if(n >= 2) opts.push('2串1');
+  if(n >= 3) opts.push('3串1');
+  return opts;
+}
+
+function getPassSet(board, kind){
+  const key = board + '|' + kind;
+  if(!_betPass[key]) _betPass[key] = new Set();
+  return _betPass[key];
+}
+
+function selectedPassType(board, kind, n){
+  const allowed = passOptionsFor(n);
+  const set = getPassSet(board, kind);
+  [...set].forEach(p => { if(!allowed.includes(p)) set.delete(p); });
+  if(set.size === 0 && allowed.length){
+    set.add('2串1');
+    if(n === 3) set.add('3串1');
+  }
+  return allowed.filter(p => set.has(p));
+}
+
+function renderBetPickBar(){
+  const bar = $('#betPickBar');
+  if(!bar) return;
+  const boards = ['jc','bd'];
+  let any = false;
+  let html = '';
+  for(const board of boards){
+    const name = board === 'jc' ? '竞彩' : '北单';
+    for(const kind of ['spf','score']){
+      const n = countPicks(board, kind);
+      if(n === 0) continue;
+      any = true;
+      const kindName = kind === 'score' ? '比分' : '胜负';
+      const passes = passOptionsFor(n);
+      const selected = selectedPassType(board, kind, n);
+      const passHtml = passes.map(p => {
+        const on = selected.includes(p);
+        return `<label class="${on?'on':''}"><input type="checkbox" data-pass-board="${board}" data-pass-kind="${kind}" value="${p}" ${on?'checked':''}/> ${p}</label>`;
+      }).join('');
+      html += `<div class="bp-block" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;width:100%">
+        <span class="bp-title">${name}·${kindName}</span>
+        <span class="bp-meta">已选 <b>${n}</b> 场（最多 ${pickMax(board)}）${n>=4 && board==='jc' && kind==='spf'?' · 这些低水不要自己串高串，中高水用上面 74 元票':''}</span>
+        <span class="bp-pass">${passHtml || '<span class="bp-meta">单关可不选串</span>'}</span>
+        <span class="bp-acts">
+          <button type="button" class="btn btn-ghost" data-clear-board="${board}" data-clear-kind="${kind}">清空</button>
+          <button type="button" class="btn btn-primary" data-bet-board="${board}" data-bet-kind="${kind}">投注</button>
+        </span>
+      </div>`;
+    }
+  }
+  if(!any){
+    bar.classList.remove('show');
+    bar.innerHTML = '';
+    return;
+  }
+  bar.classList.add('show');
+  bar.innerHTML = html;
+  bar.querySelectorAll('input[data-pass-board]').forEach(inp => {
+    inp.onchange = () => {
+      const set = getPassSet(inp.getAttribute('data-pass-board'), inp.getAttribute('data-pass-kind'));
+      if(inp.checked) set.add(inp.value); else set.delete(inp.value);
+      renderBetPickBar();
+    };
+  });
+  bar.querySelectorAll('[data-clear-board]').forEach(btn => {
+    btn.onclick = () => {
+      const board = btn.getAttribute('data-clear-board');
+      const kind = btn.getAttribute('data-clear-kind');
+      Object.keys(_betPicks).forEach(k => {
+        if(_betPicks[k].board === board && _betPicks[k].kind === kind) delete _betPicks[k];
+      });
+      delete _betPass[board + '|' + kind];
+      renderBoards();
+    };
+  });
+  bar.querySelectorAll('[data-bet-board]').forEach(btn => {
+    btn.onclick = () => goBetFromPicks(btn.getAttribute('data-bet-board'), btn.getAttribute('data-bet-kind'));
+  });
+}
+
+/** 「胜负」勾选 = 不让球胜平负（红字方向）；不用让胜/让平/让负 */
+function toPlainSpf(opt){
+  if(!opt) return '';
+  return String(opt).replace(/让/g, '').replace('主胜', '胜').replace('客胜', '负').replace('主负', '负').trim();
+}
+function spfOptionFromItem(it){
+  const map = {'3':'胜','1':'平','0':'负'};
+  if(it.result && map[it.result]) return map[it.result];
+  if(it.resultText === '主胜') return '胜';
+  if(it.resultText === '客胜') return '负';
+  if(it.resultText === '平局') return '平';
+  return it.resultText || '';
+}
+
+function goBetFromPicks(board, kind){
+  const items = listPicks(board, kind);
+  if(items.length === 0){ alert('请先勾选场次'); return; }
+  const n = items.length;
+  let passes = selectedPassType(board, kind, n);
+  if(n >= 2 && passes.length === 0){
+    alert('请至少勾选一种过关方式（如 2串1 / 3串1）');
+    return;
+  }
+  const passType = passes.join('#');
+  const isScore = kind === 'score';
+  // 勾选「胜负」一律记胜平负；勾选「比分」记全场比分。勿因旁路有让球推荐改玩法。
+  const playType = isScore ? '全场比分' : '胜平负';
+  const ticketKind = board === 'bd'
+    ? (isScore ? 'bd-score' : 'bd-spf')
+    : (isScore ? 'jc-score' : 'jc-spf');
+
+  _pendingBetFill = {
+    board, playType, passType, ticketKind, multiple: 1,
+    lines: items.map(it => {
+      const scores = it.scores || [];
+      return {
+        matchNo: it.matchNo,
+        home: it.homeTeam,
+        away: it.awayTeam,
+        handicap: '',
+        option1: isScore ? (scores[0] || '') : spfOptionFromItem(it),
+        option2: isScore ? (scores[1] || '') : '',
+        odds1: '', odds2: ''
+      };
+    })
+  };
+
+  switchTab('mybets');
+}
+
+/** 从推荐勾选跳转后预填方案 */
+let _pendingBetFill = null;
+
+function applyPendingBetFill(){
+  if(!_pendingBetFill) return;
+  const d = _pendingBetFill;
+  _pendingBetFill = null;
+  // 等 loadMybets 渲染完表单
+  const tryFill = () => {
+    if(!$('#nbBoard')){ setTimeout(tryFill, 50); return; }
+    $('#nbBoard').value = d.board;
+    const tk = $('#nbTicketKind');
+    if(tk) tk.value = d.ticketKind;
+    $('#nbPlay').value = d.playType;
+    $('#nbPass').value = d.passType || '';
+    $('#nbMult').value = d.multiple || 1;
+    $('#nbAmount').value = '';
+    $('#nbExpected').value = '';
+    const tbody = $('#nbLines');
+    tbody.innerHTML = '';
+    d.lines.forEach(l => addLineRow(l));
+    const form = document.querySelector('details.bet-form');
+    if(form) form.open = true;
+    const msg = $('#nbMsg');
+    if(msg) msg.textContent = `已从推荐填入 ${d.lines.length} 场 · ${d.playType} · ${d.passType || '过关待填'}，请核赔率后保存`;
+    form?.scrollIntoView({behavior:'smooth', block:'start'});
+  };
+  tryFill();
+}
+
+/* ============ 水位变化（胜平负三线 + 必发成交量）============ */
+
+// 箭头：涨红↑、跌绿↓、平灰—
+function arrow(delta, digits){
+  if(delta == null) return '<span class="arrow-flat">—</span>';
+  const d = Number(delta);
+  const txt = d.toFixed(digits||2);
+  if(d > 0) return `<span class="arrow-up">↑${txt}</span>`;
+  if(d < 0) return `<span class="arrow-down">↓${Math.abs(d).toFixed(digits||2)}</span>`;
+  return '<span class="arrow-flat">→0.00</span>';
+}
+
+function renderWaterCell(el, w){
+  if(!w){
+    el.innerHTML = '<span class="water-loading">暂无采样</span>';
+    return;
+  }
+  const s = w.latestSpf;
+  const ex = w.latestExchange;
+  let html = '';
+  if(s){
+    const t = s.capturedAt ? new Date(s.capturedAt).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}) : '';
+    html += `<div class="w-row"><span class="w-name">胜</span><span class="w-val">${s.home??'—'}</span><span class="w-delta">${arrow(s.homeDelta)}</span></div>`;
+    html += `<div class="w-row"><span class="w-name">平</span><span class="w-val">${s.draw??'—'}</span><span class="w-delta">${arrow(s.drawDelta)}</span></div>`;
+    html += `<div class="w-row"><span class="w-name">负</span><span class="w-val">${s.away??'—'}</span><span class="w-delta">${arrow(s.awayDelta)}</span></div>`;
+    if(ex){
+      const vol = ex.totalVolume != null ? (ex.totalVolume>=10000 ? (ex.totalVolume/10000).toFixed(1)+'万' : ex.totalVolume) : '—';
+      html += `<div class="w-row"><span class="w-name">买</span><span class="w-val">${vol}</span><span class="w-delta">${arrow(ex.volumeHomeDelta != null ? ex.volumeHomeDelta + ex.volumeDrawDelta + ex.volumeAwayDelta : null, 0)}</span></div>`;
+    }
+    if(t) html += `<div class="w-time">@${t}</div>`;
+  } else if(ex){
+    const vol = ex.totalVolume != null ? (ex.totalVolume>=10000 ? (ex.totalVolume/10000).toFixed(1)+'万' : ex.totalVolume) : '—';
+    html += `<div class="w-row"><span class="w-name">买</span><span class="w-val">${vol}</span><span class="w-delta">${arrow(ex.volumeHomeDelta != null ? ex.volumeHomeDelta + ex.volumeDrawDelta + ex.volumeAwayDelta : null, 0)}</span></div>`;
+  } else {
+    html = '<span class="water-loading">暂无采样</span>';
+  }
+  el.innerHTML = html;
+}
+
+let _waterLoading = false;
+async function loadWater(){
+  const cells = document.querySelectorAll('.water[data-mid]');
+  if(cells.length === 0) return;
+  _waterLoading = true;
+  const mids = new Set();
+  cells.forEach(c => { const m = c.getAttribute('data-mid'); if(m) mids.add(m); });
+
+  const results = {};
+  // 并发但限流，避免一次性打爆接口
+  const ids = [...mids];
+  await Promise.all(ids.map(async (mid) => {
+    try{
+      const w = await api('/api/football/water/' + mid);
+      results[mid] = w;
+    }catch(e){ results[mid] = null; }
+  }));
+
+  // 重新查询 DOM（可能已因筛选重渲染），按 mid 填充
+  cells.forEach(c => {
+    const m = c.getAttribute('data-mid');
+    if(m && results[m]) renderWaterCell(c, results[m]);
+    else if(m) renderWaterCell(c, null);
+  });
+  _waterLoading = false;
+}
+
+/* ============ 竞彩固定奖金四类玩法即时水位（涨跌箭头）============ */
+
+// 玩法显示名映射
+const JC_PLAY_NAME = {'NSPF':'让球胜平负','SPF':'胜平负','BF':'比分','JQ':'总进球','BQ':'半全场'};
+
+// 渲染竞彩固定奖金水位：让球胜平负 + 胜平负 显示赔率+涨跌箭头，比分/总进球/半全场折叠
+function renderJcWater(el, w){
+  if(!w || !w.groups || w.groups.length === 0){
+    return; // 无数据时不覆盖欧赔水位的显示
+  }
+  const t = w.capturedAt ? new Date(w.capturedAt).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}) : '';
+  // 找让球胜平负和胜平负两组
+  const nspf = w.groups.find(g => g.playType === 'NSPF');
+  const spf = w.groups.find(g => g.playType === 'SPF');
+  const others = w.groups.filter(g => g.playType !== 'NSPF' && g.playType !== 'SPF');
+
+  let html = '<div class="jc-water">';
+  const renderGroup = (g, label) => {
+    if(!g) return '';
+    let h = `<div class="jc-grp"><span class="jc-label">${label}</span>`;
+    h += g.options.map(o => {
+      const d = o.delta;
+      const ar = d == null ? '' : (d > 0 ? `<span class="arrow-up">↑</span>` : d < 0 ? `<span class="arrow-down">↓</span>` : '<span class="arrow-flat">→</span>');
+      return `<span class="jc-opt"><b>${o.name}</b> ${o.odds}${ar}</span>`;
+    }).join('');
+    h += '</div>';
+    return h;
+  };
+  html += renderGroup(nspf, '让球');
+  html += renderGroup(spf, '胜平负');
+
+  // 其他玩法折叠为一行摘要（只显示有变化的选项）
+  if(others.length > 0){
+    const changed = [];
+    others.forEach(g => {
+      g.options.forEach(o => {
+        if(o.delta != null && o.delta !== 0) changed.push({g: JC_PLAY_NAME[g.playType]||g.playType, o});
+      });
+    });
+    html += `<div class="jc-more" title="${others.map(g => g.options.map(o => `${o.name}:${o.odds}`).join(' ')).join('  ')}">
+      <span class="jc-label">其他玩法</span><span class="jc-more-info">${others.length}类·变动 ${changed.length}</span></div>`;
+  }
+
+  if(t) html += `<div class="jc-time">@${t}</div>`;
+  html += '</div>';
+
+  // 在原有欧赔水位前插入竞彩固定奖金
+  const oldHtml = el.innerHTML;
+  if(oldHtml && !oldHtml.includes('暂无采样')){
+    el.innerHTML = html + '<div class="w-divider"></div>' + oldHtml;
+  } else {
+    el.innerHTML = html;
+  }
+}
+
+async function loadJcWater(){
+  const cells = document.querySelectorAll('.water[data-mno]');
+  if(cells.length === 0) return;
+  const mnos = new Set();
+  cells.forEach(c => { const m = c.getAttribute('data-mno'); if(m) mnos.add(m); });
+
+  const results = {};
+  await Promise.all([...mnos].map(async (mno) => {
+    try{
+      const w = await api('/api/football/jc-water/' + encodeURIComponent(mno));
+      results[mno] = w;
+    }catch(e){ results[mno] = null; }
+  }));
+
+  cells.forEach(c => {
+    const m = c.getAttribute('data-mno');
+    if(m && results[m]) renderJcWater(c, results[m]);
+  });
+}
+
+function analysisTable(title, rows, cols){
+  if(!rows || rows.length===0) return '';
+  let html = `<div class="board"><div class="board-head"><span class="badge" style="background:#2a2a2a;color:#ccc">${title}</span></div>
+    <div class="board-scroll"><table class="tbl"><thead><tr>${cols.map(c=>`<th>${c[1]}</th>`).join('')}</tr></thead><tbody>`;
+  for(const r of rows){
+    html += `<tr>${cols.map(c=>`<td>${r[c[0]] ?? ''}</td>`).join('')}</tr>`;
+  }
+  html += `</tbody></table></div></div>`;
+  return html;
+}
+
+async function loadAnalysis(){
+  try{
+    const a = await api('/api/analysis/today');
+    let html = `<div class="board"><div class="board-head"><span class="badge" style="background:#2a2a2a;color:#ccc">今日规律（${a.matchCount} 场完场回测）</span></div></div>`;
+    html += analysisTable('赔率变化 → 赛果', a.oddsMovement, [['grp','分组'],['n','场次'],['homePct','主胜%'],['awayPct','客胜%']]);
+    html += analysisTable('必发投注 → 赛果', a.exchange, [['grp','分组'],['n','场次'],['homePct','主胜%'],['awayPct','客胜%']]);
+    html += analysisTable('亚盘让球 → 赛果', a.asian, [['grp','分组'],['n','场次'],['homePct','主胜%'],['awayPct','客胜%']]);
+    html += analysisTable('大小球盘口 → 大球率', a.totals, [['grp','分组'],['n','场次'],['overPct','大球%']]);
+    $('#analysis').innerHTML = html;
+  }catch(e){ $('#analysis').innerHTML=''; }
+}
+
+/* ============ 大类切换 + 体育彩票页签 ============ */
+
+let currentCat = 'sports';
+let currentSportsTab = 'recommend';
+
+$('#catSports').onclick = () => switchCat('sports');
+$('#catDigital').onclick = () => switchCat('digital');
+
+$('#tabRecommend').onclick = () => switchTab('recommend');
+$('#tabMybets').onclick = () => switchTab('mybets');
+$('#tabSummary').onclick = () => switchTab('summary');
+$('#tabHistory').onclick = () => switchTab('history');
+$('#tabReview').onclick = () => switchTab('review');
+$('#tabJobs').onclick = () => switchTab('jobs');
+
+function switchCat(cat){
+  currentCat = cat;
+  const isSports = cat === 'sports';
+  $('#catSports').classList.toggle('active', isSports);
+  $('#catDigital').classList.toggle('active', !isSports);
+  const sportsTabs = $('#sportsTabs');
+  if(sportsTabs) sportsTabs.style.display = isSports ? '' : 'none';
+  $('#sportsView').style.display = isSports ? '' : 'none';
+  $('#digitalView').style.display = isSports ? 'none' : '';
+  if(isSports){
+    switchTab(currentSportsTab);
+  }else{
+    const pageTitle = $('#pageTitle');
+    if(pageTitle) pageTitle.textContent = '数字彩';
+    document.title = 'AiFootBall · 数字彩';
+    loadLotto();
+  }
+}
+
+/* ============ 数字彩选号 ============ */
+let _lottoCode = 'ssq';
+let _lottoData = null;
+
+document.querySelectorAll('#lottoTabs button').forEach(btn => {
+  btn.onclick = () => {
+    _lottoCode = btn.getAttribute('data-lotto');
+    document.querySelectorAll('#lottoTabs button').forEach(b => b.classList.toggle('active', b === btn));
+    renderLotto();
+  };
+});
+$('#lottoRefresh').onclick = () => loadLotto();
+$('#lottoSave').onclick = async () => {
+  const st = $('#lottoStatus');
+  if(st) st.textContent = '正在重新生成…';
+  try{
+    await api('/api/lotto/recommend/save', { method:'POST' });
+    await loadLotto();
+    if(st) st.textContent = '已重新生成并保存';
+  }catch(e){ if(st) st.textContent = '生成失败：' + e.message; }
+};
+
+async function loadLotto(){
+  const st = $('#lottoStatus');
+  if(st) st.textContent = '加载中…';
+  try{
+    _lottoData = await api('/api/lotto/recommend');
+    renderLotto();
+    if(st) st.textContent = (_lottoData.source === 'saved' ? '已保存方案' : '即时计算') + ' · ' + (_lottoData.date || '');
+  }catch(e){
+    $('#lottoBoard').innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+    if(st) st.textContent = '';
+  }
+}
+
+function renderLotto(){
+  const box = $('#lottoBoard');
+  if(!_lottoData || !_lottoData.boards){
+    box.innerHTML = `<div class="empty">暂无数字彩方案，可点「重新生成并保存」</div>`;
+    return;
+  }
+  const board = (_lottoData.boards || []).find(b => (b.lotteryCode || '').toLowerCase() === _lottoCode)
+    || _lottoData.boards[0];
+  if(!board){ box.innerHTML = `<div class="empty">暂无数据</div>`; return; }
+
+  const isDigit = ['fc3d','pl3','pl5'].includes((board.lotteryCode || '').toLowerCase());
+  let html = `<div class="lotto-meta"><b>${esc(board.lotteryName || '')}</b>
+    · 目标期 <b>${esc(board.targetIssue || '—')}</b>
+    · 基于 <b>${esc(board.basedOnIssue || '—')}</b> 期
+    · ${esc(board.summary || '')}</div>`;
+
+  const picks = board.picks || [];
+  if(picks.length === 0){
+    html += `<div class="empty">该彩种暂无方案</div>`;
+    box.innerHTML = html;
+    return;
+  }
+  for(const p of picks){
+    html += `<div class="lotto-card ${p.isPrimary ? 'primary' : ''}">
+      <div class="lc-head">
+        <span class="lc-rank">${p.isPrimary ? '<span class="feat-tag strong-tag">主推</span>' : '备选 ' + p.rankNo}</span>
+        <span class="lc-play">${esc(p.playType || '')}</span>
+        <span class="lc-score">评分 ${p.score != null ? Number(p.score).toFixed(1) : '—'}</span>
+      </div>
+      <div class="lotto-balls">${lottoBallsHtml(p.reds, p.blues, isDigit)}</div>
+      <div class="lotto-desc">${esc(p.signalDesc || '')}</div>
+    </div>`;
+  }
+
+  // 推荐号码后面跟最新开奖结果
+  const draw = board.lastDraw;
+  if(draw){
+    html += `<div class="lotto-draw">
+      <div class="ld-title">开奖结果<span>第 ${esc(draw.issue || '')} 期 · ${esc(draw.drawDate || '')}</span></div>
+      <div class="lotto-balls">${lottoBallsHtml(draw.reds, draw.blues, isDigit)}</div>
+    </div>`;
+  }else{
+    html += `<div class="lotto-draw"><div class="ld-title">开奖结果<span>暂无</span></div></div>`;
+  }
+  box.innerHTML = html;
+}
+
+function lottoBallsHtml(reds, blues, isDigit){
+  const r = (reds || []).map(n =>
+    `<span class="ball ${isDigit ? 'ball-digit' : 'ball-red'}">${isDigit ? n : String(n).padStart(2,'0')}</span>`
+  ).join('');
+  const b = (blues || []).map(n =>
+    `<span class="ball ball-blue">${String(n).padStart(2,'0')}</span>`
+  ).join('');
+  return r + (b ? '<span style="width:8px"></span>' + b : '');
+}
+
+function switchTab(t){
+  currentSportsTab = t;
+  if(currentCat !== 'sports'){
+    currentCat = 'sports';
+    $('#catSports').classList.add('active');
+    $('#catDigital').classList.remove('active');
+    const sportsTabs = $('#sportsTabs');
+    if(sportsTabs) sportsTabs.style.display = '';
+    $('#sportsView').style.display = '';
+    $('#digitalView').style.display = 'none';
+  }
+  const isRec = t === 'recommend';
+  const isBet = t === 'mybets';
+  const isSum = t === 'summary';
+  const isHis = t === 'history';
+  const isRev = t === 'review';
+  const isJob = t === 'jobs';
+  $('#tabRecommend').classList.toggle('active', isRec);
+  $('#tabMybets').classList.toggle('active', isBet);
+  $('#tabSummary').classList.toggle('active', isSum);
+  $('#tabHistory').classList.toggle('active', isHis);
+  $('#tabReview').classList.toggle('active', isRev);
+  $('#tabJobs').classList.toggle('active', isJob);
+  $('#boards').style.display = isRec ? '' : 'none';
+  $('#analysis').style.display = isRec ? '' : 'none';
+  const milkPanel = $('#milkPanel');
+  if(milkPanel) milkPanel.style.display = isRec && milkPanel.dataset.hasContent === '1' ? '' : 'none';
+  $('#mybets').style.display = isBet ? '' : 'none';
+  $('#summary').style.display = isSum ? '' : 'none';
+  $('#history').style.display = isHis ? '' : 'none';
+  $('#review').style.display = isRev ? '' : 'none';
+  $('#jobs').style.display = isJob ? '' : 'none';
+  const titles = {recommend:'今日推荐', mybets:'我的投注', summary:'每日复盘', history:'历史推荐', review:'复盘查询', jobs:'采集设置'};
+  const pageTitle = $('#pageTitle');
+  if(pageTitle) pageTitle.textContent = titles[t] || '今日推荐';
+  document.title = 'AiFootBall · 体育彩票 · ' + (titles[t] || '今日推荐');
+  const topbar = document.querySelector('.topbar');
+  if(topbar) topbar.style.display = isRec ? '' : 'none';
+  const pickBar = $('#betPickBar');
+  if(pickBar) pickBar.style.display = isRec ? '' : 'none';
+  if(isBet) loadMybets().then(() => applyPendingBetFill());
+  if(isSum) loadSummary();
+  if(isHis) loadHistory();
+  if(isRev) loadReview();
+  if(isJob) loadJobs();
+}
+
+const JOB_META = {
+  'football-daily': ['赛程', '每天抓比赛名单，后面的赔率采样靠这份名单。'],
+  'cards-daily': ['受注场次', '抓竞彩、北单、胜负彩正在卖的场次。工作日竞彩 11:00 才开售，这个时间要排在开售之后。'],
+  'save-recommendations': ['保存推荐', '按受注场次算出今天的推荐。要比上面的受注场次晚几分钟。'],
+  'odds-sample': ['赔率采样', '只采开赛前这段时间里的欧赔，用来看水位升降。'],
+  'odds-sample-late': ['临场赔率', '开赛前 90 分钟再加密采一次。'],
+  'exchange': ['必发', '只采开赛前这段时间里的必发成交。'],
+  'water-sample': ['水位', '开赛前这段时间里，胜平负和必发一起采。'],
+  'jc-odds-sample': ['竞彩奖金', '竞彩胜平负、比分、进球、半全场的固定奖金。'],
+  'odds-backfill': ['赔率补齐', '凌晨把缺的历史赔率补上。'],
+  'settle-hourly': ['赛果回填', '采集完场比分，回填推荐，并自动结算我的投注。'],
+  'settle-recommendations': ['凌晨结算', '每天凌晨再结算一遍推荐。'],
+  'settle-purchases': ['投注结算', '按完场比分自动判定我的投注是否中奖并计算奖金。'],
+  'lotto-daily': ['数字彩开奖', '大乐透/双色球/3D 等开奖入库，并生成下一期选号。'],
+  'lotto-recommend': ['数字彩选号', '按规则为双色球/大乐透/3D/排三/排五生成主推+备选。']
+};
+const JOB_WINDOW = new Set(['odds-sample','exchange','water-sample']);
+const JOB_GAP = new Set(['odds-sample','odds-sample-late','exchange','water-sample']);
+
+function parseCron(cron){
+  const p = String(cron || '').trim().split(/\s+/);
+  if(p.length !== 5 || p[2] !== '*' || p[3] !== '*' || p[4] !== '*') return {kind:'raw', cron};
+  const [min, hour] = p;
+  if(min === '*' && hour === '*') return {kind:'interval', every:1};
+  if(min.startsWith('*/') && hour === '*') return {kind:'interval', every:Number(min.slice(2))};
+  if(hour === '*') return {kind:'hourly', minutes:min.split(',').map(x => x.trim()).filter(Boolean)};
+  const hours = hour.split(',').map(x => x.trim()).filter(Boolean);
+  const mm = String(min).padStart(2,'0');
+  return {kind:'daily', times:hours.map(h => `${String(h).padStart(2,'0')}:${mm}`)};
+}
+function buildCron(card){
+  const kind = card.dataset.kind;
+  if(kind === 'raw') return card.querySelector('[data-raw]').value.trim();
+  if(kind === 'interval'){
+    const n = Math.max(1, Math.round(Number(card.querySelector('[data-every]').value) || 1));
+    return n === 1 ? '* * * * *' : `*/${n} * * * *`;
+  }
+  if(kind === 'hourly'){
+    const mins = card.querySelector('[data-minutes]').value.split(/[,，\s]+/).map(x => String(Math.min(59, Math.max(0, Number(x))))).filter(x => x !== 'NaN');
+    if(!mins.length) return '';
+    return [...new Set(mins)].join(',') + ' * * * *';
+  }
+  const times = [...card.querySelectorAll('[data-time]')].map(el => el.value).filter(Boolean);
+  if(!times.length) return '';
+  const minutes = new Set(times.map(t => t.slice(3,5).replace(/^0/, '') || '0'));
+  if(minutes.size !== 1) return '';
+  const hours = [...new Set(times.map(t => String(Number(t.slice(0,2)))))].sort((a,b) => a-b);
+  return `${[...minutes][0]} ${hours.join(',')} * * *`;
+}
+function fmtNext(v){
+  if(!v) return '未排期';
+  const d = new Date(v);
+  if(Number.isNaN(d.getTime())) return String(v).replace('T',' ').slice(0,16);
+  const p = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function jobEditor(job){
+  const form = parseCron(job.cron);
+  if(form.kind === 'interval') return `<label>每隔</label><input data-every type="number" min="1" max="59" value="${form.every}" /> <span>分钟</span>`;
+  if(form.kind === 'hourly') return `<label>每小时的第</label><input data-minutes type="text" value="${form.minutes.join(',')}" /> <span>分钟，多个用逗号</span>`;
+  if(form.kind === 'daily'){
+    const times = form.times.map(t => `<input data-time type="time" value="${t}" />`).join('');
+    return `<label>每天</label><span data-times>${times}</span><button type="button" data-add-time>加一个时间</button>`;
+  }
+  return `<label>cron</label><input data-raw type="text" value="${esc(job.cron)}" />`;
+}
+async function loadJobs(){
+  const box = $('#jobs');
+  box.innerHTML = '<div class="dim">正在读取采集时间…</div>';
+  try{
+    const jobs = await api('/api/jobs');
+    box.innerHTML = `<p class="dim" style="margin:0 0 12px">改完点保存，调度马上按新时间跑，重启后也用这里的时间。同一天多个时间的分钟要一样，比如 11:10 和 16:10。</p><div class="job-list">${jobs.map(jobCard).join('')}</div>`;
+    box.querySelectorAll('[data-save]').forEach(btn => btn.onclick = () => saveJob(btn.dataset.save));
+    box.querySelectorAll('[data-add-time]').forEach(btn => btn.onclick = () => {
+      const span = btn.parentElement.querySelector('[data-times]');
+      span.insertAdjacentHTML('beforeend', '<input data-time type="time" value="16:40" />');
+    });
+  }catch(e){
+    box.innerHTML = `<div class="dim">读取失败：${esc(e.message || e)}</div>`;
+  }
+}
+function jobCard(job){
+  const meta = JOB_META[job.name] || [job.name, job.type];
+  const form = parseCron(job.cron);
+  const windowField = JOB_WINDOW.has(job.name)
+    ? `<div class="job-row"><label>只采开赛前</label><input data-hours type="number" min="1" max="72" value="${job.hours}" /> <span>小时内的场次</span></div>` : '';
+  const gapField = JOB_GAP.has(job.name)
+    ? `<div class="job-row"><label>同一场至少间隔</label><input data-gap type="number" min="1" max="240" value="${job.recheckMinutes}" /> <span>分钟</span></div>` : '';
+  return `<article class="job-card" data-name="${esc(job.name)}" data-kind="${form.kind}">
+    <h3>${esc(meta[0])}</h3>
+    <div class="hint">${esc(meta[1])}</div>
+    <div class="job-row">${jobEditor(job)}<label><input data-enabled type="checkbox" ${job.enabled ? 'checked' : ''}/> 启用</label><span class="job-next">下次 ${fmtNext(job.nextRun)}</span></div>
+    ${windowField}${gapField}
+    <div class="job-row"><button type="button" class="refresh" data-save="${esc(job.name)}">保存</button></div>
+    <div class="msg" data-msg></div>
+  </article>`;
+}
+async function saveJob(name){
+  const card = document.querySelector(`.job-card[data-name="${name}"]`);
+  const msg = card.querySelector('[data-msg]');
+  const cron = buildCron(card);
+  if(!cron){ msg.className = 'msg bad'; msg.textContent = '时间没填对。一天里多个时间的分钟要相同。'; return; }
+  const body = { cron, enabled: card.querySelector('[data-enabled]').checked };
+  const hours = card.querySelector('[data-hours]');
+  const gap = card.querySelector('[data-gap]');
+  if(hours) body.hours = Number(hours.value);
+  if(gap) body.recheckMinutes = Number(gap.value);
+  msg.className = 'msg';
+  msg.textContent = '保存中…';
+  try{
+    const res = await api('/api/jobs/' + encodeURIComponent(name), {method:'PUT', body:JSON.stringify(body)});
+    if(res.ok === false){ msg.className = 'msg bad'; msg.textContent = res.message || '保存失败'; return; }
+    await loadJobs();
+  }catch(e){
+    msg.className = 'msg bad';
+    msg.textContent = e.message || '保存失败';
+  }
+}
+
+const BOARD_TEXT = {'jc':'竞彩','bd':'北单','sfc':'胜负彩'};
+const STATUS_TEXT = {'PENDING':'待出票','WAIT':'待开奖','WON':'已中奖','LOST':'未中奖','CANCELLED':'已撤销'};
+
+let _purchases = [];
+let betsDate = '';
+
+function statsOfPurchases(items){
+  const total = items.length;
+  const won = items.filter(p => p.status === 'WON').length;
+  const totalBet = items.reduce((s,p) => s + Number(p.betAmount || 0), 0);
+  const totalWin = items.reduce((s,p) => s + Number(p.actualWin || 0), 0);
+  return {
+    totalPurchases: total,
+    wonPurchases: won,
+    winRate: total ? Math.round(won * 1000 / total) / 10 : 0,
+    totalBet,
+    totalWin
+  };
+}
+
+async function loadMybets(){
+  try{
+    const list = await api('/api/purchase' + (betsDate ? '?date=' + encodeURIComponent(betsDate) : ''));
+    _purchases = list.items || [];
+    const stats = betsDate ? statsOfPurchases(_purchases) : await api('/api/purchase/stats');
+    renderMybets(stats);
+  }catch(e){
+    $('#mybets').innerHTML = `<div class="empty">加载失败：${e.message}</div>`;
+  }
+}
+
+function renderMybets(stats){
+  let html = `<div class="page-head">${dateQueryHtml('bet', betsDate, true)}<span class="meta">${betsDate ? '当日方案' : '全部方案'} · ${_purchases.length} 个</span>
+    <button type="button" class="btn btn-primary" id="nbAutoSettleAll" style="margin-left:auto">自动结算</button></div>`;
+
+  // 统计卡片
+  const winRate = stats && stats.winRate != null ? stats.winRate : 0;
+  const totalBet = stats && stats.totalBet != null ? stats.totalBet : 0;
+  const totalWin = stats && stats.totalWin != null ? stats.totalWin : 0;
+  const profit = totalWin - totalBet;
+  html += `<div class="bet-stats">
+    <div class="stat-card"><div class="s-label">投注方案数</div><div class="s-val">${stats?.totalPurchases ?? 0}</div></div>
+    <div class="stat-card"><div class="s-label">中奖方案</div><div class="s-val win">${stats?.wonPurchases ?? 0}</div></div>
+    <div class="stat-card"><div class="s-label">命中率</div><div class="s-val">${winRate}%</div></div>
+    <div class="stat-card"><div class="s-label">总投入(元)</div><div class="s-val">${totalBet.toFixed(2)}</div></div>
+    <div class="stat-card"><div class="s-label">总回报(元)</div><div class="s-val win">${totalWin.toFixed(2)}</div></div>
+    <div class="stat-card"><div class="s-label">净盈亏(元)</div><div class="s-val ${profit>=0?'win':'lose'}">${profit>=0?'+':''}${profit.toFixed(2)}</div></div>
+  </div>`;
+
+  html += `<details class="bet-form">
+    <summary>录入新方案 <span>上传购彩截图后自动识别，或从今日精选填入</span></summary>
+    <div class="f-row">
+      <div class="f-group"><label>板块</label><select id="nbBoard">
+        <option value="jc">竞彩</option><option value="bd">北单</option><option value="sfc">胜负彩</option>
+      </select></div>
+      <div class="f-group"><label>票面类型</label><select id="nbTicketKind" title="上传前必选：比分与胜平负分开录">
+        <option value="jc-score">竞彩·全场比分</option>
+        <option value="jc-spf">竞彩·胜平负</option>
+        <option value="bd-score">北单·全场比分</option>
+        <option value="bd-spf">北单·胜平负</option>
+        <option value="jc-score-app">竞彩比分·App</option>
+        <option value="jc-spf-app">竞彩胜平负·App</option>
+        <option value="bd-score-app">北单比分·App</option>
+        <option value="bd-spf-app">北单胜平负·App</option>
+      </select></div>
+      <div class="f-group"><label>玩法</label><select id="nbPlay">
+        <option>全场比分</option><option>胜平负</option><option>让球胜平负</option><option>总进球</option><option>半全场</option><option>混合过关</option>
+      </select></div>
+      <div class="f-group"><label>过关方式</label><input id="nbPass" placeholder="如 2串1#3串1" /></div>
+      <div class="f-group"><label>倍数</label><input id="nbMult" type="number" value="1" min="1" style="width:60px" /></div>
+      <div class="f-group"><label>投注金额(元)</label><input id="nbAmount" type="number" step="0.01" placeholder="如 56.0" /></div>
+      <div class="f-group"><label>预计奖金(元)</label><input id="nbExpected" type="number" step="0.01" placeholder="可选" /></div>
+      <div class="f-group"><label>购买日期</label><input id="nbDate" type="date" /></div>
+      <div class="f-group" style="justify-content:flex-end">
+        <label>&nbsp;</label>
+        <button type="button" class="btn btn-ghost" id="nbFromFeat">从今日精选填入</button>
+      </div>
+    </div>
+    <div class="f-row">
+      <div class="f-group" style="flex:1;min-width:260px">
+        <label>购买截图（先选票面类型再上传；竞彩/北单、比分/胜平负请分开录）</label>
+        <div class="img-upload">
+          <input id="nbTicketFile" type="file" accept="image/*" />
+          <img id="nbTicketPrev" class="prev" style="display:none" />
+        </div>
+        <div class="b-meta" id="nbOcrMsg" style="margin-top:6px;min-height:16px"></div>
+      </div>
+    </div>
+    <table class="line-table">
+      <thead><tr>
+        <th>场次号</th><th>主队</th><th>客队</th><th>让球</th>
+        <th>选项1(如2:0)</th><th>赔率1</th><th>选项2(如3:1)</th><th>赔率2</th><th></th>
+      </tr></thead>
+      <tbody id="nbLines"></tbody>
+    </table>
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="btn btn-ghost" id="nbAddLine">+ 加一场</button>
+      <button class="btn btn-primary" id="nbSave">保存购买记录</button>
+      <span class="b-meta" id="nbMsg"></span>
+    </div>
+  </details>`;
+
+  // 历史列表
+  html += `<div id="nbList">`;
+  if(_purchases.length === 0){
+    html += `<div class="empty">${betsDate ? betsDate + ' 没有购买记录' : '暂无购买记录，点开上方录入'}</div>`;
+  } else {
+    for(const p of _purchases){
+      html += renderPurchaseItem(p);
+    }
+  }
+  html += `</div>`;
+
+  $('#mybets').innerHTML = html;
+
+  // 绑定事件
+  $('#nbDate').value = betsDate || localYmd(new Date());
+  bindDateQuery('bet', () => betsDate, v => { betsDate = v; }, loadMybets);
+  $('#nbAddLine').onclick = () => addLineRow();
+  $('#nbSave').onclick = savePurchase;
+  $('#nbFromFeat').onclick = () => fillFromFeatured();
+  const autoBtn = $('#nbAutoSettleAll');
+  if(autoBtn) autoBtn.onclick = () => autoSettleAll();
+  $('#nbTicketFile').onchange = e => { previewImage(e, 'nbTicketPrev'); ocrTicket(e); };
+  addLineRow(); addLineRow();
+}
+
+function passTypeFromCount(n){
+  if(n < 2) return '';
+  return n === 2 ? '2串1' : '2串1#3串1';
+}
+
+async function suggestPassFromFeatured(){
+  const pass = $('#nbPass');
+  if(!pass || pass.value.trim()) return;
+  try{
+    const data = await api('/api/recommend');
+    const jc = (data.boards || []).find(b => b.board === 'jc');
+    if(!jc) return;
+    const n = (jc.items || []).length;
+    if(jc.passType) pass.value = jc.passType;
+    else if(n >= 2) pass.value = passTypeFromCount(n);
+    if(jc.passTip) pass.title = jc.passTip;
+  }catch(_){ /* 忽略，手填即可 */ }
+}
+
+async function fillJcStakePlan(plan){
+  if(!plan || !plan.ready) return;
+  switchTab('mybets');
+  const tryFill = () => {
+    if(!$('#nbBoard')){ setTimeout(tryFill, 50); return; }
+    $('#nbBoard').value = 'jc';
+    $('#nbPlay').value = '让球胜平负';
+    $('#nbPass').value = plan.passType || '6串1#7串1#8串1';
+    $('#nbMult').value = plan.multiple || 1;
+    $('#nbAmount').value = plan.stake || 74;
+    $('#nbExpected').value = plan.allHit || '';
+    const tbody = $('#nbLines');
+    tbody.innerHTML = '';
+    (plan.lines || []).forEach(l => addLineRow({
+      matchNo: l.matchNo,
+      home: l.homeTeam,
+      away: l.awayTeam,
+      handicap: l.handicap,
+      option1: l.option,
+      odds1: l.odds,
+      option2: ''
+    }));
+    const msg = $('#nbMsg');
+    if(msg) msg.textContent = `已填入 74 元中高水让球票，${plan.passType}，${plan.multiple} 倍。全中约 ${plan.allHit} 元，错一场约 ${plan.missLow}–${plan.missHigh} 元，错两场约 ${plan.miss2Low}–${plan.miss2High} 元。请核对后保存`;
+    const form = document.querySelector('details.bet-form');
+    if(form) form.open = true;
+  };
+  tryFill();
+}
+
+async function fillFromFeatured(){
+  const msg = $('#nbMsg');
+  if(msg) msg.textContent = '读取今日精选…';
+  try{
+    const data = await api('/api/recommend');
+    const board = $('#nbBoard').value === 'bd' ? 'bd' : 'jc';
+    const picked = (data.boards || []).find(b => b.board === board);
+    const items = (picked && picked.items) || [];
+    if(items.length === 0){
+      if(msg) msg.textContent = board === 'bd' ? '今日暂无北单精选' : '今日暂无竞彩精选';
+      return;
+    }
+    $('#nbBoard').value = board;
+    $('#nbPlay').value = '胜平负';
+    const kind = document.getElementById('nbTicketKind');
+    if(kind) kind.value = board === 'bd' ? 'bd-spf' : 'jc-spf';
+    $('#nbPass').value = picked.passType || passTypeFromCount(items.length);
+    if(picked.passTip) $('#nbPass').title = picked.passTip;
+    const tbody = $('#nbLines');
+    tbody.innerHTML = '';
+    items.forEach(it => {
+      addLineRow({
+        matchNo: it.matchNo,
+        home: it.homeTeam,
+        away: it.awayTeam,
+        handicap: '',
+        option1: spfOptionFromItem(it),
+        option2: ''
+      });
+    });
+    const boardName = board === 'bd' ? '北单' : '竞彩';
+    if(msg) msg.textContent = `已填入${boardName}精选 ${items.length} 场胜平负，过关 ${$('#nbPass').value || '—'}，请核对赔率后保存`;
+    const form = document.querySelector('details.bet-form');
+    if(form) form.open = true;
+  }catch(e){
+    if(msg) msg.textContent = '填入失败：' + e.message;
+  }
+}
+
+function previewImage(e, prevId){
+  const f = e.target.files[0];
+  if(!f) return;
+  const prev = $('#'+prevId);
+  prev.src = URL.createObjectURL(f);
+  prev.style.display = 'block';
+}
+
+// OCR 识别购买截图，自动填入表单
+async function ocrTicket(e){
+  const f = e.target.files[0];
+  if(!f) return;
+  const msg = $('#nbOcrMsg');
+  if(!msg){ return; }
+  const form = document.querySelector('details.bet-form');
+  if(form) form.open = true;
+  msg.textContent = '正在识别图片…';
+  try{
+    const fd = new FormData();
+    fd.append('file', f);
+    const kind = $('#nbTicketKind')?.value || 'jc-score';
+    fd.append('kind', kind);
+    const headers = {};
+    if(token) headers['Authorization'] = 'Bearer ' + token;
+    const res = await fetch(API + '/api/purchase/ocr', {method:'POST', headers, body:fd});
+    const d = await res.json();
+    if(!res.ok) throw new Error(d.message || 'OCR 失败');
+    // 以用户所选票面为准，避免上一张票残留串味
+    d.ticketPreset = kind;
+    fillOcrResult(d);
+    const n = d.matches?.length || 0;
+    const kindLabel = ($('#nbTicketKind')?.selectedOptions?.[0]?.textContent) || kind;
+    if(n === 0){
+      msg.textContent = '未识别出场次，请确认票面类型后重传，或手动填写。';
+      console.warn('OCR rawText:', d.rawText);
+    } else {
+      const missOpt = (d.matches || []).filter(m => !m.option1).length;
+      msg.textContent = `已识别·${kindLabel} ${n} 场 · ${d.playType||''} · ${d.passType||'过关待填'}${missOpt ? `（${missOpt} 场选项待核）` : ''}，请核对后保存。`;
+    }
+  }catch(err){
+    msg.textContent = '识别失败：' + err.message + '（可手动填写）';
+  }
+}
+
+// 将 OCR 结果填入表单
+function fillOcrResult(d){
+  if(!d) return;
+  // 票面类型锁定板块/玩法（用户所选优先）
+  const preset = d.ticketPreset || $('#nbTicketKind')?.value || '';
+  if(preset.startsWith('bd')) $('#nbBoard').value = 'bd';
+  else if(preset.startsWith('jc') || d.board) $('#nbBoard').value = preset.startsWith('jc') ? 'jc' : (d.board || 'jc');
+  if(d.board && !preset) $('#nbBoard').value = d.board;
+
+  if(preset.includes('score')) $('#nbPlay').value = '全场比分';
+  else if(preset.includes('spf')) $('#nbPlay').value = '胜平负';
+  else if(d.playType){
+    const play = $('#nbPlay');
+    const opts = [...play.options].map(o => o.value);
+    play.value = opts.includes(d.playType) ? d.playType : '混合过关';
+  }
+  // 过关以 OCR 为准。没读到就留空，不要替票面猜成 2串1。
+  $('#nbPass').value = d.passType || '';
+  if(d.multiple) $('#nbMult').value = d.multiple;
+  $('#nbAmount').value = d.betAmount != null ? d.betAmount : '';
+  $('#nbExpected').value = d.expectedWin != null ? d.expectedWin : '';
+
+  const tbody = $('#nbLines');
+  tbody.innerHTML = '';
+
+  const matches = d.matches || [];
+  if(matches.length === 0){
+    addLineRow(); addLineRow();
+    return;
+  }
+  const spfTicket = ($('#nbPlay')?.value || '') === '胜平负';
+  matches.forEach(mm => addLineRow({
+    matchNo: mm.matchNo,
+    home: mm.home || mm.homeTeam,
+    away: mm.away || mm.awayTeam,
+    handicap: spfTicket ? '' : (mm.handicap ?? ''),
+    option1: spfTicket ? toPlainSpf(mm.option1) : mm.option1,
+    odds1: mm.odds1,
+    option2: spfTicket ? toPlainSpf(mm.option2) : mm.option2,
+    odds2: mm.odds2
+  }));
+}
+
+function suggestPassFromCount(n){
+  const pass = $('#nbPass');
+  if(!pass || pass.value.trim()) return;
+  if(n >= 3) pass.value = '2串1#3串1';
+  else if(n === 2) pass.value = '2串1';
+}
+
+// 添加一行（可传入预填数据）
+function addLineRow(pre){
+  const tr = document.createElement('tr');
+  const v = (x) => x == null ? '' : x;
+  tr.innerHTML = `<td><input class="l-no" placeholder="周三001" value="${v(pre?.matchNo)}" /></td>
+    <td><input class="l-home" placeholder="主队" value="${v(pre?.home)}" /></td>
+    <td><input class="l-away" placeholder="客队" value="${v(pre?.away)}" /></td>
+    <td><input class="l-hcp" placeholder="如 -1" style="width:60px" value="${v(pre?.handicap)}" /></td>
+    <td><input class="l-o1" placeholder="如 2:0" value="${v(pre?.option1)}" /></td>
+    <td><input class="l-od1" placeholder="赔率" style="width:70px" value="${v(pre?.odds1)}" /></td>
+    <td><input class="l-o2" placeholder="可选" value="${v(pre?.option2)}" /></td>
+    <td><input class="l-od2" placeholder="赔率" style="width:70px" value="${v(pre?.odds2)}" /></td>
+    <td><button class="rm-btn" onclick="this.closest('tr').remove()">删</button></td>`;
+  $('#nbLines').appendChild(tr);
+}
+
+async function uploadImage(file){
+  const fd = new FormData();
+  fd.append('file', file);
+  const headers = {};
+  if(token) headers['Authorization'] = 'Bearer ' + token;
+  const res = await fetch(API + '/api/purchase/upload', {method:'POST', headers, body:fd});
+  if(!res.ok) throw new Error('上传失败');
+  const d = await res.json();
+  return d.path;
+}
+
+async function savePurchase(){
+  const msg = $('#nbMsg');
+  msg.textContent = '保存中…';
+  try{
+    const lines = [];
+    document.querySelectorAll('#nbLines tr').forEach(tr => {
+      const home = tr.querySelector('.l-home').value.trim();
+      const away = tr.querySelector('.l-away').value.trim();
+      const matchNo = tr.querySelector('.l-no').value.trim();
+      const option1 = tr.querySelector('.l-o1').value.trim();
+      const option2 = tr.querySelector('.l-o2').value.trim();
+      // 有场次号或选项即可；队名可空（后端按场次号补 MatchId）
+      if(!home && !away && !matchNo && !option1 && !option2) return;
+      const parseOdds = v => { const n = parseFloat(v); return isNaN(n) ? null : n; };
+      const parseHcp = v => { const n = parseFloat(v); return isNaN(n) ? null : n; };
+      const spfTicket = $('#nbPlay').value === '胜平负';
+      lines.push({
+        matchNo: matchNo || null,
+        homeTeam: home || null, awayTeam: away || null,
+        handicap: spfTicket ? null : parseHcp(tr.querySelector('.l-hcp').value),
+        option1: (spfTicket ? toPlainSpf(option1) : option1) || null,
+        odds1: parseOdds(tr.querySelector('.l-od1').value),
+        option2: (spfTicket ? toPlainSpf(option2) : option2) || null,
+        odds2: parseOdds(tr.querySelector('.l-od2').value)
+      });
+    });
+    if(lines.length === 0){ msg.textContent = '请至少填一场'; return; }
+
+    // 上传购买截图（如有）
+    let ticketPath = null;
+    const ticketFile = $('#nbTicketFile').files[0];
+    if(ticketFile) ticketPath = await uploadImage(ticketFile);
+
+    const body = {
+      board: $('#nbBoard').value,
+      playType: $('#nbPlay').value,
+      passType: $('#nbPass').value.trim() || null,
+      multiple: parseInt($('#nbMult').value) || 1,
+      betAmount: parseFloat($('#nbAmount').value) || 0,
+      expectedWin: parseFloat($('#nbExpected').value) || null,
+      buyDate: $('#nbDate').value || new Date().toISOString().slice(0,10),
+      status: 'WAIT',
+      ticketImage: ticketPath,
+      lines
+    };
+
+    await api('/api/purchase', {method:'POST', body: JSON.stringify(body)});
+    msg.textContent = '已保存';
+    loadMybets();
+  }catch(e){
+    msg.textContent = '保存失败：' + e.message;
+  }
+}
+
+function esc(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function fmtYuan(n){
+  const x = Number(n);
+  return Number.isFinite(x) ? x.toFixed(1) + '元' : '--';
+}
+function fmtOdds(n){
+  if(n == null || n === '') return '';
+  const x = Number(n);
+  if(!Number.isFinite(x)) return '';
+  const s = x.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+  return s.includes('.') ? s : s + '.0';
+}
+function pickHtml(option, odds){
+  if(!option) return '';
+  const od = fmtOdds(odds);
+  return `<div>${esc(option)}${od ? `<span class="od">(${od})</span>` : ''}</div>`;
+}
+function linePicks(l){
+  if(l.option2 || !l.option1 || !/[,，、]/.test(l.option1)){
+    return pickHtml(l.option1, l.odds1) + pickHtml(l.option2, l.odds2);
+  }
+  return l.option1.split(/[,，、]/).map((t,i) => pickHtml(t.trim(), i === 0 ? l.odds1 : null)).join('');
+}
+
+function renderPurchaseItem(p){
+  const st = STATUS_TEXT[p.status] || p.status || '';
+  const lines = p.lines || [];
+  const boardName = (BOARD_TEXT[p.board] || p.board || '') + (p.board === 'jc' ? '足球' : '');
+  const prize = p.actualWin == null ? '--' : fmtYuan(p.actualWin);
+  const prizeCls = p.status === 'WON' ? 'prize-win' : p.status === 'LOST' ? 'prize-lose' : '';
+  const rows = lines.map(l => {
+    const hcp = l.handicap == null ? '' : `让球 ${Number(l.handicap) > 0 ? '+' : ''}${Number(l.handicap)}`;
+    const actual = l.actualScore
+      ? `<div class="t-actual ${l.lineHit ? 'hit-tag' : 'miss-tag'}">实际 ${esc(l.actualScore)}</div>` : '';
+    return `<tr>
+      <td class="t-no">${esc(l.matchNo || '')}</td>
+      <td><div class="t-match"><div>${esc(l.homeTeam || '—')}</div><div class="vs">VS</div><div>${esc(l.awayTeam || '—')}</div>${hcp ? `<div class="t-hcp">${esc(hcp)}</div>` : ''}</div></td>
+      <td>${esc(p.playType || '')}</td>
+      <td class="t-picks">${linePicks(l)}${actual}</td>
+    </tr>`;
+  }).join('');
+  const chips = [`<span class="chip">${lines.length}场</span>`];
+  if(p.passType) chips.push(`<span class="chip">${esc(p.passType)}</span>`);
+  chips.push(`<span class="chip">${esc(p.multiple || 1)}倍</span>`);
+  const imgs = [];
+  if(p.ticketImage) imgs.push(`<a class="btn btn-ghost" href="${esc(p.ticketImage)}" target="_blank">购彩截图</a>`);
+  if(p.resultImage) imgs.push(`<a class="btn btn-ghost" href="${esc(p.resultImage)}" target="_blank">开奖截图</a>`);
+
+  return `<article class="ticket" data-id="${p.purchaseId}">
+    <div class="ticket-brand">
+      <span class="badge badge-${esc(p.board)}">${esc(boardName)}</span>
+      <span class="b-meta">${esc(p.buyDate || '')}</span>
+    </div>
+    <div class="ticket-metrics">
+      <div><div class="tm-val">${fmtYuan(p.betAmount)}</div><div class="tm-lbl">方案金额</div></div>
+      <div><div class="tm-val tone-${esc(p.status)}">${esc(st)}</div><div class="tm-lbl">方案状态</div></div>
+      <div><div class="tm-val ${prizeCls}">${prize}</div><div class="tm-lbl">税后奖金</div></div>
+    </div>
+    <div class="ticket-sec">订单详情</div>
+    <div class="ticket-info"><span class="ti-label">投注信息</span>${chips.join('')}</div>
+    <table class="ticket-table">
+      <thead><tr><th>场次</th><th>对阵</th><th>玩法</th><th>投注内容</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" class="b-meta">没有场次明细</td></tr>'}</tbody>
+    </table>
+    ${p.expectedWin != null ? `<div class="ticket-expect">预计中奖金额：<b>${fmtYuan(p.expectedWin)}</b></div>` : ''}
+    <div class="ticket-foot">
+      ${(p.status==='WAIT'||p.status==='PENDING') ? `<button class="btn btn-primary" onclick="autoSettleOne(${p.purchaseId})">自动结算</button>` : ''}
+      <button class="btn btn-ghost" onclick="openSettle(${p.purchaseId})">手动录入</button>
+      <button class="btn btn-danger" onclick="deletePurchase(${p.purchaseId})">删除</button>
+      ${imgs.join('')}
+    </div>
+  </article>`;
+}
+
+async function autoSettleOne(id){
+  try{
+    const r = await api('/api/purchase/auto-settle?id=' + id, {method:'POST', body:'{}'});
+    const it = (r.items && r.items[0]) || {};
+    const msg = it.message || (r.settled ? '已结算' : (r.waiting ? '赛果未齐，已回填已完场场次' : '无变化'));
+    alert(`方案 #${id}：${msg}`);
+    loadMybets();
+  }catch(e){ alert('自动结算失败：' + e.message); }
+}
+
+async function autoSettleAll(){
+  const btn = $('#nbAutoSettleAll');
+  if(btn){ btn.disabled = true; btn.textContent = '结算中…'; }
+  try{
+    const r = await api('/api/purchase/auto-settle', {method:'POST', body:'{}'});
+    alert(`自动结算完成：检查 ${r.checked}，已结 ${r.settled}（中 ${r.won} / 未中 ${r.lost}），待赛果 ${r.waiting}`);
+    loadMybets();
+  }catch(e){ alert('自动结算失败：' + e.message); }
+  finally{ if(btn){ btn.disabled = false; btn.textContent = '自动结算'; } }
+}
+
+// 开奖结果录入（手动，截图可选）
+function openSettle(id){
+  const p = _purchases.find(x => x.purchaseId === id);
+  if(!p) return;
+  const hit = confirm(`方案 #${id} 是否中奖？\n点「确定」=中奖，「取消」=未中奖`);
+  const winStr = prompt('实际中奖金额(元)，未中奖填 0：', hit ? '' : '0');
+  if(winStr === null) return;
+  const win = parseFloat(winStr) || 0;
+  const uploadShot = confirm('是否上传开奖截图？\n确定=选图，取消=直接保存');
+  const doSave = async (resultPath) => {
+    try{
+      await api('/api/purchase/settle', {method:'POST', body: JSON.stringify({
+        purchaseId: id, actualWin: win, isHit: hit, hitLevel: hit ? (p.passType||'') : null, resultImage: resultPath || null
+      })});
+      loadMybets();
+    }catch(e){ alert('回填失败：' + e.message); }
+  };
+  if(!uploadShot){ doSave(null); return; }
+  const resultInput = document.createElement('input');
+  resultInput.type = 'file'; resultInput.accept = 'image/*';
+  resultInput.onchange = async () => {
+    const f = resultInput.files[0];
+    let resultPath = null;
+    if(f){ try{ resultPath = await uploadImage(f); }catch(e){} }
+    await doSave(resultPath);
+  };
+  resultInput.click();
+}
+
+async function deletePurchase(id){
+  if(!confirm('确定删除该购买记录？')) return;
+  try{ await api('/api/purchase/' + id, {method:'DELETE'}); loadMybets(); }
+  catch(e){ alert('删除失败：' + e.message); }
+}
+
+/* ============ 每日复盘 ============ */
+
+const SUMMARY_SPF = {'3':'胜','1':'平','0':'负'};
+
+function localYmd(d){
+  const z = new Date(d.getTime() - d.getTimezoneOffset()*60000);
+  return z.toISOString().slice(0,10);
+}
+function shiftYmd(ymd, days){
+  const [y,m,da] = ymd.split('-').map(Number);
+  const dt = new Date(y, m-1, da);
+  dt.setDate(dt.getDate()+days);
+  return localYmd(dt);
+}
+function dateQueryHtml(prefix, ymd, withAll){
+  const today = localYmd(new Date());
+  const nextOff = !ymd || ymd >= today;
+  const allBtn = withAll ? `<button type="button" id="${prefix}All" class="${ymd ? '' : 'active'}">全部</button>` : '';
+  const ph = withAll && !ymd ? '<span class="date-ph">全部日期</span>' : '';
+  return `<div class="date-nav">
+    <button type="button" id="${prefix}Prev">前一天</button>
+    <label class="date-field"><input type="date" id="${prefix}Date" value="${ymd || ''}" max="${today}" />${ph}</label>
+    <button type="button" id="${prefix}Next" ${nextOff ? 'disabled' : ''}>后一天</button>
+    ${allBtn}
+  </div>`;
+}
+function bindDateQuery(prefix, getYmd, setYmd, reload){
+  const today = localYmd(new Date());
+  const prev = document.getElementById(prefix + 'Prev');
+  const next = document.getElementById(prefix + 'Next');
+  const date = document.getElementById(prefix + 'Date');
+  const all = document.getElementById(prefix + 'All');
+  if(prev) prev.onclick = () => { setYmd(shiftYmd(getYmd() || today, -1)); reload(); };
+  if(next && !next.disabled) next.onclick = () => {
+    const n = shiftYmd(getYmd() || today, 1);
+    if(n <= today){ setYmd(n); reload(); }
+  };
+  if(date) date.onchange = () => {
+    let v = date.value || '';
+    if(v > today) v = today;
+    setYmd(v);
+    reload();
+  };
+  if(all) all.onclick = () => { setYmd(''); reload(); };
+}
+
+function defaultSummaryDate(){
+  const d = new Date();
+  if(d.getHours() < 12) d.setDate(d.getDate()-1);
+  return localYmd(d);
+}
+let summaryDate = defaultSummaryDate();
+
+async function loadSummary(){
+  try{
+    const d = await api('/api/summary/finished?date=' + encodeURIComponent(summaryDate));
+    summaryDate = d.date || summaryDate;
+    renderSummary(d);
+  }catch(e){
+    $('#summary').innerHTML = `<div class="empty">加载失败：${e.message}</div>`;
+  }
+}
+
+function ratePill(name, hit, total){
+  const rate = total > 0 ? Math.round(100 * hit / total) : 0;
+  return `<span class="pill"><b>${name}</b> ${hit}/${total} <em class="${rate>=50?'hit-tag':'miss-tag'}">${wilsonText(hit, total)}</em></span>`;
+}
+
+function renderSummary(d){
+  let html = '';
+  const nextOff = d.date >= localYmd(new Date());
+  const finished = (d.items || []).length;
+  html += `<div class="page-head">
+    <div class="date-nav">
+      <button type="button" id="sumPrev">前一天</button>
+      <span class="date-val">${d.date}</span>
+      <button type="button" id="sumNext" ${nextOff?'disabled':''}>后一天</button>
+    </div>
+    <span class="meta">已完场 ${finished} 场</span>
+  </div>`;
+
+  const win = d.hitRate >= 50;
+  const b = d.boughtStat || {total:0,hit:0,hitRate:0};
+  const h = d.highStat || {total:0,hit:0,hitRate:0};
+  const bWin = b.hitRate >= 50;
+  const hWin = h.hitRate >= 50;
+  html += `<div class="bet-stats">
+    <div class="stat-card"><div class="s-label">计入命中率</div><div class="s-val ${win?'win':'lose'}">${d.hitRate}%</div><div class="s-sub">置信≥60% · ${d.total} 场 · 中 ${d.hit}${d.hitLow!=null ? ` · 区间 ${d.hitLow}%–${d.hitHigh}%` : ''}</div></div>
+    <div class="stat-card"><div class="s-label">实购</div><div class="s-val ${b.total? (bWin?'win':'lose') : ''}">${b.total ? b.hitRate+'%' : '—'}</div><div class="s-sub">${b.hit}/${b.total} 场</div></div>
+    <div class="stat-card"><div class="s-label">高置信</div><div class="s-val ${h.total? (hWin?'win':'lose') : ''}">${h.total ? h.hitRate+'%' : '—'}</div><div class="s-sub">≥70% · ${h.hit}/${h.total}</div></div>
+  </div>`;
+
+  const pills = [];
+  for(const q of d.byQuality || []) pills.push(ratePill(q.name, q.hit, q.total));
+  for(const r of d.byResult || []) pills.push(ratePill(r.name, r.hit, r.total));
+  if(pills.length) html += `<div class="pill-row">${pills.join('')}</div>`;
+  const leagues = (d.byLeague || []).map(l => ratePill(l.league, l.hit, l.total));
+  if(leagues.length) html += `<details class="league-fold"><summary>按赛事（${leagues.length}）</summary><div class="pill-row">${leagues.join('')}</div></details>`;
+
+  // 每场复盘明细：实购场次置顶，其余按比赛时间
+  if(!d.items || d.items.length === 0){
+    html += `<div class="empty">${d.date} 还没有已完场的推荐场次</div>`;
+  } else {
+    const sorted = [...d.items].sort((a,b)=>{
+      if(a.isBought && !b.isBought) return -1;
+      if(!a.isBought && b.isBought) return 1;
+      return new Date(a.matchTime) - new Date(b.matchTime);
+    });
+    for(const it of sorted){
+      html += renderSummaryItem(it);
+    }
+  }
+
+  $('#summary').innerHTML = html;
+  $('#sumPrev').onclick = () => { summaryDate = shiftYmd(summaryDate, -1); loadSummary(); };
+  const next = $('#sumNext');
+  if(next && !next.disabled) next.onclick = () => { summaryDate = shiftYmd(summaryDate, 1); loadSummary(); };
+}
+
+function oddsPrice(notes, label){
+  if(!notes || !label) return '';
+  const row = notes.find(x => String(x).split('：')[0] === label);
+  return row ? String(row).split('：').slice(1).join('：') : '';
+}
+function oddsNoteHit(note, it){
+  const label = String(note).split('：')[0];
+  const full = `${it.fullHome}:${it.fullAway}`;
+  if(label.startsWith('最终比分')) return true;
+  if(label.startsWith('比分 ')) return label.slice(3).trim() === full;
+  if(label.includes('/')) return label === it.halfFull;
+  return !!it.hit && label === it.recResultText;
+}
+function pickMark(hasPick, hit){
+  if(!hasPick) return '';
+  return hit ? '<span class="hit-tag">命中</span>' : '<span class="miss-tag">未中</span>';
+}
+
+function renderSummaryItem(it){
+  const tm = it.matchTime ? new Date(it.matchTime).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+  const full = `${it.fullHome}:${it.fullAway}`;
+  const half = it.halfHome!=null ? `半场 ${it.halfHome}:${it.halfAway}` : '';
+  const cover = it.isCoverAll || !it.recResult;
+  const bought = it.boughtOptions && it.boughtOptions.length
+    ? it.boughtOptions.map(o=>`<span class="opt-tag">${o}</span>`).join('') : '';
+  const confVal = it.confidence==null ? '' : Math.round(it.confidence) + '%';
+  const statusClass = cover ? 'st-WAIT' : (it.hit ? 'st-WON' : 'st-LOST');
+  const statusText = cover ? '全包' : (it.hit ? '命中' : '未中');
+  const scores = [it.recScore1, it.recScore2].filter(Boolean);
+  const goalPicks = [it.recGoals1, it.recGoals2].filter(g => g!=null);
+  const scoreHit = scores.some(s => s === full);
+  const goalHit = goalPicks.some(g => g === it.totalGoals);
+  const spfPrice = cover ? '' : oddsPrice(it.oddsNotes, it.recResultText);
+  const spfNum = spfPrice ? ` <b class="${it.hit?'hit':''}">${esc(spfPrice)}</b>` : '';
+  const bits = [`胜平负 <b>${it.recResultText}</b>${spfNum} → ${it.actualResultText}`];
+  if(confVal) bits.push(confVal);
+  if(scores.length) bits.push(`比分 ${scores.join('、')} ${pickMark(true, scoreHit)}`);
+  if(goalPicks.length) bits.push(`进球 ${goalPicks.join('、')} ${pickMark(true, goalHit)}`);
+  if(it.recHandicapText && it.recHandicapText !== '—'){
+    const hcpMark = it.handicapHit == null ? '' : (it.handicapHit ? '<span class="hit-tag">命中</span>' : '<span class="miss-tag">未中</span>');
+    bits.push(`让球推荐 ${it.recHandicapText} ${hcpMark}`);
+  }
+  if(it.recHalfFull) bits.push(`半全场推荐 ${it.recHalfFull}`);
+  if(it.halfFull){
+    const hfPrice = oddsPrice(it.oddsNotes, it.halfFull);
+    const hfNum = hfPrice ? ` <b class="hit">${esc(hfPrice)}</b>` : '';
+    bits.push(`半全场 ${it.halfFull}${hfNum}`);
+  }
+
+  return `<article class="rev ${it.isBought?'is-bought':''}">
+    <div>
+      <div class="rev-top">
+        <span class="badge badge-${it.board}">${BOARD_TEXT[it.board]||it.board}</span>
+        <span class="match-no">${it.matchNo||''}</span>
+        ${it.isBought ? '<span class="bought-tag">已实购</span>' : ''}
+        ${it.confidence!=null && it.confidence<60 ? '<span class="lowconf-tag">低置信</span>' : ''}
+        <span class="b-meta">${it.leagueName||''}</span>
+        <span class="b-meta">${tm}</span>
+      </div>
+      <div class="rev-teams">${it.homeTeam} <span class="vs">VS</span> ${it.awayTeam}</div>
+      <div class="rev-bits">${bits.join(' · ')}</div>
+      ${(it.oddsNotes && it.oddsNotes.length) ? `<div class="rev-odds">赔率 ${it.oddsNotes.map(x => `<b class="${oddsNoteHit(x, it)?'hit':''}">${esc(x)}</b>`).join(' · ')}</div>` : ''}
+      ${bought ? `<div class="rev-bits">购买 ${bought}</div>` : ''}
+    </div>
+    <div class="rev-side">
+      <div class="rev-score">${full}</div>
+      <div class="rev-half">${half}</div>
+      <span class="b-status ${statusClass}">${statusText}</span>
+    </div>
+    ${it.analysis ? `<details class="rev-note"><summary>推荐思路</summary><p>${it.analysis}</p></details>` : ''}
+  </article>`;
+}
+
+/* ============ 历史推荐查询 ============ */
+
+const SPF_TEXT = {'3':'胜','1':'平','0':'负'};
+function fmtDateTime(t){
+  if(!t) return '';
+  return new Date(t).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+}
+
+let historyDate = '';
+let _historyData = null;
+
+async function loadHistory(){
+  const box = $('#history');
+  box.innerHTML = '<div class="empty">加载中…</div>';
+  try{
+    _historyData = await api('/api/recommend/list?take=2000');
+    renderHistory();
+  }catch(e){ box.innerHTML = '<div class="empty">加载失败：' + e.message + '</div>'; }
+}
+
+function renderHistory(){
+  const box = $('#history');
+  const d = _historyData;
+  const source = (d && d.items) || [];
+  const shown = historyDate
+    ? source.filter(it => (it.matchTime || it.recDate || '').slice(0,10) === historyDate)
+    : source;
+  if(source.length === 0){
+    box.innerHTML = `<div class="page-head">${dateQueryHtml('his', historyDate, true)}</div><div class="empty">暂无历史推荐记录</div>`;
+    bindDateQuery('his', () => historyDate, v => { historyDate = v; }, renderHistory);
+    return;
+  }
+
+  // 按比赛日期分组（降序），日期内按板块 竞彩/北单/胜负彩 分组
+  const byDate = new Map();
+  for(const it of shown){
+    const day = (it.matchTime || '').slice(0,10) || '日期未知';
+    if(!byDate.has(day)) byDate.set(day, []);
+    byDate.get(day).push(it);
+  }
+
+  // 日期降序排序
+  const days = [...byDate.keys()].sort((a,b) => (a < b ? 1 : a > b ? -1 : 0));
+
+  const BOARD_ORDER = ['jc','bd','sfc'];
+  const meta = historyDate
+    ? `${historyDate} · ${shown.length} 场`
+    : `共 ${d.total} 场 · 按比赛日期 → 板块分组`;
+  let html = `<div class="page-head">${dateQueryHtml('his', historyDate, true)}<span class="meta">${meta}</span></div>`;
+  if(shown.length === 0){
+    html += `<div class="empty">${historyDate} 没有推荐记录</div>`;
+    box.innerHTML = html;
+    bindDateQuery('his', () => historyDate, v => { historyDate = v; }, renderHistory);
+    return;
+  }
+
+  for(const day of days){
+    const items = byDate.get(day);
+    // 板块分组，保持 BOARD_ORDER 顺序
+    const boards = {};
+    for(const it of items){
+      const b = BOARD_ORDER.includes(it.board) ? it.board : 'other';
+      (boards[b] = boards[b] || []).push(it);
+    }
+
+    html += `<div class="history-day">
+      <div class="history-day-title">${day}</div>`;
+
+    for(const b of BOARD_ORDER){
+      const list = boards[b];
+      if(!list || list.length === 0) continue;
+      // 竞彩/北单按官方场次号；胜负彩同样按场次号
+      list.sort(officialMatchSort);
+      const bt = BOARD_TEXT[b] || b;
+      const rows = list.map(it => {
+        const rr = it.isCoverAll || !it.recResult ? '全包' : (SPF_TEXT[it.recResult] || it.recResult);
+        const t = fmtDateTime(it.createdAt);
+        const mt = it.matchTime ? fmtDateTime(it.matchTime) : '';
+        return `<tr>
+          <td class="mono">${mt}</td>
+          <td class="mono">${it.matchNo || '—'}</td>
+          <td>${it.homeTeam || ''} <span class="vs">vs</span> ${it.awayTeam || ''}</td>
+          <td>${rr}</td>
+          <td class="mono">${it.confidence != null ? it.confidence.toFixed(1) + '%' : '—'}</td>
+          <td class="signal-clip" title="${(it.signalDesc || '').replace(/"/g,'&quot;')}">${it.signalDesc || ''}</td>
+        </tr>`;
+      }).join('');
+      html += `<div class="history-board">
+        <div class="history-board-title">${bt} <span class="cnt">${list.length} 场</span></div>
+        <div class="tbl"><table>
+          <thead><tr><th>比赛时间</th><th>场次</th><th>对阵</th><th>推荐</th><th>置信度</th><th>信号依据</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+      </div>`;
+    }
+
+    html += `</div>`;
+  }
+
+  box.innerHTML = html;
+  bindDateQuery('his', () => historyDate, v => { historyDate = v; }, renderHistory);
+}
+
+/* ============ 复盘查询 ============ */
+
+let reviewDate = '';
+let _reviewData = null;
+
+async function loadReview(){
+  const box = $('#review');
+  box.innerHTML = '<div class="empty">加载中…</div>';
+  try{
+    _reviewData = await api('/api/review/list?take=1000');
+    renderReview();
+  }catch(e){ box.innerHTML = '<div class="empty">加载失败：' + e.message + '</div>'; }
+}
+
+function reviewCounts(it){
+  const dir = !it.isCoverAll && (it.recResult === '3' || it.recResult === '1' || it.recResult === '0');
+  return dir && it.confidence != null && Number(it.confidence) >= 60;
+}
+
+function renderReview(){
+  const box = $('#review');
+  const d = _reviewData;
+  const source = (d && d.items) || [];
+  const items = reviewDate
+    ? source.filter(it => (it.matchTime || '').slice(0,10) === reviewDate)
+    : source;
+  if(source.length === 0){
+    box.innerHTML = `<div class="page-head">${dateQueryHtml('rev', reviewDate, true)}</div><div class="empty">暂无已复盘的记录</div>`;
+    bindDateQuery('rev', () => reviewDate, v => { reviewDate = v; }, renderReview);
+    return;
+  }
+  const order = ['jc','bd','sfc'];
+  const groups = {jc:[], bd:[], sfc:[]};
+  for(const it of items){
+    if(groups[it.board]) groups[it.board].push(it);
+  }
+  const rowHtml = it => {
+    const rr = it.isCoverAll || !it.recResult ? '全包' : (SPF_TEXT[it.recResult] || it.recResult);
+    const ar = it.actualResult ? (SPF_TEXT[it.actualResult] || it.actualResult) : '—';
+    const mt = it.matchTime ? fmtDateTime(it.matchTime) : '';
+    const counted = reviewCounts(it);
+    const hit = !counted
+      ? '<span class="dim">不计入</span>'
+      : it.hit === true ? '<span class="hit-tag">命中</span>' : it.hit === false ? '<span class="miss-tag">未中</span>' : '<span class="dim">待定</span>';
+    return `<tr>
+      <td class="mono">${mt}</td>
+      <td class="mono">${it.matchNo || '—'}</td>
+      <td>${it.leagueName || ''}</td>
+      <td>${it.homeTeam || ''} <span class="vs">vs</span> ${it.awayTeam || ''}</td>
+      <td>${rr}</td>
+      <td>${ar}</td>
+      <td class="mono">${it.actualScore || '—'}</td>
+      <td class="mono">${it.actualGoals != null ? it.actualGoals : '—'}</td>
+      <td>${hit}</td>
+    </tr>`;
+  };
+  const sections = order.map(b => {
+    const list = groups[b];
+    const scored = list.filter(reviewCounts);
+    const hitN = scored.filter(it => it.hit === true).length;
+    const rate = scored.length ? wilsonText(hitN, scored.length) : null;
+    return { b, list, scored: scored.length, hitN, rate };
+  });
+  const allScored = sections.reduce((n, s) => n + s.scored, 0);
+  const allHit = sections.reduce((n, s) => n + s.hitN, 0);
+  const allRate = allScored ? wilsonText(allHit, allScored) : '0%';
+  const headMeta = items.length === 0
+    ? `${reviewDate} 没有已复盘的场次`
+    : `计入统计 ${allScored} 场 · 命中 ${allHit} 场 · ${allRate}`;
+  let html = `<div class="page-head">${dateQueryHtml('rev', reviewDate, true)}<span class="meta">${headMeta}</span></div>`;
+  if(items.length === 0){
+    box.innerHTML = html + `<div class="empty">${reviewDate} 没有已复盘的场次</div>`;
+    bindDateQuery('rev', () => reviewDate, v => { reviewDate = v; }, renderReview);
+    return;
+  }
+  for(const s of sections){
+    const { b, list, hitN, rate } = s;
+    const meta = list.length === 0
+      ? '暂无已复盘记录'
+      : `共 ${list.length} 场 · 计入统计 ${s.scored} 场 · 命中 ${hitN} 场 · ${rate == null ? '—' : rate}`;
+    const body = list.length
+      ? `<div class="board-scroll"><table class="tbl">
+          <thead><tr><th>比赛时间</th><th>场次</th><th>赛事</th><th>对阵</th><th>推荐</th><th>实际</th><th>比分</th><th>进球</th><th>结果</th></tr></thead>
+          <tbody>${list.map(rowHtml).join('')}</tbody>
+        </table></div>`
+      : '<div class="empty">暂无已复盘记录</div>';
+    html += `<div class="board">
+      <div class="board-head"><span class="badge badge-${b}">${BOARD_TEXT[b]}</span><span class="meta">${meta}</span></div>
+      ${body}
+    </div>`;
+  }
+  box.innerHTML = html;
+  bindDateQuery('rev', () => reviewDate, v => { reviewDate = v; }, renderReview);
+}
+
+if(token){
+  showMain();
+  api('/api/auth/me').then(d=>{ $('#nickName').textContent = d.nickName || d.userName; }).catch(()=>{});
+  loadRecommendations();
+} else { showLogin(); }
+</script>
+</body>
+</html>

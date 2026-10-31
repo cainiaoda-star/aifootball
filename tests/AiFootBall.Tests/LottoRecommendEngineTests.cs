@@ -1,0 +1,91 @@
+using AiFootBall.Core.Models;
+using AiFootBall.Sources;
+using Xunit;
+
+namespace AiFootBall.Tests;
+
+public class LottoRecommendEngineTests
+{
+    [Fact]
+    public void Dlt_ProducesPrimaryPlusThreeAlts()
+    {
+        var lt = new LotteryTypeInfo
+        {
+            Code = LottoCodes.Dlt, Name = "大乐透",
+            RedCount = 5, RedMax = 35, BlueCount = 2, BlueMax = 12
+        };
+        var draws = FakeComboDraws(lt, 80);
+        var plan = LottoRecommendEngine.Recommend(lt, draws);
+        Assert.Equal(4, plan.Picks.Count);
+        Assert.Single(plan.Picks.Where(p => p.IsPrimary));
+        Assert.All(plan.Picks, p =>
+        {
+            Assert.Equal(5, p.Reds.Count);
+            Assert.Equal(2, p.Blues.Count);
+            Assert.Equal(p.Reds.Count, p.Reds.Distinct().Count());
+        });
+        Assert.Equal(plan.Picks.Select(p => p.RankNo), Enumerable.Range(1, 4));
+    }
+
+    [Fact]
+    public void Fc3d_ProducesDirectPicks()
+    {
+        var lt = new LotteryTypeInfo
+        {
+            Code = LottoCodes.Fc3d, Name = "福彩3D",
+            RedCount = 3, RedMax = 9, BlueCount = 0, BlueMax = 0
+        };
+        var draws = FakeDigitDraws(3, 60);
+        var plan = LottoRecommendEngine.Recommend(lt, draws);
+        Assert.True(plan.Picks.Count >= 2);
+        Assert.Single(plan.Picks.Where(p => p.IsPrimary));
+        Assert.All(plan.Picks, p =>
+        {
+            Assert.Equal(3, p.Reds.Count);
+            Assert.All(p.Reds, d => Assert.InRange(d, 0, 9));
+        });
+    }
+
+    [Fact]
+    public void NextIssue_Increments()
+    {
+        Assert.Equal("2026123", LottoRecommendEngine.NextIssue("2026122"));
+    }
+
+    private static List<LotteryDrawRecord> FakeComboDraws(LotteryTypeInfo lt, int n)
+    {
+        var rnd = new Random(42);
+        var list = new List<LotteryDrawRecord>();
+        for (var i = 0; i < n; i++)
+        {
+            var reds = Enumerable.Range(1, lt.RedMax).OrderBy(_ => rnd.Next()).Take(lt.RedCount).OrderBy(x => x).ToList();
+            var blues = Enumerable.Range(1, lt.BlueMax).OrderBy(_ => rnd.Next()).Take(lt.BlueCount).OrderBy(x => x).ToList();
+            list.Add(new LotteryDrawRecord
+            {
+                LotteryCode = lt.Code,
+                Issue = (2026000 + n - i).ToString(),
+                DrawDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-i)),
+                Reds = reds,
+                Blues = blues
+            });
+        }
+        return list;
+    }
+
+    private static List<LotteryDrawRecord> FakeDigitDraws(int len, int n)
+    {
+        var rnd = new Random(7);
+        var list = new List<LotteryDrawRecord>();
+        for (var i = 0; i < n; i++)
+        {
+            list.Add(new LotteryDrawRecord
+            {
+                LotteryCode = LottoCodes.Fc3d,
+                Issue = (2026000 + n - i).ToString(),
+                DrawDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-i)),
+                Reds = Enumerable.Range(0, len).Select(_ => rnd.Next(0, 10)).ToList()
+            });
+        }
+        return list;
+    }
+}
