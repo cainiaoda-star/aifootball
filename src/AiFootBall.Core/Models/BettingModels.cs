@@ -61,10 +61,14 @@ public sealed class MatchRecommendation
     /// <summary>大小球盘口线（用于进球数预测）</summary>
     public decimal? TotalLine { get; set; }
 
-    /// <summary>最可能比分（2 个，如 "3:2"）</summary>
+    /// <summary>最可能比分（2 个，如 "3:2"）。精选发出去之前清空，不进投注。</summary>
     public List<string> ScoreCandidates { get; set; } = new();
-    /// <summary>最可能进球数（2 个，如 4、5）</summary>
+    /// <summary>最可能进球数（2 个，如 4、5）。精选发出去之前清空，不进投注。</summary>
     public List<int> GoalCandidates { get; set; } = new();
+    /// <summary>比分参考。页面可看，勾选和投注单不用它。</summary>
+    public List<string> RefScores { get; set; } = new();
+    /// <summary>总进球参考。页面可看，勾选和投注单不用它。</summary>
+    public List<int> RefGoals { get; set; } = new();
 
     /// <summary>让球胜平负：3=让胜 1=让平 0=让负。由最可能比分和让球数折出。</summary>
     public char? RecHandicap { get; set; }
@@ -86,6 +90,26 @@ public sealed class MatchRecommendation
     public decimal? HandicapProbability { get; set; }
     /// <summary>北单该让球选项的 SP（开奖前会变）。</summary>
     public decimal? HandicapOdds { get; set; }
+
+    /// <summary>主胜小降、必发 60%–75%、水位 1.50–1.90。页面单独标「警惕爆冷」，不进投注。</summary>
+    public bool UpsetWatch { get; set; }
+    public string? UpsetNote { get; set; }
+
+    /// <summary>必发主胜或客胜达到 75%。从推荐挪到大热区，只展示，不追。</summary>
+    public bool HotWatch { get; set; }
+    /// <summary>大热的一侧：3 主胜，0 客胜。</summary>
+    public char? HotSide { get; set; }
+    /// <summary>大热一侧的必发占比。</summary>
+    public decimal? HotRatio { get; set; }
+    public string? HotNote { get; set; }
+
+    /// <summary>大小球参考：大或小。不进精选，不进投注。</summary>
+    public string? OuSide { get; set; }
+    /// <summary>看好的那一侧能赢下的比例，0 到 100。走盘和赢一半已按亚盘算过。</summary>
+    public decimal? OuProbability { get; set; }
+    /// <summary>这一侧会走盘的比例，0 到 100。</summary>
+    public decimal? OuPush { get; set; }
+    public string? OuNote { get; set; }
 }
 
 /// <summary>历史比分分布（用于比分预测）</summary>

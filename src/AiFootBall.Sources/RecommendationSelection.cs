@@ -100,7 +100,7 @@ public static class RecommendationSelection
         if (board != Boards.Jc || featuredCount < 2) return null;
         if (featuredCount == 2) return "建议过关：2串1";
         if (featuredCount == 3) return "建议过关：2串1 + 3串1（防单腿）";
-        return "这几场胜平负是低水，不要串。中高水让球够几场出几场，最多 8 场";
+        return "这几场胜平负是低水，不要串。让球够几场出几场，最多 8 场";
     }
 
     /// <summary>够格进精选：等级≥2，且校准命中率达标。没有校准命中率不进。北单按让球选项的概率筛。</summary>
@@ -151,6 +151,177 @@ public static class RecommendationSelection
         var held = Math.Abs(hcp) >= 1.5m && totalLine is not > 0.5m
             ? "；让球达到 1.5 且没有大小球盘，不进精选" : "";
         rec.SignalDesc = $"北单让{hcpText}：{HandicapOptionName(best.Item1)} 约 {rec.HandicapProbability:0.0}%{sp}{plain}{held}";
+    }
+
+    /// <summary>
+    /// 竞彩让球胜平负：用欧赔去水 + 大小球盘，算这场开出的让球数下三项概率，推最高的一项。
+    /// 胜平负精选仍单独筛。澳超让负不发。没有让球数就不给。
+    /// </summary>
+    public static void ApplyJcHandicap(
+        MatchRecommendation rec, decimal? spfHome, decimal? spfDraw, decimal? spfAway, decimal? totalLine,
+        decimal? rqWin, decimal? rqDraw, decimal? rqLoss)
+    {
+        rec.RecHandicap = null;
+        rec.HandicapProbability = null;
+        rec.HandicapOdds = null;
+        if (rec.Handicap is not decimal hcp) return;
+        var p = HandicapMath.FromOdds(spfHome, spfDraw, spfAway, totalLine, hcp);
+        if (p is null) return;
+
+        var options = new[] { ('3', p.Value.Win, rqWin), ('1', p.Value.Draw, rqDraw), ('0', p.Value.Loss, rqLoss) };
+        var best = options.OrderByDescending(o => o.Item2).First();
+        if (best.Item1 == '0' && RecommendationEngine.IsALeague(rec.LeagueName)) return;
+
+        rec.RecHandicap = best.Item1;
+        rec.HandicapProbability = Math.Round(best.Item2 * 100m, 1);
+        rec.HandicapOdds = best.Item3 is > 1 ? best.Item3 : null;
+    }
+
+    /// <summary>
+    /// 竞彩让球：让胜、让平、让负里概率最高的一项推出来，最多 8 场。
+    /// 不到 55% 也发，页面不标精选。深盘又没有大小球盘的不进。
+    /// </summary>
+    public static List<MatchRecommendation> ForJcHandicap(IReadOnlyList<MatchRecommendation> recs)
+    {
+        return recs
+            .Where(x => x.RecHandicap is '3' or '1' or '0'
+                        && !DeepHandicapWithoutTotal(x))
+            .OrderByDescending(x => x.HandicapProbability ?? decimal.MinValue)
+            .ThenBy(x => OfficialMatchOrder(x.MatchNo))
+            .Take(PublishLimit)
+            .OrderBy(x => OfficialMatchOrder(x.MatchNo))
+            .ThenBy(x => x.MatchNo, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 竞彩胜平负：算法已经给出的主胜、平、客胜推出来，最多 8 场。
+    /// 够 55% 且等级够的仍标精选；不够的照算出来的概率发，不标精选。澳超客胜不发。
+    /// </summary>
+    public static List<MatchRecommendation> ForJcCalculated(IReadOnlyList<MatchRecommendation> recs)
+    {
+        var featured = recs.Where(x => IssuedSpf(x) && QualifiesForFeatured(x)).ToList();
+        var featuredNos = featured
+            .Select(x => x.MatchNo)
+            .Where(x => !string.IsNullOrEmpty(x))
+            .ToHashSet(StringComparer.Ordinal);
+        var rest = recs
+            .Where(x => IssuedSpf(x) && (x.MatchNo is null || !featuredNos.Contains(x.MatchNo)))
+            .OrderByDescending(x => x.HitProbability ?? x.Confidence ?? decimal.MinValue)
+            .ThenBy(x => OfficialMatchOrder(x.MatchNo));
+        var picked = featured
+            .OrderByDescending(x => x.HitProbability ?? decimal.MinValue)
+            .Concat(rest)
+            .Take(PublishLimit)
+            .OrderBy(x => OfficialMatchOrder(x.MatchNo))
+            .ThenBy(x => x.MatchNo, StringComparer.Ordinal)
+            .ToList();
+
+        foreach (var r in picked)
+        {
+            if (r.RefScores.Count == 0 && r.ScoreCandidates.Count > 0)
+                r.RefScores = r.ScoreCandidates.ToList();
+            if (r.RefGoals.Count == 0 && r.GoalCandidates.Count > 0)
+                r.RefGoals = r.GoalCandidates.ToList();
+            r.ScoreCandidates.Clear();
+            r.GoalCandidates.Clear();
+            r.HalfFullPick = null;
+            r.PublishMarkets = false;
+        }
+
+        return picked;
+    }
+
+    private static bool SpfDirectionOk(MatchRecommendation x)
+        => x.RecResult is '3' or '1' or '0'
+           && !(x.RecResult == '0' && RecommendationEngine.IsALeague(x.LeagueName));
+
+    /// <summary>
+    /// 竞彩胜平负和北单不让球参考要发的方向。
+    /// 「赔率最低、无强信号」的兜底不发。2026-11-01 周日004 用主胜 1.63 的去水标成 58%，终场 0:1。
+    /// </summary>
+    private static bool IssuedSpf(MatchRecommendation x)
+        => SpfDirectionOk(x) && !x.IsOddsFallback;
+
+    /// <summary>
+    /// 北单让球：让胜、让平、让负里概率最高的一项推出来，最多 11 场。
+    /// 过 55% 的前 8 场标强推荐。不到 55% 的也列出，不标强推荐。深盘又没有大小球盘的不进。
+    /// </summary>
+    public static List<MatchRecommendation> ForBdCalculated(IReadOnlyList<MatchRecommendation> recs)
+    {
+        var picked = recs
+            .Where(x => x.RecHandicap is '3' or '1' or '0' && !DeepHandicapWithoutTotal(x))
+            .OrderByDescending(x => x.HandicapProbability ?? decimal.MinValue)
+            .ThenBy(x => OfficialMatchOrder(x.MatchNo))
+            .Take(BdPublishLimit)
+            .ToList();
+
+        var strong = picked
+            .Where(x => x.HandicapProbability >= RecommendationScoring.MinFeaturedHitProbability)
+            .Take(BdStrongLimit)
+            .Select(x => x.MatchNo)
+            .Where(x => !string.IsNullOrEmpty(x))
+            .ToHashSet(StringComparer.Ordinal);
+
+        var ranked = picked
+            .OrderBy(x => OfficialMatchOrder(x.MatchNo))
+            .ThenBy(x => x.MatchNo, StringComparer.Ordinal)
+            .ToList();
+
+        foreach (var r in ranked)
+        {
+            r.IsFeatured = r.MatchNo is not null && strong.Contains(r.MatchNo);
+            if (r.RefScores.Count == 0 && r.ScoreCandidates.Count > 0)
+                r.RefScores = r.ScoreCandidates.ToList();
+            if (r.RefGoals.Count == 0 && r.GoalCandidates.Count > 0)
+                r.RefGoals = r.GoalCandidates.ToList();
+            r.ScoreCandidates.Clear();
+            r.GoalCandidates.Clear();
+            r.HalfFullPick = null;
+            r.PublishMarkets = false;
+        }
+
+        return ranked;
+    }
+
+    /// <summary>
+    /// 北单不让球参考：算法给出的主胜、平、客胜，最多 11 场。北单不卖这项，不标强推荐。澳超客胜不发。
+    /// </summary>
+    public static List<MatchRecommendation> ForBdPlain(IReadOnlyList<MatchRecommendation> recs)
+    {
+        return recs
+            .Where(IssuedSpf)
+            .OrderByDescending(x => x.HitProbability ?? x.Confidence ?? decimal.MinValue)
+            .ThenBy(x => OfficialMatchOrder(x.MatchNo))
+            .Take(BdPublishLimit)
+            .OrderBy(x => OfficialMatchOrder(x.MatchNo))
+            .ThenBy(x => x.MatchNo, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 竞彩平局：均势看平、模型看平都发。不并进 55% 胜平负精选，置信度不抬。
+    /// 赔率兜底写成「平局赔率最低、无强信号」的不发。
+    /// </summary>
+    public static bool IsIssuedDraw(MatchRecommendation x)
+    {
+        if (x.RecResult != '1' || x.IsOddsFallback) return false;
+        var desc = x.SignalDesc ?? "";
+        if (desc.Contains("赔率兜底", StringComparison.Ordinal)
+            && desc.Contains("平局赔率最低", StringComparison.Ordinal))
+            return false;
+        return desc.Contains("均势看平", StringComparison.Ordinal)
+               || desc.Contains("模型看平", StringComparison.Ordinal)
+               || desc.Contains("平局回测偏低", StringComparison.Ordinal);
+    }
+
+    public static List<MatchRecommendation> ForJcDraw(IReadOnlyList<MatchRecommendation> recs)
+    {
+        return recs
+            .Where(IsIssuedDraw)
+            .OrderBy(x => OfficialMatchOrder(x.MatchNo))
+            .ThenBy(x => x.MatchNo, StringComparer.Ordinal)
+            .ToList();
     }
 
     /// <summary>
@@ -215,8 +386,10 @@ public static class RecommendationSelection
         {
             r.IsFeatured = board != Boards.Bd
                 || (bdStrong is not null && r.MatchNo is not null && bdStrong.Contains(r.MatchNo));
-            // 比分、让球、进球、半全场的命中率都低于胜平负，不跟在同一条精选上。
+            // 比分和总进球留作参考，不进勾选、不进投注单。
             r.PublishMarkets = false;
+            r.RefScores = r.ScoreCandidates.ToList();
+            r.RefGoals = r.GoalCandidates.ToList();
             r.ScoreCandidates.Clear();
             r.GoalCandidates.Clear();
             r.HalfFullPick = null;
@@ -279,7 +452,7 @@ public static class RecommendationSelection
     }
 
     /// <summary>
-    /// 让球中高水票。够几场出几场，最多 8 场。
+    /// 让球票。够几场出几场，最多 8 场。不限 2.20–4.20。
     /// 满 8 场仍是 6串1+7串1+8串1，37 注，74 元。
     /// 不足 8 场时过关改成 (n-2)串1+(n-1)串1+n串1，金额按注数算。
     /// </summary>
@@ -288,8 +461,6 @@ public static class RecommendationSelection
         public const int LegCount = 8;
         public const int Multiple = 1;
         public const decimal UnitStake = 2m;
-        public const decimal MinOdds = 2.20m;
-        public const decimal MaxOdds = 4.20m;
         public const string Pass = "6串1#7串1#8串1";
         public const int BetCount = 37;
         public const decimal Stake = 74m;
@@ -351,7 +522,7 @@ public static class RecommendationSelection
 
         /// <summary>
         /// 胜平负方向按 1 球分差折成让球选项，赔率用该选项自己的让球价。
-        /// 让平不算打过盘。预计命中率不到精选线的不进这张票。
+        /// 让胜、让平、让负都收。预计命中率不到精选线的不进这张票。不限水位高低。
         /// </summary>
         public static (char Side, decimal Odds, string Option)? TryLeg(
             char? spf, decimal? handicap,
@@ -361,16 +532,28 @@ public static class RecommendationSelection
             if (hitProbability is null || hitProbability < RecommendationScoring.MinFeaturedHitProbability)
                 return null;
             var side = HandicapFromSpf(spf, handicap);
-            if (side is not ('3' or '0')) return null;
-            var odds = side == '3' ? nspfWin : nspfLoss;
-            if (nspfDraw <= 1 || odds < MinOdds || odds > MaxOdds) return null;
-            return (side.Value, odds, side == '3' ? "让胜" : "让负");
+            if (side is not ('3' or '1' or '0')) return null;
+            var odds = side == '3' ? nspfWin : side == '1' ? nspfDraw : nspfLoss;
+            if (odds <= 1) return null;
+            return (side.Value, odds, HandicapOptionName(side.Value));
+        }
+
+        /// <summary>让球名单上过 55% 的让胜、让平、让负。水位不设上下限。</summary>
+        public static (char Side, decimal Odds, string Option)? TryHandicapLeg(
+            char? side, decimal? probability, decimal win, decimal draw, decimal loss)
+        {
+            if (side is not ('3' or '1' or '0')) return null;
+            if (probability is null || probability < RecommendationScoring.MinFeaturedHitProbability)
+                return null;
+            var odds = side == '3' ? win : side == '1' ? draw : loss;
+            if (odds <= 1) return null;
+            return (side.Value, odds, HandicapOptionName(side.Value));
         }
 
         public static List<T> Pick<T>(IEnumerable<T> legs, Func<T, decimal> odds, Func<T, decimal?> hit)
         {
             return legs
-                .Where(x => odds(x) >= MinOdds && odds(x) <= MaxOdds)
+                .Where(x => odds(x) > 1)
                 .OrderByDescending(x => hit(x) ?? decimal.MinValue)
                 .ThenByDescending(odds)
                 .Take(LegCount)

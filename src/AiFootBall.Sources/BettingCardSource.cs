@@ -38,6 +38,18 @@ public sealed class BettingCardSource
         return html is null ? new() : ParseSfc(html, out _);
     }
 
+    /// <summary>胜负彩开奖页。打不开或还没开出 14 个 3/1/0 时返回 null，不猜奖金。</summary>
+    public async Task<SfcDraw?> FetchSfcDrawAsync(string expect, CancellationToken ct = default)
+    {
+        var issue = (expect ?? "").Trim();
+        if (issue.Length == 0 || issue.Any(c => !char.IsDigit(c))) return null;
+        var html = await GetGbkAsync(
+            $"https://kaijiang.500.com/shtml/sfc/{issue}.shtml",
+            "https://kaijiang.500.com/",
+            ct);
+        return SfcDrawParser.Parse(html, issue);
+    }
+
     /// <summary>北单胜平负、比分、半全场的开奖 SP。完场后未中选项会变成空，只留下开出的那一项。</summary>
     public async Task<Dictionary<long, BdMarketOdds>> FetchBdMarketOddsAsync(CancellationToken ct = default)
     {

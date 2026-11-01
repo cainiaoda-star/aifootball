@@ -169,7 +169,7 @@ WHERE bc.rn = 1
                       WHERE MatchId IN @ids
                         AND (
                               (PlayType = @jq AND OptionCode IN ('7','7+'))
-                           OR (PlayType = @bq AND OptionCode IN ('3-0','0-3'))
+                           OR (PlayType = @bq AND OptionCode IN ('3-0','0-3','3-1','0-1'))
                            OR (PlayType = @bf AND (OptionCode LIKE N'%其它%' OR OptionCode LIKE N'%其他%'))
                         )
                   ) t
@@ -232,6 +232,8 @@ WHERE bc.rn = 1
         MilkEventTaxonomy.Tags.Goals7p => (JcPlayTypes.Jq, new[] { "7", "7+" }),
         MilkEventTaxonomy.Tags.HfWinLose => (JcPlayTypes.Bq, new[] { "3-0" }),
         MilkEventTaxonomy.Tags.HfLoseWin => (JcPlayTypes.Bq, new[] { "0-3" }),
+        MilkEventTaxonomy.Tags.HfWinDraw => (JcPlayTypes.Bq, new[] { "3-1" }),
+        MilkEventTaxonomy.Tags.HfLoseDraw => (JcPlayTypes.Bq, new[] { "0-1" }),
         MilkEventTaxonomy.Tags.ScoreOtherHome => (JcPlayTypes.Bf, new[] { "胜其它", "胜其他" }),
         MilkEventTaxonomy.Tags.ScoreOtherAway => (JcPlayTypes.Bf, new[] { "负其它", "负其他" }),
         _ => (null, Array.Empty<string>())

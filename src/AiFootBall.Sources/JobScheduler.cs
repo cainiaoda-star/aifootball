@@ -334,6 +334,34 @@ public sealed class JobScheduler
                 break;
             }
 
+            // 页面和数据库各存一份，并画成图片。按分钟建目录，不覆盖。
+            case "recommend-evidence":
+            {
+                if (_recommendation is null)
+                {
+                    result = CollectionResult.Fail("推荐服务未注入");
+                    break;
+                }
+                var dir = await _recommendation.CaptureEvidenceAsync(ct);
+                result = CollectionResult.Ok(1, $"推荐证据已写入 {dir}");
+                break;
+            }
+
+            // 每天早上写前一天的复盘。竞彩和胜负彩全部，北单 A/B/C，没进精选的也写。
+            case "daily-review":
+            {
+                if (_recommendation is null)
+                {
+                    result = CollectionResult.Fail("推荐服务未注入");
+                    break;
+                }
+                var now = DateTime.Now;
+                var day = now.Hour < 12 ? now.Date.AddDays(-1) : now.Date;
+                var path = await _recommendation.WriteDailyReviewAsync(day, ct);
+                result = CollectionResult.Ok(1, $"复盘已写入 {path}");
+                break;
+            }
+
             // 保存今日推荐（落库，供开奖后复盘）
             case "save-recommendations":
             {

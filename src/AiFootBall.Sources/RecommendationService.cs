@@ -12,14 +12,16 @@ public sealed class RecommendationService
     private readonly BettingRepository _repo;
     private readonly JcOddsRepository _jcOdds;
     private readonly HitProbabilityService? _hit;
+    private readonly MilkScanService? _milk;
 
     public RecommendationService(BettingCardSource cardSource, BettingRepository repo, JcOddsRepository jcOdds,
-        HitProbabilityService? hit = null)
+        HitProbabilityService? hit = null, MilkScanService? milk = null)
     {
         _cardSource = cardSource;
         _repo = repo;
         _jcOdds = jcOdds;
         _hit = hit;
+        _milk = milk;
     }
 
     /// <summary>采样竞彩四类玩法固定奖金，写入 FbJcOddsHistory 时间序列。</summary>
@@ -76,9 +78,18 @@ public sealed class RecommendationService
     }
 
     /// <summary>为某板块生成今日推荐</summary>
-    public async Task<List<MatchRecommendation>> RecommendAsync(string board, string? expect = null, CancellationToken ct = default)
+    public Task<List<MatchRecommendation>> RecommendAsync(string board, string? expect = null, CancellationToken ct = default)
+        => ScoreAsync(board, expect, null, review: false, ct);
+
+    /// <summary>按开赛日重算已经踢过的场次。复盘用，不套用「在售」过滤。</summary>
+    public Task<List<MatchRecommendation>> ScoreForReviewAsync(
+        string board, IReadOnlyList<BettingCardRecord> cards, CancellationToken ct = default)
+        => ScoreAsync(board, null, cards, review: true, ct);
+
+    async Task<List<MatchRecommendation>> ScoreAsync(
+        string board, string? expect, IReadOnlyList<BettingCardRecord>? given, bool review, CancellationToken ct)
     {
-        var cards = await _repo.GetCardsAsync(board, expect, ct);
+        var cards = given?.ToList() ?? await _repo.GetCardsAsync(board, expect, ct);
         if (cards.Count == 0) return new();
 
         var fids = cards.Where(c => c.MatchId is not null).Select(c => c.MatchId!.Value).ToList();
@@ -105,6 +116,9 @@ public sealed class RecommendationService
         var jcSpf = string.Equals(board, Boards.Jc, StringComparison.OrdinalIgnoreCase) && fids.Count > 0
             ? await _jcOdds.GetLatestSpfAsync(fids, ct)
             : new Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>();
+        var jcRq = string.Equals(board, Boards.Jc, StringComparison.OrdinalIgnoreCase) && fids.Count > 0
+            ? await _jcOdds.GetLatestNspfAsync(fids, ct)
+            : new Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>();
 
         var bdSp = string.Equals(board, Boards.Bd, StringComparison.OrdinalIgnoreCase)
             ? await BdSpAsync(ct)
@@ -117,16 +131,19 @@ public sealed class RecommendationService
             // 已开赛（比赛时间已过）的场次不再参与推荐
             if (c.MatchTime is null && c.MatchId is not null && matchTimes.TryGetValue(c.MatchId.Value, out var mt))
                 c.MatchTime = mt;
-            if (c.MatchTime is not null && c.MatchTime.Value <= now)
-                continue;
-            if (string.Equals(board, Boards.Jc, StringComparison.OrdinalIgnoreCase))
+            if (!review)
             {
-                var beijing = RecommendationSelection.JcSaleHours.Now();
-                if (!RecommendationSelection.JcSaleHours.IsTodaysIssue(c.MatchNo, beijing))
+                if (c.MatchTime is not null && c.MatchTime.Value <= now)
                     continue;
-                if (c.MatchTime is DateTime kick
-                    && !RecommendationSelection.JcSaleHours.CanStillBuy(beijing, kick))
-                    continue;
+                if (string.Equals(board, Boards.Jc, StringComparison.OrdinalIgnoreCase))
+                {
+                    var beijing = RecommendationSelection.JcSaleHours.Now();
+                    if (!RecommendationSelection.JcSaleHours.IsTodaysIssue(c.MatchNo, beijing))
+                        continue;
+                    if (c.MatchTime is DateTime kick
+                        && !RecommendationSelection.JcSaleHours.CanStillBuy(beijing, kick))
+                        continue;
+                }
             }
 
             decimal? delta = null, drawDelta = null;
@@ -207,6 +224,28 @@ public sealed class RecommendationService
                     rec, spfHome, spfDraw, spfAway, line, sp?.Home, sp?.Draw, sp?.Away);
             }
 
+            if (string.Equals(board, Boards.Jc, StringComparison.OrdinalIgnoreCase))
+            {
+                decimal? rqW = null, rqD = null, rqL = null;
+                if (c.MatchId is long rqId && jcRq.TryGetValue(rqId, out var rq))
+                {
+                    rqW = rq.Win;
+                    rqD = rq.Draw;
+                    rqL = rq.Loss;
+                }
+                RecommendationSelection.ApplyJcHandicap(rec, spfHome, spfDraw, spfAway, line, rqW, rqD, rqL);
+            }
+
+            HotWatch.Mark(rec);
+
+            if (UpsetWatch.Matches(spfHome, delta, rh))
+            {
+                rec.UpsetWatch = true;
+                rec.UpsetNote = UpsetWatch.Note(spfHome!.Value, delta!.Value, rh!.Value);
+            }
+
+            TotalLineMath.Apply(rec, hitSnap.Scores);
+
             result.Add(rec);
         }
 
@@ -234,6 +273,14 @@ public sealed class RecommendationService
         }
         finally { BdSpGate.Release(); }
     }
+
+    /// <summary>把此刻页面上的推荐和库里当天的行写成证据，按时间追加，不覆盖。</summary>
+    public Task<string> CaptureEvidenceAsync(CancellationToken ct = default)
+        => RecommendationEvidence.CaptureAsync(this, _repo, ct);
+
+    /// <summary>写一天的复盘文档。竞彩全部场次，北单 A、B、C 级，没进精选的也写。</summary>
+    public Task<string> WriteDailyReviewAsync(DateTime day, CancellationToken ct = default)
+        => DailyReview.WriteAsync(this, _repo, day, ct, _milk);
 
     /// <summary>生成全板块推荐并落库（复盘用）。竞彩最多 8 / 北单最多 11，不够不凑；胜负彩保留全部。</summary>
     public async Task<Dictionary<string, List<MatchRecommendation>>> RecommendAllAndSaveAsync(CancellationToken ct = default)

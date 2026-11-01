@@ -113,6 +113,19 @@ public class RecommendationRulesTests
     }
 
     [Fact]
+    public void SmallDrop_WithoutExchangeLead_IsNotPublished()
+    {
+        // 2026-11-01 周日004：小降 -0.06，必发 39.8 对 38.6，不能再标精选主胜
+        var rec = Recommend(delta: -0.06m, home: 39.8m, away: 38.6m, spfHome: 1.59m, spfDraw: 3.43m, spfAway: 4.60m);
+
+        Assert.Null(rec.RecResult);
+        Assert.Equal(0, rec.SignalLevel);
+        Assert.Contains("没有高出 10 个点", rec.SignalDesc);
+        Assert.Empty(RecommendationSelection.ForDisplay(Boards.Jc, new[] { rec }));
+        Assert.Empty(RecommendationSelection.ForJcCalculated(new[] { rec }));
+    }
+
+    [Fact]
     public void BigDropAlone_IsTrap_NoPick()
     {
         var rec = Recommend(delta: -0.25m, home: 40m, away: 30m, spfHome: 2.10m, spfDraw: 3.40m, spfAway: 3.50m);
@@ -354,11 +367,15 @@ public class RecommendationRulesTests
     [Fact]
     public void CoverLeg_PlusOne_UsesTheHandicapPrice()
     {
-        // 不来梅 +1：胜平负 2.45 / 3.77 / 2.15，让球 1.50 / 4.40 / 4.08。
-        // 让胜只有 1.50，不是中高水，不能拿胜平负的 2.45 贴成让胜。
-        Assert.Null(RecommendationSelection.JcCoverTicket.TryLeg('3', 1m, 1.50m, 4.40m, 4.08m, 59m));
-        // 客胜按 0:1 折，+1 后是让平，不算打过盘。
-        Assert.Null(RecommendationSelection.JcCoverTicket.TryLeg('0', 1m, 1.50m, 4.40m, 4.08m, 60m));
+        // 让胜 1.50 也进。客胜按 0:1 折，+1 后是让平，用让平价。
+        var low = RecommendationSelection.JcCoverTicket.TryLeg('3', 1m, 1.50m, 4.40m, 4.08m, 59m);
+        Assert.NotNull(low);
+        Assert.Equal(1.50m, low.Value.Odds);
+        var drawLeg = RecommendationSelection.JcCoverTicket.TryLeg('0', 1m, 1.50m, 4.40m, 4.08m, 60m);
+        Assert.NotNull(drawLeg);
+        Assert.Equal('1', drawLeg.Value.Side);
+        Assert.Equal(4.40m, drawLeg.Value.Odds);
+        Assert.Equal("让平", drawLeg.Value.Option);
 
         var leg = RecommendationSelection.JcCoverTicket.TryLeg('3', 1m, 2.30m, 3.40m, 2.60m, 59m);
         Assert.NotNull(leg);
@@ -452,6 +469,8 @@ public class RecommendationRulesTests
             Assert.False(x.PublishMarkets);
             Assert.Empty(x.ScoreCandidates);
             Assert.Empty(x.GoalCandidates);
+            Assert.Equal(new[] { "2:0", "1:0" }, x.RefScores);
+            Assert.Equal(new[] { 2, 1 }, x.RefGoals);
             Assert.Null(x.HalfFullPick);
         });
         Assert.Null(shown[0].RecHandicap);
@@ -808,7 +827,7 @@ public class RecommendationRulesTests
     }
 
     [Fact]
-    public void CoverTicket_Picks_Mid_High_Odds()
+    public void CoverTicket_Picks_Best_Eight()
     {
         var legs = new (decimal Odds, decimal Hit)[]
         {
@@ -819,7 +838,7 @@ public class RecommendationRulesTests
         var picked = RecommendationSelection.JcCoverTicket.Pick(legs, x => x.Odds, x => (decimal?)x.Hit);
         var odds = picked.Select(x => x.Odds).OrderBy(x => x).ToArray();
 
-        Assert.Equal(new[] { 2.30m, 2.40m, 2.50m, 2.60m, 2.70m, 2.80m, 3.00m, 3.20m }, odds);
+        Assert.Equal(new[] { 1.40m, 2.10m, 2.30m, 2.40m, 2.50m, 2.60m, 2.70m, 4.80m }, odds);
     }
 
     [Theory]

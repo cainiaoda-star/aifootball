@@ -28,7 +28,8 @@ internal static class Program
             exchangeRepo, syncRepo);
         var cardSource = new BettingCardSource(http);
         var jcOddsRepo = new JcOddsRepository(factory);
-        var recService = new RecommendationService(cardSource, bettingRepo, jcOddsRepo);
+        var milkScan = new MilkScanService(new MilkRepository(factory), bettingRepo);
+        var recService = new RecommendationService(cardSource, bettingRepo, jcOddsRepo, milk: milkScan);
         var progress = new Progress<string>(Console.WriteLine);
 
         try
@@ -96,6 +97,13 @@ internal static class Program
                     return 0;
                 }
 
+                case "exchange-backfill":
+                {
+                    var limit = (int)Num(opts, "limit", 0);
+                    await service.BackfillExchangeAsync(limit, progress);
+                    return 0;
+                }
+
                 case "all":
                 {
                     await service.CollectLotteryAsync(null, true, progress);
@@ -108,7 +116,7 @@ internal static class Program
                 case "scheduler":
                 {
                     var purchaseRepo = new PurchaseRepository(factory);
-                    var purchaseSettle = new PurchaseSettlementService(purchaseRepo, fbRepo);
+                    var purchaseSettle = new PurchaseSettlementService(purchaseRepo, fbRepo, cardSource);
                     var scheduler = new JobScheduler(jobsOptions, service, syncRepo, recService, purchaseSettle, Console.WriteLine);
                     await scheduler.InitializeAsync();
                     if (opts.TryGetValue("once", out var once))
@@ -442,6 +450,7 @@ internal static class Program
                                                     赔率轨迹采样（临近开赛的场次，形成初盘→赛前曲线）
               exchange [--hours 10] [--behind 1] [--recheck 25] [--limit 0]
                                                     采集必发成交数据（成交量/庄家盈亏/指数/大额明细）
+              exchange-backfill [--limit 0]        补还没查过必发的场。完场页是最终成交，不盖已有赛前采样
               cards                                采集竞彩/北单/胜负彩官方受注场次
               recommend [--board jc|bd|sfc|all]    生成今日推荐并落库（双信号命中+比分进球预测，北单取15场）
               settle                               复盘：回填已完场赛果并统计命中率

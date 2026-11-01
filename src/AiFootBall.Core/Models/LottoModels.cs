@@ -6,16 +6,18 @@ public static class LottoCodes
     public const string Ssq = "ssq";   // 双色球（福利彩票）
     public const string Dlt = "dlt";   // 大乐透
     public const string Fc3d = "fc3d"; // 福彩3D
+    public const string Kl8 = "kl8";   // 快乐8，每天开奖，选十
     public const string Pl3 = "pl3";   // 排列三
     public const string Pl5 = "pl5";   // 排列五
 
-    public static readonly string[] All = [Ssq, Dlt, Fc3d, Pl3, Pl5];
+    public static readonly string[] All = [Ssq, Dlt, Fc3d, Kl8, Pl3, Pl5];
 
     public static string DisplayName(string code) => code.ToLowerInvariant() switch
     {
         Ssq => "双色球",
         Dlt => "大乐透",
         Fc3d => "福彩3D",
+        Kl8 => "快乐8",
         Pl3 => "排列三",
         Pl5 => "排列五",
         _ => code
@@ -26,6 +28,12 @@ public static class LottoCodes
 
     public static bool IsDigitGame(string code) =>
         code is Fc3d or Pl3 or Pl5;
+
+    public static bool IsKl8(string code) =>
+        code.Equals(Kl8, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsDlt(string code) =>
+        code.Equals(Dlt, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>一注选号方案。</summary>
@@ -37,6 +45,10 @@ public sealed class LottoPick
     public string PlayType { get; set; } = "单式";
     public List<int> Reds { get; set; } = new();
     public List<int> Blues { get; set; } = new();
+    /// <summary>胆拖的拖码。四胆全拖时为前区除胆以外的全部号码，不入库。</summary>
+    public List<int> TuoReds { get; set; } = new();
+    /// <summary>胆拖展开后的注数。单式为空。</summary>
+    public int? BetCount { get; set; }
     public decimal Score { get; set; }
     public string SignalDesc { get; set; } = "";
 

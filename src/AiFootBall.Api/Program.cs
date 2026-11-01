@@ -54,7 +54,8 @@ builder.Services.AddSingleton(sp => new RecommendationService(
     sp.GetRequiredService<BettingCardSource>(),
     sp.GetRequiredService<BettingRepository>(),
     sp.GetRequiredService<JcOddsRepository>(),
-    sp.GetRequiredService<HitProbabilityService>()));
+    sp.GetRequiredService<HitProbabilityService>(),
+    sp.GetRequiredService<MilkScanService>()));
 builder.Services.AddSingleton<UserRepository>();
 builder.Services.AddSingleton<BettingRepository>();
 builder.Services.AddSingleton<AnalysisRepository>();
@@ -103,8 +104,15 @@ app.MapGet("/api/lotto/recommend", async (LottoRecommendationService svc, Cancel
 app.MapGet("/api/lotto/recommend/{code}", async (string code, LottoRecommendationService svc, CancellationToken ct) =>
 {
     if (!LottoCodes.All.Contains(code, StringComparer.OrdinalIgnoreCase))
-        return Results.BadRequest(new { message = "code 应为 ssq/dlt/fc3d/pl3/pl5" });
+        return Results.BadRequest(new { message = "code 应为 ssq/dlt/fc3d/kl8/pl3/pl5" });
     return Results.Ok(await svc.GetByCodeAsync(code, ct));
+});
+
+app.MapGet("/api/lotto/review/{code}", async (string code, LottoRecommendationService svc, CancellationToken ct) =>
+{
+    if (!LottoCodes.All.Contains(code, StringComparer.OrdinalIgnoreCase))
+        return Results.BadRequest(new { message = "code 应为 ssq/dlt/fc3d/kl8/pl3/pl5" });
+    return Results.Ok(await svc.ReviewAsync(code, ct));
 });
 
 app.MapPost("/api/lotto/recommend/save", async (LottoRecommendationService svc, CancellationToken ct) =>
@@ -387,6 +395,28 @@ app.MapGet("/api/auth/me", (HttpRequest request, AuthService auth) =>
         : Results.Unauthorized();
 });
 
+app.MapGet("/api/skills", () => Results.Ok(SkillBoard.Read()));
+
+app.MapPost("/api/skills", (SkillWriteRequest req, HttpRequest request, AuthService auth) =>
+{
+    var token = request.Headers.Authorization.ToString().Replace("Bearer ", "");
+    if (!auth.TryGet(token, out _, out _)) return Results.Unauthorized();
+    var title = (req.Title ?? "").Trim();
+    var body = (req.Body ?? "").Trim();
+    if (title.Length == 0 || body.Length == 0)
+        return Results.BadRequest(new { ok = false, message = "标题和正文都要写" });
+    if (title.Length > 80 || body.Length > 4000)
+        return Results.BadRequest(new { ok = false, message = "标题 80 字以内，正文 4000 字以内" });
+    return Results.Ok(SkillBoard.Add(title, body, "user"));
+});
+
+app.MapDelete("/api/skills/{id}", (string id, HttpRequest request, AuthService auth) =>
+{
+    var token = request.Headers.Authorization.ToString().Replace("Bearer ", "");
+    if (!auth.TryGet(token, out _, out _)) return Results.Unauthorized();
+    return SkillBoard.Delete(id) ? Results.Ok(new { ok = true }) : Results.NotFound();
+});
+
 // 采集受注场次（内部触发）
 app.MapPost("/api/recommend/collect", async (RecommendationService svc, CancellationToken ct) =>
 {
@@ -638,6 +668,19 @@ app.MapPost("/api/purchase/ocr", async (HttpRequest request, BettingRepository b
     }
 });
 
+// 录入时按场次号带出主客队
+app.MapGet("/api/purchase/match", async (string? no, string? board, string? expect, BettingRepository betting, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(no))
+        return Results.BadRequest(new { message = "缺少场次号" });
+    var hit = await betting.FindCardByNoAsync(no, board, expect, ct);
+    if (hit is null && !string.IsNullOrWhiteSpace(board) && no.Trim().StartsWith('周'))
+        hit = await betting.FindCardByNoAsync(no, null, null, ct);
+    return hit is null
+        ? Results.Ok(new { matchNo = no.Trim(), homeTeam = (string?)null, awayTeam = (string?)null })
+        : Results.Ok(new { matchNo = hit.MatchNo, homeTeam = hit.HomeTeam, awayTeam = hit.AwayTeam });
+});
+
 // 购买方案列表（含明细）
 app.MapGet("/api/purchase", async (PurchaseRepository repo, string? date, CancellationToken ct) =>
 {
@@ -667,8 +710,16 @@ app.MapPost("/api/purchase", async (PurchaseUpsertRequest req, PurchaseRepositor
             line.Option2 = PlainSpfOption(line.Option2);
         }
     }
+    var sfc = string.Equals(req.Board, Boards.Sfc, StringComparison.OrdinalIgnoreCase)
+              || req.PlayType is "胜负彩" or "任选九";
+    if (sfc)
+    {
+        var why = SfcTicketMath.Normalize(req);
+        if (why is not null)
+            return Results.BadRequest(new { message = why });
+    }
     var id = await repo.UpsertAsync(req, ct);
-    return Results.Ok(new { purchaseId = id });
+    return Results.Ok(new { purchaseId = id, betCount = req.BetCount, betAmount = req.BetAmount });
 });
 
 // 开奖回填（手动）
@@ -734,7 +785,23 @@ app.MapGet("/api/recommend/{board}", async (string board, RecommendationService 
         return Results.BadRequest(new { message = "board 应为 jc/bd/sfc" });
 
     var recs = await svc.RecommendAsync(board, null, ct);
+    var hcpRows = board == Boards.Jc
+        ? RecommendationSelection.ForJcHandicap(recs)
+        : new List<MatchRecommendation>();
+    var handicap = board == Boards.Jc ? hcpRows.Select(ToJcHandicapItem).ToList() : null;
+    var draws = board == Boards.Jc
+        ? RecommendationSelection.ForJcDraw(recs).Select(ToJcDrawItem).ToList()
+        : null;
+    var stakePlan = board == Boards.Jc ? await JcStakePlanAsync(jcOdds, hcpRows, ct) : null;
     var strong = RecommendationSelection.ForDisplay(board, recs);
+    var pageItems = board == Boards.Jc
+        ? RecommendationSelection.ForJcCalculated(recs)
+        : board == Boards.Bd
+            ? RecommendationSelection.ForBdCalculated(recs)
+            : strong;
+    var plain = board == Boards.Bd
+        ? RecommendationSelection.ForBdPlain(recs).Select(ToBdPlainItem).ToList()
+        : null;
 
     return Results.Ok(new
     {
@@ -744,8 +811,11 @@ app.MapGet("/api/recommend/{board}", async (string board, RecommendationService 
         passTip = RecommendationSelection.PassTip(board, strong.Count),
         passType = RecommendationSelection.PassTypeValue(board, strong.Count),
         saleNote = board == Boards.Jc ? RecommendationSelection.JcSaleHours.Note(RecommendationSelection.JcSaleHours.Now()) : null,
-        stakePlan = board == Boards.Jc ? await JcStakePlanAsync(jcOdds, recs, ct) : null,
-        items = strong.Select(ToItem)
+        stakePlan,
+        handicapItems = handicap,
+        drawItems = draws,
+        plainItems = plain,
+        items = pageItems.Select(ToItem)
     });
 });
 
@@ -756,10 +826,35 @@ app.MapGet("/api/recommend", async (RecommendationService svc, JcOddsRepository 
     if (!auth.TryGet(token, out _, out _)) return Results.Unauthorized();
 
     var boards = new List<object>();
+    var upset = new List<MatchRecommendation>();
+    var hot = new List<MatchRecommendation>();
+    var totals = new List<MatchRecommendation>();
     foreach (var board in new[] { Boards.Jc, Boards.Bd, Boards.Sfc })
     {
         var recs = await svc.RecommendAsync(board, null, ct);
+        var hcpRows = board == Boards.Jc
+            ? RecommendationSelection.ForJcHandicap(recs)
+            : new List<MatchRecommendation>();
+        var handicap = board == Boards.Jc ? hcpRows.Select(ToJcHandicapItem).ToList() : null;
+        var draws = board == Boards.Jc
+            ? RecommendationSelection.ForJcDraw(recs).Select(ToJcDrawItem).ToList()
+            : null;
+        var stakePlan = board == Boards.Jc ? await JcStakePlanAsync(jcOdds, hcpRows, ct) : null;
         var strong = RecommendationSelection.ForDisplay(board, recs);
+        var pageItems = board == Boards.Jc
+            ? RecommendationSelection.ForJcCalculated(recs)
+            : board == Boards.Bd
+                ? RecommendationSelection.ForBdCalculated(recs)
+                : strong;
+        var plain = board == Boards.Bd
+            ? RecommendationSelection.ForBdPlain(recs).Select(ToBdPlainItem).ToList()
+            : null;
+        hot.AddRange(recs.Where(r => r.HotWatch));
+        if (board is Boards.Jc or Boards.Bd)
+        {
+            upset.AddRange(recs.Where(r => r.UpsetWatch));
+            totals.AddRange(recs.Where(r => r.OuSide is not null));
+        }
 
         boards.Add(new
         {
@@ -772,31 +867,84 @@ app.MapGet("/api/recommend", async (RecommendationService svc, JcOddsRepository 
             passTip = RecommendationSelection.PassTip(board, strong.Count),
             passType = RecommendationSelection.PassTypeValue(board, strong.Count),
             saleNote = board == Boards.Jc ? RecommendationSelection.JcSaleHours.Note(RecommendationSelection.JcSaleHours.Now()) : null,
-            stakePlan = board == Boards.Jc ? await JcStakePlanAsync(jcOdds, recs, ct) : null,
-            items = strong.Select(ToItem)
+            stakePlan,
+            handicapItems = handicap,
+            drawItems = draws,
+            plainItems = plain,
+            items = pageItems.Select(ToItem)
         });
     }
 
-    return Results.Ok(new { date = DateTime.Now.ToString("yyyy-MM-dd"), boards });
+    return Results.Ok(new
+    {
+        date = DateTime.Now.ToString("yyyy-MM-dd"),
+        boards,
+        upsetWatch = DedupeUpset(upset).Select(ToItem),
+        hotWatch = DedupeHot(hot).Select(ToHotItem),
+        totals = DedupeWithinBoard(totals.Where(r => r.Board == Boards.Jc))
+            .Concat(DedupeWithinBoard(totals.Where(r => r.Board == Boards.Bd)))
+            .Select(ToItem)
+    });
 });
+
+static List<MatchRecommendation> DedupeWithinBoard(IEnumerable<MatchRecommendation> rows)
+{
+    var seen = new HashSet<long>();
+    var kept = new List<MatchRecommendation>();
+    foreach (var r in rows
+        .OrderByDescending(r => r.OuProbability ?? 0)
+        .ThenBy(r => RecommendationSelection.OfficialMatchOrder(r.MatchNo)))
+    {
+        if (r.MatchId is long id && !seen.Add(id)) continue;
+        kept.Add(r);
+    }
+    return kept;
+}
+
+static List<MatchRecommendation> DedupeHot(List<MatchRecommendation> rows)
+{
+    var seen = new HashSet<string>(StringComparer.Ordinal);
+    var kept = new List<MatchRecommendation>();
+    foreach (var r in rows)
+    {
+        var key = (r.Board ?? "") + "|" + (r.MatchId?.ToString() ?? r.MatchNo ?? "");
+        if (!seen.Add(key)) continue;
+        kept.Add(r);
+    }
+    return kept;
+}
+
+static List<MatchRecommendation> DedupeUpset(List<MatchRecommendation> rows)
+{
+    var seen = new HashSet<long>();
+    var kept = new List<MatchRecommendation>();
+    foreach (var r in rows
+        .OrderBy(r => r.Board == Boards.Jc ? 0 : 1)
+        .ThenBy(r => RecommendationSelection.OfficialMatchOrder(r.MatchNo)))
+    {
+        if (r.MatchId is long id && !seen.Add(id)) continue;
+        kept.Add(r);
+    }
+    return kept;
+}
 
 // 推荐项投影（含比分、进球数预测）
 static async Task<object> JcStakePlanAsync(
-    JcOddsRepository jcOdds, IReadOnlyList<MatchRecommendation> strong, CancellationToken ct)
+    JcOddsRepository jcOdds, IReadOnlyList<MatchRecommendation> picks, CancellationToken ct)
 {
-    var ids = strong.Where(r => r.MatchId is > 0).Select(r => r.MatchId!.Value).Distinct().ToList();
+    var ids = picks.Where(r => r.MatchId is > 0).Select(r => r.MatchId!.Value).Distinct().ToList();
     var prices = ids.Count == 0
         ? new Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>()
         : await jcOdds.GetLatestNspfAsync(ids, ct);
 
     var legs = new List<(MatchRecommendation Rec, decimal Odds, string Option, decimal? LegP)>();
-    foreach (var r in strong)
+    foreach (var r in picks)
     {
-        if (r.RecResult is not ('3' or '0') || r.MatchId is not long id) continue;
+        if (r.RecHandicap is not ('3' or '1' or '0') || r.MatchId is not long id) continue;
         if (!prices.TryGetValue(id, out var price)) continue;
         if (r.SignalDesc?.Contains("澳超客胜不进精选", StringComparison.Ordinal) == true) continue;
-        var leg = RecommendationSelection.JcCoverTicket.TryLeg(
-            r.RecResult, r.Handicap, price.Win, price.Draw, price.Loss, r.HitProbability);
+        var leg = RecommendationSelection.JcCoverTicket.TryHandicapLeg(
+            r.RecHandicap, r.HandicapProbability, price.Win, price.Draw, price.Loss);
         if (leg is null) continue;
         var legP = RecommendationSelection.JcCoverTicket.LegProbability(leg.Value.Side, price.Win, price.Draw, price.Loss);
         legs.Add((r, leg.Value.Odds, leg.Value.Option, legP));
@@ -842,6 +990,79 @@ static async Task<object> JcStakePlanAsync(
     };
 }
 
+static object ToJcDrawItem(MatchRecommendation r)
+{
+    var desc = r.SignalDesc ?? "";
+    desc = desc.Replace("（平局回测偏低，不进精选）", "（平局这种形态近 60 日大约 37%，按算出来的数发）", StringComparison.Ordinal);
+    desc = desc.Replace("；模型看平，不进精选", "；模型看平", StringComparison.Ordinal);
+    return new
+    {
+        r.MatchNo, r.MatchId, r.LeagueName, r.HomeTeam, r.AwayTeam, r.MatchTime, r.Handicap,
+        result = "1",
+        resultText = "平局",
+        hitProbability = r.HitProbability ?? r.Confidence,
+        hitProbabilityNote = r.HitProbabilityNote,
+        r.SignalLevel,
+        signalDesc = desc,
+        isDraw = true
+    };
+}
+
+static object ToJcHandicapItem(MatchRecommendation r)
+{
+    var hcp = r.Handicap is decimal h ? (h > 0 ? $"+{h:0.##}" : $"{h:0.##}") : "";
+    var name = r.RecHandicap is char side ? RecommendationSelection.HandicapOptionName(side) : "";
+    var price = r.HandicapOdds is decimal o ? $"，让球价 {o:0.00}" : "";
+    var plain = r.RecResult == '3' ? "主胜" : r.RecResult == '0' ? "客胜" : r.RecResult == '1' ? "平局" : null;
+    var plainText = plain is null ? "" : $"不让球参考：{plain}。";
+    var settle = r.RecHandicap == '1' ? "刚好走在盘口上才算中。" : "要打过这个盘口。";
+    var gate = r.HandicapProbability >= RecommendationScoring.MinFeaturedHitProbability
+        ? ""
+        : "不到 55%，不标精选。";
+    return new
+    {
+        r.MatchNo, r.MatchId, r.LeagueName, r.HomeTeam, r.AwayTeam, r.MatchTime, r.Handicap,
+        result = r.RecHandicap?.ToString(),
+        resultText = name,
+        hitProbability = r.HandicapProbability,
+        hitProbabilityNote = "欧赔去水 + 大小球盘折算到竞彩让球数",
+        handicapOdds = r.HandicapOdds,
+        signalDesc = $"让{hcp} {name} 约 {r.HandicapProbability:0.0}%{price}。{settle}{plainText}{gate}",
+        isHandicap = true
+    };
+}
+
+static object ToBdPlainItem(MatchRecommendation r)
+{
+    var side = r.RecResult == '3' ? "主胜" : r.RecResult == '0' ? "客胜" : r.RecResult == '1' ? "平局" : "";
+    return new
+    {
+        r.MatchNo, r.MatchId, r.LeagueName, r.HomeTeam, r.AwayTeam, r.MatchTime,
+        result = r.RecResult?.ToString(),
+        resultText = side,
+        hitProbability = r.HitProbability ?? r.Confidence,
+        hitProbabilityNote = r.HitProbabilityNote,
+        r.SignalLevel,
+        signalDesc = (r.SignalDesc ?? "") + "不让球参考，北单不卖。",
+        isPlain = true
+    };
+}
+
+static object ToHotItem(MatchRecommendation r)
+{
+    var side = r.HotSide == '0' ? "客胜" : "主胜";
+    return new
+    {
+        r.MatchNo, r.MatchId, r.Board, r.LeagueName, r.HomeTeam, r.AwayTeam, r.MatchTime, r.Handicap,
+        result = r.HotSide?.ToString(),
+        resultText = side,
+        hotWatch = true,
+        hotRatio = r.HotRatio,
+        signalDesc = r.HotNote,
+        isFeatured = false
+    };
+}
+
 static object ToItem(MatchRecommendation r)
 {
     // 北单只卖让球胜平负：对外的推荐、命中率都换成让球选项，不让球方向只留在说明里。
@@ -849,12 +1070,15 @@ static object ToItem(MatchRecommendation r)
     var pick = bd ? r.RecHandicap : r.RecResult;
     return new
 {
-    r.MatchNo, r.MatchId, r.LeagueName, r.HomeTeam, r.AwayTeam, r.MatchTime, r.Handicap,
+    r.MatchNo, r.MatchId, r.Expect, r.LeagueName, r.HomeTeam, r.AwayTeam, r.MatchTime, r.Handicap,
     result = pick?.ToString(),
     resultText = bd
         ? RecommendationSelection.HandicapOptionName(r.RecHandicap!.Value)
         : r.RecResult == '3' ? "主胜" : r.RecResult == '0' ? "客胜" : r.RecResult == '1' ? "平局" : "全包",
-    r.Confidence, r.SignalLevel, r.SignalDesc,
+    r.Confidence, r.SignalLevel,
+    signalDesc = bd && r.HandicapProbability < RecommendationScoring.MinFeaturedHitProbability
+        ? (r.SignalDesc ?? "") + "不到 55%，不标强推荐。"
+        : r.SignalDesc,
     hitProbability = bd ? r.HandicapProbability : r.HitProbability,
     hitProbabilityNote = bd ? "欧赔去水 + 大小球盘折算到北单让球数" : r.HitProbabilityNote,
     handicapOdds = bd ? r.HandicapOdds : null,
@@ -862,10 +1086,13 @@ static object ToItem(MatchRecommendation r)
     homeOddsDelta = r.HomeOddsDelta, drawOddsDelta = r.DrawOddsDelta,
     ratioHome = r.RatioHome, ratioDraw = r.RatioDraw, ratioAway = r.RatioAway,
     scores = r.ScoreCandidates, goals = r.GoalCandidates,
+    refScores = r.RefScores, refGoals = r.RefGoals,
     recHandicap = r.RecHandicap?.ToString(),
     recHandicapText = r.RecHandicap switch { '3' => "让胜", '1' => "让平", '0' => "让负", _ => null },
     halfFullPick = r.HalfFullPick,
-    r.IsFeatured, r.PublishMarkets
+    r.IsFeatured, r.PublishMarkets,
+    r.Board, r.UpsetWatch, r.UpsetNote,
+    r.TotalLine, r.OuSide, r.OuProbability, r.OuPush, r.OuNote
 };
 }
 
@@ -985,9 +1212,24 @@ app.MapGet("/api/summary/finished", async (SummaryRepository repo, JcOddsReposit
         byQuality,
         byLeague,
         byResult,
-        items
+        items,
+        document = await ReadDailyReviewAsync(d, ct),
+        reviewSchedule = "每天 08:20 写前一天"
     });
 });
+
+static async Task<string?> ReadDailyReviewAsync(DateTime day, CancellationToken ct)
+{
+    try
+    {
+        var path = Path.Combine(DailyReview.ReviewRoot(), day.ToString("yyyy-MM-dd") + ".md");
+        return File.Exists(path) ? await File.ReadAllTextAsync(path, ct) : null;
+    }
+    catch (DirectoryNotFoundException)
+    {
+        return null;
+    }
+}
 
 app.Run();
 
@@ -1010,6 +1252,7 @@ static bool OcrTeamLooksLike(string? ocr, string? db)
 }
 
 internal sealed record LoginRequest(string UserName, string Password, string? NickName);
+internal sealed record SkillWriteRequest(string? Title, string? Body);
 internal sealed record PasswordChangeRequest(string? CurrentPassword, string? NewPassword, string? ConfirmPassword);
 
 // OCR 响应 DTO（与 Node 端 parse-ticket.js 输出对齐）

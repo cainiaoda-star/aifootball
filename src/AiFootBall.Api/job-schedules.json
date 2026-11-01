@@ -22,5 +22,15 @@
     "name": "save-recommendations",
     "cron": "40 8,11,16,20 * * *",
     "enabled": true
+  },
+  {
+    "name": "recommend-evidence",
+    "cron": "25 9-23 * * *",
+    "enabled": true
+  },
+  {
+    "name": "daily-review",
+    "cron": "20 8 * * *",
+    "enabled": true
   }
 ]

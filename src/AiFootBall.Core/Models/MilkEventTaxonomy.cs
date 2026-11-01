@@ -11,6 +11,8 @@ public static class MilkEventTaxonomy
         public const string Goals7p = "goals7p";
         public const string HfWinLose = "hf_win_lose";
         public const string HfLoseWin = "hf_lose_win";
+        public const string HfWinDraw = "hf_win_draw";
+        public const string HfLoseDraw = "hf_lose_draw";
         public const string ScoreOtherHome = "score_other_home";
         public const string ScoreOtherAway = "score_other_away";
         public const string UpsetHome = "upset_home";
@@ -28,6 +30,8 @@ public static class MilkEventTaxonomy
         [Tags.Goals7p] = "7+",
         [Tags.HfWinLose] = "胜/负",
         [Tags.HfLoseWin] = "负/胜",
+        [Tags.HfWinDraw] = "胜/平",
+        [Tags.HfLoseDraw] = "负/平",
         [Tags.ScoreOtherHome] = "胜其它",
         [Tags.ScoreOtherAway] = "负其它",
         [Tags.UpsetHome] = "主热爆冷",
@@ -62,6 +66,8 @@ public static class MilkEventTaxonomy
     public const decimal HighGoalsLineMin = 2.75m;
     public const decimal SoftJq7SpMax = 25m;
     public const decimal SoftHfFlipSpMax = 22m;
+    /// <summary>胜/平、负/平比胜/负、负/胜常见，价也更短。15 含 2026-11-01 周日001 负平 14.50、周日002 胜平/负平 15。</summary>
+    public const decimal SoftHfDrawSpMax = 15m;
 
     public sealed class MilkTagHit
     {
@@ -94,6 +100,8 @@ public static class MilkEventTaxonomy
         public decimal? Jq7Sp { get; init; }
         public decimal? BqWinLoseSp { get; init; }
         public decimal? BqLoseWinSp { get; init; }
+        public decimal? BqWinDrawSp { get; init; }
+        public decimal? BqLoseDrawSp { get; init; }
         public decimal? BfOtherHomeSp { get; init; }
         public decimal? BfOtherAwaySp { get; init; }
     }
@@ -127,10 +135,15 @@ public static class MilkEventTaxonomy
             var halfAwayWin = hh < ha;
             var fullHomeWin = m.Home > m.Away;
             var fullAwayWin = m.Home < m.Away;
+            var fullDraw = m.Home == m.Away;
             if (halfHomeWin && fullAwayWin)
                 hits.Add(Hit(Tags.HfWinLose, $"半场 {hh}:{ha} → 全场 {score}"));
             if (halfAwayWin && fullHomeWin)
                 hits.Add(Hit(Tags.HfLoseWin, $"半场 {hh}:{ha} → 全场 {score}"));
+            if (halfHomeWin && fullDraw)
+                hits.Add(Hit(Tags.HfWinDraw, $"半场 {hh}:{ha} → 全场 {score}"));
+            if (halfAwayWin && fullDraw)
+                hits.Add(Hit(Tags.HfLoseDraw, $"半场 {hh}:{ha} → 全场 {score}"));
         }
 
         if (IsJcScoreOtherHome(m.Home, m.Away))
@@ -173,6 +186,10 @@ public static class MilkEventTaxonomy
             flipNotes.Add($"胜/负 SP {m.BqWinLoseSp:0.##}");
         if (m.BqLoseWinSp is > 0 and <= SoftHfFlipSpMax)
             flipNotes.Add($"负/胜 SP {m.BqLoseWinSp:0.##}");
+        if (m.BqWinDrawSp is > 0 and <= SoftHfDrawSpMax)
+            flipNotes.Add($"胜/平 SP {m.BqWinDrawSp:0.##}");
+        if (m.BqLoseDrawSp is > 0 and <= SoftHfDrawSpMax)
+            flipNotes.Add($"负/平 SP {m.BqLoseDrawSp:0.##}");
         if (flipNotes.Count > 0)
             hits.Add(Hit(Tags.HfFlipWatch, string.Join("；", flipNotes)));
 

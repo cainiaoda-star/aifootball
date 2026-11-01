@@ -1,3 +1,4 @@
+using System.Text;
 using AiFootBall.Core.Models;
 using AiFootBall.Data;
 
@@ -79,6 +80,8 @@ public sealed class MilkScanService
         public decimal? Jq7Sp { get; init; }
         public decimal? BqWinLoseSp { get; init; }
         public decimal? BqLoseWinSp { get; init; }
+        public decimal? BqWinDrawSp { get; init; }
+        public decimal? BqLoseDrawSp { get; init; }
         /// <summary>精选排序分（越高越靠前）。</summary>
         public decimal Score { get; init; }
         /// <summary>主观察点（最强标签中文名）。</summary>
@@ -95,7 +98,7 @@ public sealed class MilkScanService
         public int PickLimit { get; init; } = TodayPickLimit;
         public List<WatchItem> Items { get; init; } = new();
         public string Note { get; init; } =
-            "大奶精选最多 6 场，仅供赛后对照观察，不做投注、不生成方案。";
+            "冷门参考最多 6 场，只对照、不购买，不生成方案。";
     }
 
     public async Task<StatsResult> GetStatsAsync(string? scope, DateTime? from, DateTime? to, CancellationToken ct = default)
@@ -223,6 +226,105 @@ public sealed class MilkScanService
     public async Task<TodayResult> GetTodayAsync(CancellationToken ct = default)
     {
         var cards = await _milk.GetOpenCardsAsync(ct);
+        var seeds = cards.Select(c => new ScanCard(
+            c.Board, c.MatchNo, c.MatchId, c.LeagueName, c.HomeTeam, c.AwayTeam, c.MatchTime, c.SpfHome, c.SpfAway)).ToList();
+        var pool = await WatchPoolAsync(seeds, ct);
+        var items = PickDiversified(DedupSameMatch(pool), TodayPickLimit);
+
+        return new TodayResult
+        {
+            GeneratedAt = DateTime.Now,
+            CardCount = cards.Count,
+            PoolCount = pool.Count,
+            WatchCount = items.Count,
+            PickLimit = TodayPickLimit,
+            Items = items
+        };
+    }
+
+    /// <summary>复盘当天开赛的竞彩、北单，按冷门参考同一套挑 6 场，再对照赛果。</summary>
+    public async Task<string> ReviewBodyAsync(
+        IReadOnlyList<BettingCardRecord> cards,
+        IReadOnlyDictionary<long, ReviewScore> scores,
+        CancellationToken ct = default)
+    {
+        var seeds = cards
+            .Where(c => string.Equals(c.Board, Boards.Jc, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(c.Board, Boards.Bd, StringComparison.OrdinalIgnoreCase))
+            .Select(c => new ScanCard(
+                c.Board, c.MatchNo, c.MatchId, c.LeagueName, c.HomeTeam, c.AwayTeam, c.MatchTime, c.SpfHome, c.SpfAway))
+            .ToList();
+        var pool = await WatchPoolAsync(seeds, ct);
+        var picked = PickDiversified(DedupSameMatch(pool), TodayPickLimit);
+        return FormatReview(picked, scores);
+    }
+
+    public static string FormatReview(IReadOnlyList<WatchItem> items, IReadOnlyDictionary<long, ReviewScore> scores)
+    {
+        if (items.Count == 0) return "这天没有冷门参考。";
+
+        var sb = new StringBuilder();
+        var done = items.Count(it => ScoreOf(it, scores)?.Finished == true);
+        var parts = new List<string>();
+        void Bucket(string name, string bucket)
+        {
+            var g = items.Where(it => FocusBucket(it) == bucket).ToList();
+            if (g.Count == 0) return;
+            var hit = g.Count(it => Judge(it, ScoreOf(it, scores)) == "打出");
+            parts.Add($"{name} {g.Count} 场打出 {hit}");
+        }
+        Bucket("高球", "goals");
+        Bucket("翻转", "flip");
+        Bucket("爆冷", "upset");
+        Bucket("非常规比分", "other");
+        var pending = items.Count - done;
+        var tail = pending > 0 ? $"，未完场 {pending}" : "";
+        sb.AppendLine($"- {items.Count} 场，完场 {done}{tail}。{string.Join("，", parts)}。");
+        sb.AppendLine();
+
+        foreach (var it in items)
+        {
+            var score = ScoreOf(it, scores);
+            var board = string.Equals(it.Board, Boards.Jc, StringComparison.OrdinalIgnoreCase) ? "竞彩"
+                : string.Equals(it.Board, Boards.Bd, StringComparison.OrdinalIgnoreCase) ? "北单" : it.Board;
+            var when = it.MatchTime?.ToString("HH:mm") ?? "";
+            sb.AppendLine($"### {board} {it.MatchNo} {it.League} {it.Home} vs {it.Away} {when}");
+            sb.AppendLine();
+            var notes = string.Join("；", it.Tags.Select(t => string.IsNullOrWhiteSpace(t.Note) ? t.Label : $"{t.Label} {t.Note}"));
+            sb.AppendLine($"- 主看 {it.Focus}。{notes}");
+            if (score?.Finished == true)
+            {
+                var half = score.HalfHomeScore is int hh && score.HalfAwayScore is int ha ? $"，半场 {hh}:{ha}" : "";
+                sb.AppendLine($"- 赛果 {score.HomeScore}:{score.AwayScore}{half}，进球 {score.HomeScore + score.AwayScore}");
+                var happened = MilkEventTaxonomy.ClassifyFinished(new MilkEventTaxonomy.FinishedInput
+                {
+                    Home = score.HomeScore!.Value,
+                    Away = score.AwayScore!.Value,
+                    HalfHome = score.HalfHomeScore,
+                    HalfAway = score.HalfAwayScore,
+                    EuHome = it.EuHome,
+                    EuAway = it.EuAway
+                });
+                sb.AppendLine(happened.Count == 0
+                    ? "- 当天没有打出这些尾部。"
+                    : $"- 当天打出：{string.Join("、", happened.Select(h => h.Label))}。");
+            }
+            else
+            {
+                sb.AppendLine("- 还没有完场比分。");
+            }
+            sb.AppendLine($"- 对照：{Judge(it, score)}");
+            sb.AppendLine();
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    readonly record struct ScanCard(
+        string Board, string MatchNo, long? MatchId, string? League, string? Home, string? Away,
+        DateTime? MatchTime, decimal? SpfHome, decimal? SpfAway);
+
+    async Task<List<WatchItem>> WatchPoolAsync(IReadOnlyList<ScanCard> cards, CancellationToken ct)
+    {
         var fids = cards.Where(c => c.MatchId is not null).Select(c => c.MatchId!.Value).Distinct().ToList();
         var closingEu = fids.Count > 0 ? await _betting.GetClosingEuAsync(fids, ct) : new();
         var exRatio = fids.Count > 0 ? await _betting.GetExchangeRatioAsync(fids, ct) : new();
@@ -234,7 +336,7 @@ public sealed class MilkScanService
         {
             decimal? euH = c.SpfHome, euA = c.SpfAway;
             decimal? exH = null, exA = null, line = null;
-            decimal? jq7 = null, bqWl = null, bqLw = null, bfOh = null, bfOa = null;
+            decimal? jq7 = null, bqWl = null, bqLw = null, bqWd = null, bqLd = null, bfOh = null, bfOa = null;
 
             if (c.MatchId is long mid)
             {
@@ -254,6 +356,8 @@ public sealed class MilkScanService
                     jq7 = Pick(map, JcPlayTypes.Jq, "7", "7+");
                     bqWl = Pick(map, JcPlayTypes.Bq, "3-0");
                     bqLw = Pick(map, JcPlayTypes.Bq, "0-3");
+                    bqWd = Pick(map, JcPlayTypes.Bq, "3-1");
+                    bqLd = Pick(map, JcPlayTypes.Bq, "0-1");
                     bfOh = PickContains(map, JcPlayTypes.Bf, "胜其它", "胜其他");
                     bfOa = PickContains(map, JcPlayTypes.Bf, "负其它", "负其他");
                 }
@@ -269,13 +373,14 @@ public sealed class MilkScanService
                 Jq7Sp = jq7,
                 BqWinLoseSp = bqWl,
                 BqLoseWinSp = bqLw,
+                BqWinDrawSp = bqWd,
+                BqLoseDrawSp = bqLd,
                 BfOtherHomeSp = bfOh,
                 BfOtherAwaySp = bfOa
             });
             if (tags.Count == 0) continue;
 
-            var scored = ScoreWatch(tags, c.Board, euH, euA, exH, exA, line, jq7, bqWl, bqLw);
-            // 单薄观察（仅「非常规比分」且分不高）不进精选池
+            var scored = ScoreWatch(tags, c.Board, euH, euA, exH, exA, line, jq7, bqWl, bqLw, bqWd, bqLd);
             if (scored.Score < 28m) continue;
 
             items.Add(new WatchItem
@@ -283,9 +388,9 @@ public sealed class MilkScanService
                 Board = c.Board,
                 MatchNo = c.MatchNo,
                 MatchId = c.MatchId,
-                League = c.LeagueName,
-                Home = c.HomeTeam,
-                Away = c.AwayTeam,
+                League = c.League,
+                Home = c.Home,
+                Away = c.Away,
                 MatchTime = c.MatchTime,
                 Tags = tags,
                 EuHome = euH,
@@ -294,31 +399,70 @@ public sealed class MilkScanService
                 Jq7Sp = jq7,
                 BqWinLoseSp = bqWl,
                 BqLoseWinSp = bqLw,
+                BqWinDrawSp = bqWd,
+                BqLoseDrawSp = bqLd,
                 Score = scored.Score,
                 Focus = scored.Focus
             });
         }
+        return items;
+    }
 
-        var poolCount = items.Count;
-        // 同场去重 → 优先高球/翻转凑满 6 场（爆冷最多占 2 席）
-        items = PickDiversified(DedupSameMatch(items), TodayPickLimit);
+    static ReviewScore? ScoreOf(WatchItem it, IReadOnlyDictionary<long, ReviewScore> scores)
+    {
+        if (it.MatchId is not long id) return null;
+        return scores.TryGetValue(id, out var score) ? score : null;
+    }
 
-        return new TodayResult
+    static string Judge(WatchItem it, ReviewScore? score)
+    {
+        if (score is not { Finished: true, HomeScore: int h, AwayScore: int a }) return "未完场";
+        return FocusBucket(it) switch
         {
-            GeneratedAt = DateTime.Now,
-            CardCount = cards.Count,
-            PoolCount = poolCount,
-            WatchCount = items.Count,
-            PickLimit = TodayPickLimit,
-            Items = items
+            "goals" => h + a >= 7 ? "打出" : "没打出",
+            "flip" => Flip(score) switch
+            {
+                null => "没有半场比分",
+                true => "打出",
+                false => "没打出"
+            },
+            "upset" => Upset(it, h, a) ? "打出" : "没打出",
+            _ => MilkEventTaxonomy.IsJcScoreOtherHome(h, a) || MilkEventTaxonomy.IsJcScoreOtherAway(h, a)
+                ? "打出" : "没打出"
         };
+    }
+
+    static bool? Flip(ReviewScore score)
+    {
+        if (score.HalfHomeScore is not int hh || score.HalfAwayScore is not int ha) return null;
+        var halfHome = hh > ha;
+        var halfAway = hh < ha;
+        var fullHome = score.HomeScore > score.AwayScore;
+        var fullAway = score.HomeScore < score.AwayScore;
+        if (!halfHome && !halfAway) return false;
+        var fullDraw = score.HomeScore == score.AwayScore;
+        return (halfHome && (fullAway || fullDraw)) || (halfAway && (fullHome || fullDraw));
+    }
+
+    static bool Upset(WatchItem it, int home, int away)
+    {
+        var note = it.Tags.FirstOrDefault(t => t.Tag == MilkEventTaxonomy.Tags.UpsetWatch)?.Note ?? "";
+        var homeHot = it.EuHome is <= MilkEventTaxonomy.UpsetWatchEuMax
+            || note.Contains("必发主", StringComparison.Ordinal);
+        var awayHot = it.EuAway is <= MilkEventTaxonomy.UpsetWatchEuMax
+            || note.Contains("必发客", StringComparison.Ordinal);
+        if (!homeHot && !awayHot) return false;
+        var homeFailed = home <= away;
+        var awayFailed = away <= home;
+        if (homeHot && awayHot) return homeFailed && awayFailed;
+        return homeHot ? homeFailed : awayFailed;
     }
 
     private static (decimal Score, string Focus) ScoreWatch(
         List<MilkEventTaxonomy.MilkTagHit> tags,
         string board,
         decimal? euH, decimal? euA, decimal? exH, decimal? exA,
-        decimal? line, decimal? jq7, decimal? bqWl, decimal? bqLw)
+        decimal? line, decimal? jq7, decimal? bqWl, decimal? bqLw, decimal? bqWd, decimal? bqLd)
     {
         decimal score = 0;
         string focus = tags[0].Label;
@@ -354,12 +498,18 @@ public sealed class MilkScanService
                 }
                 case MilkEventTaxonomy.Tags.HfFlipWatch:
                 {
-                    // 与高球同档，便于 Focus 能落到「翻转」
-                    var soft = Math.Min(bqWl ?? 99m, bqLw ?? 99m);
+                    // 胜/负、负/胜到 22，胜/平、负/平到 15。取落在线内的最短价。
+                    var soft = new[]
+                    {
+                        SoftHalfPrice(bqWl, SoftHfFlip),
+                        SoftHalfPrice(bqLw, SoftHfFlip),
+                        SoftHalfPrice(bqWd, MilkEventTaxonomy.SoftHfDrawSpMax),
+                        SoftHalfPrice(bqLd, MilkEventTaxonomy.SoftHfDrawSpMax)
+                    }.Min();
                     var w = 50m;
                     if (soft <= 10m) w += 18;
                     else if (soft <= 14m) w += 12;
-                    else if (soft <= SoftHfFlip) w += 6;
+                    else if (soft < 99m) w += 6;
                     // 无高球盘时，翻转更容易成为主焦点
                     if (line is null || line < 2.75m) w += 8;
                     Consider(t.Tag, t.Label, w);
@@ -395,6 +545,9 @@ public sealed class MilkScanService
 
         return (Math.Round(score, 1), focus);
     }
+
+    private static decimal SoftHalfPrice(decimal? sp, decimal cap)
+        => sp is decimal v && v > 0m && v <= cap ? v : 99m;
 
     private const decimal SoftHfFlip = MilkEventTaxonomy.SoftHfFlipSpMax;
     private const decimal SoftJq7 = MilkEventTaxonomy.SoftJq7SpMax;

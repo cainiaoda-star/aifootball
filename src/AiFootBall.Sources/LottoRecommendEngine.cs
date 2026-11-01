@@ -37,13 +37,135 @@ public static class LottoRecommendEngine
 
         if (LottoCodes.IsDigitGame(lt.Code))
             set.Picks = RecommendDigit(lt, drawsDesc);
+        else if (LottoCodes.IsKl8(lt.Code))
+            set.Picks = RecommendKl8(lt, drawsDesc);
         else
             set.Picks = RecommendCombo(lt, drawsDesc);
 
-        set.Summary = set.Picks.Count == 0
-            ? "未能生成有效方案"
-            : $"基于第 {based} 期，为第 {target} 期生成 {set.Picks.Count} 注参考选号（主推 {set.Picks.Count(p => p.IsPrimary)} 注）";
+        var danTuo = LottoCodes.IsDlt(lt.Code) ? DltFourDanFullTuo(lt, drawsDesc) : null;
+        if (danTuo is not null)
+        {
+            danTuo.RankNo = set.Picks.Count + 1;
+            set.Picks.Add(danTuo);
+        }
+
+        if (set.Picks.Count == 0)
+            set.Summary = "未能生成有效方案";
+        else if (LottoCodes.IsKl8(lt.Code))
+            set.Summary = $"基于第 {based} 期，为第 {target} 期生成 {set.Picks.Count} 注选十（主推 {set.Picks.Count(p => p.IsPrimary)} 注）。每天开奖，只供参考";
+        else if (danTuo is not null)
+            set.Summary = $"基于第 {based} 期，为第 {target} 期生成单式 {set.Picks.Count(p => p.PlayType != "四胆全拖")} 注（主推 {set.Picks.Count(p => p.IsPrimary)} 注），另附四胆全拖 {danTuo.BetCount} 注";
+        else
+            set.Summary = $"基于第 {based} 期，为第 {target} 期生成 {set.Picks.Count} 注参考选号（主推 {set.Picks.Count(p => p.IsPrimary)} 注）";
         return set;
+    }
+
+    /// <summary>
+    /// 大乐透四胆全拖：前区 4 个胆每注都带，其余 31 个号全部当拖，每注再取 1 个拖码。
+    /// 后区只定 2 个号。后区 12 个全包不是这个方案。
+    /// </summary>
+    public static LottoPick? DltFourDanFullTuo(LotteryTypeInfo lt, IReadOnlyList<LotteryDrawRecord> drawsDesc)
+    {
+        if (!LottoCodes.IsDlt(lt.Code) || drawsDesc.Count < 30 || lt.RedMax < 6 || lt.BlueCount < 2)
+            return null;
+
+        var redFreq = LotteryMath.ComputeFrequency(drawsDesc, 'R', lt.RedMax);
+        var blueFreq = LotteryMath.ComputeFrequency(drawsDesc, 'B', lt.BlueMax);
+        var dan = redFreq.OrderByDescending(BalancedRed).ThenBy(f => f.Number).Take(4)
+            .Select(f => f.Number).OrderBy(x => x).ToList();
+        var tuo = Enumerable.Range(1, lt.RedMax).Where(n => !dan.Contains(n)).ToList();
+        if (dan.Count != 4 || tuo.Count < 2) return null;
+
+        var blues = blueFreq.OrderByDescending(BalancedBlue).ThenBy(f => f.Number).Take(lt.BlueCount)
+            .Select(f => f.Number).OrderBy(x => x).ToList();
+        if (blues.Count != lt.BlueCount) return null;
+
+        var score = (decimal)Math.Round(dan.Average(n => BalancedRed(redFreq.First(f => f.Number == n))) * 100, 1);
+        var backWays = lt.BlueMax * (lt.BlueMax - 1) / 2;
+        return new LottoPick
+        {
+            IsPrimary = false,
+            PlayType = "四胆全拖",
+            Reds = dan,
+            TuoReds = tuo,
+            Blues = blues,
+            BetCount = tuo.Count,
+            Score = score,
+            SignalDesc = $"前区 4 胆，拖码是除胆以外的全部 {tuo.Count} 个。每注是这 4 个胆再加 1 个拖码，共 {tuo.Count} 注。后区定 {blues.Count} 个，不把后区全包（全包是 {tuo.Count * backWays} 注）。4 个胆要同时开进前区，少一个这 {tuo.Count} 注的前区都没有奖。"
+        };
+    }
+
+    private static double BalancedRed(NumberFrequency f) =>
+        0.45 * HotScore(f) + 0.35 * ColdScore(f) + 0.20 * MidOmissionScore(f);
+
+    private static double BalancedBlue(NumberFrequency f) =>
+        0.50 * HotScore(f) + 0.50 * ColdScore(f);
+
+    /* ---------------- 快乐8：每天开 20 个，推荐可买的选十 ---------------- */
+
+    private const int Kl8PickCount = 10;
+    // 1–80 里均匀抽 10 个，和值均值 405，大约一个标准差内是 347–463。
+    private const int Kl8SumLo = 347;
+    private const int Kl8SumHi = 463;
+
+    private static List<LottoPick> RecommendKl8(LotteryTypeInfo lt, IReadOnlyList<LotteryDrawRecord> drawsDesc)
+    {
+        var freq = LotteryMath.ComputeFrequency(drawsDesc, 'R', lt.RedMax);
+        var styles = new (string Name, Func<NumberFrequency, double> Score)[]
+        {
+            ("均衡冷热", f => 0.45 * Kl8Hot(f) + 0.35 * Kl8Cold(f) + 0.20 * Kl8Mid(f)),
+            ("热号延续", f => 0.70 * Kl8Hot(f) + 0.20 * Kl8Mid(f) + 0.10 * Kl8Cold(f)),
+            ("冷号回补", f => 0.70 * Kl8Cold(f) + 0.20 * Kl8Mid(f) + 0.10 * Kl8Hot(f)),
+            ("和值形态", f => 0.40 * Kl8Hot(f) + 0.40 * Kl8Cold(f) + 0.20 * Kl8Mid(f)),
+        };
+
+        var picks = new List<LottoPick>();
+        var used = new HashSet<string>();
+        for (var i = 0; i < styles.Length; i++)
+        {
+            var (name, scoreFn) = styles[i];
+            var reds = PickCombination(Kl8PickCount, lt.RedMax, freq, scoreFn, Kl8SumLo, Kl8SumHi, 5, i * 17 + 3, forceSumFit: i == 3);
+            var key = string.Join("-", reds) + "|";
+            if (!used.Add(key))
+            {
+                reds = NudgeReds(reds, lt.RedMax, freq, scoreFn, used, new List<int>());
+                key = string.Join("-", reds) + "|";
+                if (!used.Add(key)) continue;
+            }
+
+            var sum = reds.Sum();
+            var odd = reds.Count(x => x % 2 == 1);
+            var score = (decimal)Math.Round(reds.Average(n => scoreFn(freq.First(f => f.Number == n))) * 100, 1);
+            picks.Add(new LottoPick
+            {
+                RankNo = picks.Count + 1,
+                IsPrimary = picks.Count == 0,
+                PlayType = "选十",
+                Reds = reds,
+                Blues = new List<int>(),
+                Score = score,
+                SignalDesc = $"{name}：选十和值 {sum}（参考带 {Kl8SumLo}–{Kl8SumHi}），奇偶 {odd}:{reds.Count - odd}"
+            });
+        }
+
+        picks = picks.OrderByDescending(p => p.Score).ThenBy(p => p.RankNo).Take(4).ToList();
+        for (var i = 0; i < picks.Count; i++)
+        {
+            picks[i].RankNo = i + 1;
+            picks[i].IsPrimary = i == 0;
+            picks[i].SignalDesc = (i == 0 ? "主推 · " : $"备选{i} · ") + picks[i].SignalDesc;
+        }
+        return picks;
+    }
+
+    private static double Kl8Hot(NumberFrequency f) => Math.Min(1.0, f.CountLast30 / 12.0);
+    private static double Kl8Cold(NumberFrequency f) => Math.Min(1.0, f.CurrentOmission / 8.0);
+    private static double Kl8Mid(NumberFrequency f)
+    {
+        var o = f.CurrentOmission;
+        if (o is >= 2 and <= 6) return 1.0;
+        if (o is >= 1 and <= 10) return 0.6;
+        return 0.2;
     }
 
     /* ---------------- 乐透型：双色球 / 大乐透 ---------------- */

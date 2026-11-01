@@ -45,6 +45,13 @@ public sealed class ScorelineModel
 
     public bool Ready { get; }
 
+    /// <summary>主客进球期望。有大小球盘时会把合计缩放到盘口的 0.65–1.55 倍。</summary>
+    public (double Home, double Away)? ExpectedGoals(string? league, string home, string away, decimal? ouLine)
+    {
+        if (!Ready) return null;
+        return Lambdas(league, home, away, ouLine);
+    }
+
     public static ScorelineModel Fit(IReadOnlyList<ScoreSample> samples)
     {
         var usable = samples.Where(s =>

@@ -90,4 +90,33 @@ public class MilkEventTaxonomyTests
         Assert.Contains(tags, t => t.Tag == MilkEventTaxonomy.Tags.HfFlipWatch);
         Assert.Contains(tags, t => t.Tag == MilkEventTaxonomy.Tags.ScoreOtherWatch);
     }
+
+    [Fact]
+    public void LoseDraw_LikeSunday001()
+    {
+        var tags = MilkEventTaxonomy.ClassifyFinished(new()
+        {
+            Home = 1, Away = 1, HalfHome = 0, HalfAway = 1
+        });
+        Assert.Contains(tags, t => t.Tag == MilkEventTaxonomy.Tags.HfLoseDraw);
+        Assert.DoesNotContain(tags, t => t.Tag == MilkEventTaxonomy.Tags.HfLoseWin);
+    }
+
+    [Fact]
+    public void Watch_DrawBack_At_15_Is_In_And_Just_Over_Is_Out()
+    {
+        var on = MilkEventTaxonomy.ClassifyWatch(new()
+        {
+            BqWinDrawSp = 15m,
+            BqLoseDrawSp = 14.50m,
+            BqLoseWinSp = 24m
+        });
+        var note = Assert.Single(on, t => t.Tag == MilkEventTaxonomy.Tags.HfFlipWatch).Note;
+        Assert.Contains("胜/平 SP 15", note);
+        Assert.Contains("负/平 SP 14.5", note);
+        Assert.DoesNotContain("负/胜", note);
+
+        var off = MilkEventTaxonomy.ClassifyWatch(new() { BqLoseDrawSp = 15.5m, BqWinDrawSp = 16m });
+        Assert.DoesNotContain(off, t => t.Tag == MilkEventTaxonomy.Tags.HfFlipWatch);
+    }
 }

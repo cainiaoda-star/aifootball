@@ -70,6 +70,32 @@ public sealed class BettingRepository
             new { b = board, e = expect }, cancellationToken: ct))).ToList();
     }
 
+    /// <summary>某一天开赛的受注卡。同一场保留最后一次采集，不限「最新一整批」。</summary>
+    public async Task<List<BettingCardRecord>> GetCardsByKickoffAsync(
+        string board, DateTime day, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<BettingCardRecord>(new CommandDefinition(
+            @"WITH cte AS (
+                  SELECT c.CardId, c.Board, c.Expect, c.MatchNo, c.MatchId, c.LeagueName,
+                         c.HomeTeam, c.AwayTeam, COALESCE(c.MatchTime, m.MatchTime) AS MatchTime,
+                         c.Handicap, c.SpfHome, c.SpfDraw, c.SpfAway, c.IsSingle, c.CapturedAt,
+                         ROW_NUMBER() OVER (
+                             PARTITION BY COALESCE(CONVERT(varchar(20), c.MatchId), c.MatchNo)
+                             ORDER BY c.CapturedAt DESC, c.CardId DESC) AS rn
+                  FROM dbo.BettingCard c
+                  LEFT JOIN dbo.FbMatch m ON m.MatchId = c.MatchId
+                  WHERE c.Board = @b
+                    AND COALESCE(c.MatchTime, m.MatchTime) >= @from
+                    AND COALESCE(c.MatchTime, m.MatchTime) < @to
+              )
+              SELECT CardId, Board, Expect, MatchNo, MatchId, LeagueName, HomeTeam, AwayTeam,
+                     MatchTime, Handicap, SpfHome, SpfDraw, SpfAway, IsSingle, CapturedAt
+              FROM cte WHERE rn = 1
+              ORDER BY MatchTime, MatchNo",
+            new { b = board, from = day.Date, to = day.Date.AddDays(1) }, cancellationToken: ct))).ToList();
+    }
+
     /* ---------------- 推荐信号数据 ---------------- */
 
     /// <summary>按 fid 批量取欧赔主胜 初盘→终盘 变化（平均值 CompanyId=0）</summary>
@@ -411,6 +437,48 @@ public sealed class BettingRepository
         return result;
     }
 
+    /// <summary>必发最后一次采样，以及主胜/客胜占比的最高一次。复盘用来看中途有没有摸到极端大热。</summary>
+    public async Task<Dictionary<long, (decimal? LastHome, decimal? LastDraw, decimal? LastAway, decimal? MaxHome, decimal? MaxAway)>>
+        GetExchangeSpanAsync(IEnumerable<long> matchIds, CancellationToken ct = default)
+    {
+        var ids = matchIds.Distinct().ToArray();
+        if (ids.Length == 0) return new();
+
+        await using var conn = await _factory.OpenAsync(ct);
+        var result = new Dictionary<long, (decimal?, decimal?, decimal?, decimal?, decimal?)>();
+        foreach (var chunk in Chunk(ids))
+        {
+            var rows = await conn.QueryAsync<ExchangeSpanRow>(new CommandDefinition(
+                @"SELECT MatchId,
+                         MAX(CASE WHEN rn = 1 THEN RatioHome END) AS LastHome,
+                         MAX(CASE WHEN rn = 1 THEN RatioDraw END) AS LastDraw,
+                         MAX(CASE WHEN rn = 1 THEN RatioAway END) AS LastAway,
+                         MAX(RatioHome) AS MaxHome,
+                         MAX(RatioAway) AS MaxAway
+                  FROM (
+                      SELECT MatchId, RatioHome, RatioDraw, RatioAway,
+                             ROW_NUMBER() OVER (PARTITION BY MatchId ORDER BY CapturedAt DESC) AS rn
+                      FROM dbo.FbExchange
+                      WHERE MatchId IN @ids
+                  ) t
+                  GROUP BY MatchId",
+                new { ids = chunk }, cancellationToken: ct));
+            foreach (var row in rows)
+                result[row.MatchId] = (row.LastHome, row.LastDraw, row.LastAway, row.MaxHome, row.MaxAway);
+        }
+        return result;
+    }
+
+    private sealed class ExchangeSpanRow
+    {
+        public long MatchId { get; set; }
+        public decimal? LastHome { get; set; }
+        public decimal? LastDraw { get; set; }
+        public decimal? LastAway { get; set; }
+        public decimal? MaxHome { get; set; }
+        public decimal? MaxAway { get; set; }
+    }
+
     private sealed class ExchangeRatio
     {
         public long MatchId { get; set; }
@@ -512,6 +580,27 @@ public sealed class BettingRepository
             @"SELECT MatchId, MatchTime FROM dbo.FbMatch WHERE MatchId IN @ids",
             new { ids }, cancellationToken: ct));
         return rows.ToDictionary(r => r.MatchId, r => r.MatchTime);
+    }
+
+    /// <summary>复盘用赛果。未完场也返回，好在文档里写明还没打完。</summary>
+    public async Task<Dictionary<long, ReviewScore>> GetReviewScoresAsync(IEnumerable<long> matchIds, CancellationToken ct = default)
+    {
+        var ids = matchIds.Distinct().ToArray();
+        if (ids.Length == 0) return new();
+
+        await using var conn = await _factory.OpenAsync(ct);
+        var result = new Dictionary<long, ReviewScore>();
+        foreach (var chunk in Chunk(ids))
+        {
+            var rows = await conn.QueryAsync<ReviewScore>(new CommandDefinition(
+                @"SELECT MatchId, HomeScore, AwayScore, HalfHomeScore, HalfAwayScore, Status
+                  FROM dbo.FbMatch
+                  WHERE MatchId IN @ids",
+                new { ids = chunk }, cancellationToken: ct));
+            foreach (var row in rows)
+                result[row.MatchId] = row;
+        }
+        return result;
     }
 
     /// <summary>按 fid 批量取已完场比赛的赛果（回填用）</summary>
@@ -691,6 +780,25 @@ public sealed class BettingRepository
         return rows
             .GroupBy(r => r.MatchNo)
             .ToDictionary(g => g.Key, g => g.First());
+    }
+
+    /// <summary>录入时按场次号带出主客队。先对上板块，对不上再取最近一张受注卡。</summary>
+    public async Task<MatchRef?> FindCardByNoAsync(string matchNo, string? board, string? expect, CancellationToken ct = default)
+    {
+        var no = matchNo.Trim();
+        if (no.Length == 0) return null;
+        board = string.IsNullOrWhiteSpace(board) ? null : board.Trim();
+        expect = string.IsNullOrWhiteSpace(expect) ? null : expect.Trim();
+
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.QueryFirstOrDefaultAsync<MatchRef>(new CommandDefinition(
+            @"SELECT TOP 1 MatchNo, HomeTeam, AwayTeam, MatchTime, LeagueName
+              FROM dbo.BettingCard
+              WHERE MatchNo = @no AND HomeTeam IS NOT NULL
+                AND (@board IS NULL OR Board = @board)
+                AND (@expect IS NULL OR Expect = @expect)
+              ORDER BY CapturedAt DESC",
+            new { no, board, expect }, cancellationToken: ct));
     }
 
     /// <summary>

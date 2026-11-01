@@ -16,15 +16,27 @@ public class LottoRecommendEngineTests
         };
         var draws = FakeComboDraws(lt, 80);
         var plan = LottoRecommendEngine.Recommend(lt, draws);
-        Assert.Equal(4, plan.Picks.Count);
-        Assert.Single(plan.Picks.Where(p => p.IsPrimary));
-        Assert.All(plan.Picks, p =>
+        var singles = plan.Picks.Where(p => p.PlayType == "单式").ToList();
+        Assert.Equal(4, singles.Count);
+        Assert.Single(plan.Picks, p => p.IsPrimary);
+        Assert.All(singles, p =>
         {
             Assert.Equal(5, p.Reds.Count);
             Assert.Equal(2, p.Blues.Count);
             Assert.Equal(p.Reds.Count, p.Reds.Distinct().Count());
         });
-        Assert.Equal(plan.Picks.Select(p => p.RankNo), Enumerable.Range(1, 4));
+
+        var dan = Assert.Single(plan.Picks, p => p.PlayType == "四胆全拖");
+        Assert.False(dan.IsPrimary);
+        Assert.Equal(4, dan.Reds.Count);
+        Assert.Equal(31, dan.TuoReds.Count);
+        Assert.Equal(31, dan.BetCount);
+        Assert.Equal(2, dan.Blues.Count);
+        Assert.Empty(dan.Reds.Intersect(dan.TuoReds));
+        Assert.Equal(Enumerable.Range(1, 35), dan.Reds.Concat(dan.TuoReds).OrderBy(x => x));
+        Assert.All(dan.Blues, n => Assert.InRange(n, 1, 12));
+        Assert.Contains("31 注", dan.SignalDesc);
+        Assert.Contains("四胆全拖", plan.Summary);
     }
 
     [Fact]
@@ -43,6 +55,31 @@ public class LottoRecommendEngineTests
         {
             Assert.Equal(3, p.Reds.Count);
             Assert.All(p.Reds, d => Assert.InRange(d, 0, 9));
+        });
+    }
+
+    [Fact]
+    public void Kl8_ProducesTenNumberPicks()
+    {
+        var lt = new LotteryTypeInfo
+        {
+            Code = LottoCodes.Kl8, Name = "快乐8",
+            RedCount = 20, RedMax = 80, BlueCount = 0, BlueMax = 0
+        };
+        var draws = FakeComboDraws(lt, 80);
+        var plan = LottoRecommendEngine.Recommend(lt, draws);
+        Assert.Equal(4, plan.Picks.Count);
+        Assert.Single(plan.Picks.Where(p => p.IsPrimary));
+        Assert.Contains("选十", plan.Summary);
+        Assert.Equal("2026081", plan.TargetIssue);
+        Assert.All(plan.Picks, p =>
+        {
+            Assert.Equal("选十", p.PlayType);
+            Assert.Equal(10, p.Reds.Count);
+            Assert.Equal(10, p.Reds.Distinct().Count());
+            Assert.Empty(p.Blues);
+            Assert.All(p.Reds, n => Assert.InRange(n, 1, 80));
+            Assert.Equal(p.Reds.OrderBy(x => x), p.Reds);
         });
     }
 

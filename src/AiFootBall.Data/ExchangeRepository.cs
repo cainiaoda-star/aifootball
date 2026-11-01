@@ -302,6 +302,21 @@ FROM dbo.FbMatch m JOIN #ExMark k ON k.MatchId = m.MatchId;";
         return rows.ToList();
     }
 
+    /// <summary>还没查过必发的场，加上上次请求失败的场。已经有快照的不重抓。</summary>
+    public async Task<List<MatchBrief>> GetUncheckedForBackfillAsync(int take, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.QueryAsync<MatchBrief>(
+            @"SELECT TOP (@Take) m.MatchId, m.MatchTime, m.HomeTeamName, m.AwayTeamName,
+                     ISNULL(l.Name, N'') AS LeagueName
+              FROM dbo.FbMatch m
+              LEFT JOIN dbo.FbLeague l ON l.LeagueId = m.LeagueId
+              WHERE m.ExchangeCheckedAt IS NULL OR m.ExchangeStatus = 2
+              ORDER BY CASE WHEN m.ExchangeCheckedAt IS NULL THEN 0 ELSE 1 END, m.MatchTime",
+            new { Take = take <= 0 ? 100000 : take });
+        return rows.ToList();
+    }
+
     /// <summary>单场必发快照时间序列。</summary>
     public async Task<List<ExchangeSnapshot>> GetTimelineAsync(long matchId, CancellationToken ct = default)
     {

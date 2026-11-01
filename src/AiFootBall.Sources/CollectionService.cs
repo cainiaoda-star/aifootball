@@ -364,7 +364,29 @@ public sealed class CollectionService
         }
 
         log?.Report($"必发采集 {matches.Count} 场（{from:MM-dd HH:mm}~{to:MM-dd HH:mm}，间隔 {recheckMinutes} 分钟）");
+        return await FetchExchangeAsync(matches, log, ct);
+    }
 
+    /// <summary>
+    /// 把库里还没查过必发的完场尽量补上。页面只有最终成交，没有赛前过程。
+    /// 已经有快照的场不重抓，避免把赛前采样盖成完场页。
+    /// </summary>
+    public async Task<CollectionResult> BackfillExchangeAsync(int limit, IProgress<string>? log = null, CancellationToken ct = default)
+    {
+        var matches = await _exchange.GetUncheckedForBackfillAsync(limit, ct);
+        if (matches.Count == 0)
+        {
+            log?.Report("必发回补：没有未检查的场");
+            return CollectionResult.Ok(0, "没有未检查的场");
+        }
+
+        log?.Report($"必发回补 {matches.Count} 场（只补没查过的，完场页是最终成交）");
+        return await FetchExchangeAsync(matches, log, ct);
+    }
+
+    private async Task<CollectionResult> FetchExchangeAsync(
+        List<MatchBrief> matches, IProgress<string>? log, CancellationToken ct)
+    {
         var source = new FiveHundredExchangeSource(_http);
         var concurrency = Math.Max(1, _opt.OddsConcurrency);
         var batchSize = Math.Max(concurrency, _opt.OddsBatchSize);

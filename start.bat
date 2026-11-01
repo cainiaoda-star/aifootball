@@ -17,4 +17,5 @@ echo 服务启动中，请稍候几秒后访问:
 echo   前端页面: http://127.0.0.1:5088/
 echo   OCR 服务: http://127.0.0.1:5089/health
 echo.
+if /I "%~1"=="silent" exit /b 0
 pause

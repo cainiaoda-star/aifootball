@@ -67,6 +67,27 @@ public sealed class LottoRecommendationRepository
             new { code }, cancellationToken: ct))).ToList();
     }
 
+    /// <summary>最近若干期已保存的选号，含主推和备选。同一期只留保存下来的那一套。</summary>
+    public async Task<List<LottoRecommendationRecord>> GetRecentIssuesAsync(
+        string code, int issueCount, CancellationToken ct = default)
+    {
+        var take = issueCount < 1 ? 1 : issueCount;
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<LottoRecommendationRecord>(new CommandDefinition(
+            @"SELECT r.*
+              FROM dbo.LottoRecommendation r
+              INNER JOIN (
+                  SELECT TOP (@n) TargetIssue
+                  FROM dbo.LottoRecommendation
+                  WHERE LotteryCode = @code
+                  GROUP BY TargetIssue
+                  ORDER BY MAX(RecDate) DESC, TRY_CAST(TargetIssue AS BIGINT) DESC, TargetIssue DESC
+              ) i ON i.TargetIssue = r.TargetIssue
+              WHERE r.LotteryCode = @code
+              ORDER BY TRY_CAST(r.TargetIssue AS BIGINT) DESC, r.TargetIssue DESC, r.RankNo",
+            new { code, n = take }, cancellationToken: ct))).ToList();
+    }
+
     public async Task<List<LottoRecommendationRecord>> GetLatestAllAsync(CancellationToken ct = default)
     {
         await using var conn = await _factory.OpenAsync(ct);

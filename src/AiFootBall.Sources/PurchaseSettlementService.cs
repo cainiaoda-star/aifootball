@@ -3,16 +3,18 @@ using AiFootBall.Data;
 
 namespace AiFootBall.Sources;
 
-/// <summary>购买方案自动结算：用 FbMatch 完场比分判定选项命中并计算过关奖金。</summary>
+/// <summary>购买方案自动结算。竞彩、北单用完场比分和赔率；胜负彩、任九用 500.com 开奖页的彩果和税前单注奖金。</summary>
 public sealed class PurchaseSettlementService
 {
     private readonly PurchaseRepository _purchases;
     private readonly FootballRepository _football;
+    private readonly BettingCardSource _cards;
 
-    public PurchaseSettlementService(PurchaseRepository purchases, FootballRepository football)
+    public PurchaseSettlementService(PurchaseRepository purchases, FootballRepository football, BettingCardSource cards)
     {
         _purchases = purchases;
         _football = football;
+        _cards = cards;
     }
 
     public sealed class ItemResult
@@ -85,6 +87,8 @@ public sealed class PurchaseSettlementService
     {
         if (p.Lines.Count == 0)
             return new ItemResult { PurchaseId = p.PurchaseId, Status = "SKIP", Message = "无场次明细" };
+        if (IsSfc(p))
+            return await SettleSfcAsync(p, ct);
 
         foreach (var line in p.Lines)
         {
@@ -209,6 +213,157 @@ public sealed class PurchaseSettlementService
             Status = isHit ? "WON" : "LOST",
             ActualWin = prize,
             Message = isHit ? $"中奖 {prize:0.##} 元" : "未中奖",
+            LinesReady = lineSettles.Count,
+            LinesTotal = p.Lines.Count
+        };
+    }
+
+    private static bool IsSfc(PurchaseRecord p) =>
+        string.Equals(p.Board, Boards.Sfc, StringComparison.OrdinalIgnoreCase)
+        || p.PlayType is "胜负彩" or "任选九";
+
+    /// <summary>胜负彩、任九只认 500.com 开奖页。页面没有 14 个彩果或没有奖金表时继续等，不按赔率估。</summary>
+    private async Task<ItemResult> SettleSfcAsync(PurchaseRecord p, CancellationToken ct)
+    {
+        var expect = (p.Expect ?? "").Trim();
+        if (expect.Length == 0 || expect.Any(c => !char.IsDigit(c)))
+        {
+            return new ItemResult
+            {
+                PurchaseId = p.PurchaseId,
+                Status = "WAIT",
+                Message = "没有期号，对不上 500.com 开奖",
+                LinesTotal = p.Lines.Count
+            };
+        }
+
+        var renjiu = p.PlayType == "任选九";
+        var parsed = new List<(PurchaseLineRecord Line, int No, HashSet<char> Opts)>();
+        foreach (var line in p.Lines)
+        {
+            if (!int.TryParse(line.MatchNo?.Trim(), out var no) || no is < 1 or > 14)
+            {
+                return new ItemResult
+                {
+                    PurchaseId = p.PurchaseId,
+                    Status = "WAIT",
+                    Message = "场次号对不上 1 到 14，不能按 500.com 开奖",
+                    LinesTotal = p.Lines.Count
+                };
+            }
+            var opts = SfcTicketMath.ParseOptions(line.Option1, line.Option2);
+            if (opts.Count == 0)
+            {
+                return new ItemResult
+                {
+                    PurchaseId = p.PurchaseId,
+                    Status = "WAIT",
+                    Message = $"第 {no} 场没有胜平负选项",
+                    LinesTotal = p.Lines.Count
+                };
+            }
+            parsed.Add((line, no, opts));
+        }
+        if (parsed.Select(x => x.No).Distinct().Count() != parsed.Count)
+        {
+            return new ItemResult
+            {
+                PurchaseId = p.PurchaseId,
+                Status = "WAIT",
+                Message = "场次号重复，不能结算",
+                LinesTotal = p.Lines.Count
+            };
+        }
+        if (!renjiu && parsed.Count != 14)
+        {
+            return new ItemResult
+            {
+                PurchaseId = p.PurchaseId,
+                Status = "WAIT",
+                Message = "胜负彩要 14 场才能对开奖",
+                LinesTotal = p.Lines.Count
+            };
+        }
+        if (renjiu && parsed.Count is < 9 or > 14)
+        {
+            return new ItemResult
+            {
+                PurchaseId = p.PurchaseId,
+                Status = "WAIT",
+                Message = "任选九要 9 到 14 场才能对开奖",
+                LinesTotal = p.Lines.Count
+            };
+        }
+
+        SfcDraw? draw;
+        try
+        {
+            draw = await _cards.FetchSfcDrawAsync(expect, ct);
+        }
+        catch
+        {
+            draw = null;
+        }
+        if (draw is null || !draw.Complete || draw.Result.Length != 14)
+        {
+            return new ItemResult
+            {
+                PurchaseId = p.PurchaseId,
+                Status = "WAIT",
+                Message = $"500.com 还没有第 {expect} 期开奖，或页面打不开",
+                LinesTotal = p.Lines.Count
+            };
+        }
+
+        var wins = SfcTicketMath.CountWins(parsed.Select(x => (x.No, x.Opts)).ToList(), draw.Result);
+        var prize = SfcTicketMath.PrizeYuan(renjiu, wins, draw.FirstPrize, draw.SecondPrize, draw.RenjiuPrize, p.Multiple);
+        var hitCount = renjiu ? wins.Renjiu : wins.Fourteen + wins.Thirteen;
+        var isHit = hitCount > 0;
+        string? level = null;
+        if (renjiu)
+        {
+            if (wins.Renjiu > 0) level = "任九";
+        }
+        else if (wins.Fourteen > 0)
+            level = "一等奖";
+        else if (wins.Thirteen > 0)
+            level = "二等奖";
+
+        var lineSettles = parsed.Select(x =>
+        {
+            var actual = draw.Result[x.No - 1];
+            return new PurchaseLineSettle
+            {
+                Seq = x.Line.Seq,
+                ActualScore = SfcTicketMath.Label(actual),
+                ActualResult = actual,
+                LineHit = x.Opts.Contains(actual)
+            };
+        }).ToList();
+        if (lineSettles.Count > 0)
+            await _purchases.UpdateLineResultsAsync(p.PurchaseId, lineSettles, ct);
+
+        var remark =
+            $"500.com 第 {expect} 期开奖 {draw.Result}。" +
+            $"一等奖单注税前 {draw.FirstPrize:0.##}，二等奖 {draw.SecondPrize:0.##}，任九 {draw.RenjiuPrize:0.##}。" +
+            $"中奖注数一等奖 {wins.Fourteen}、二等奖 {wins.Thirteen}、任九 {wins.Renjiu}。" +
+            "奖金按公布的税前单注，不是赔率连乘。";
+        await _purchases.SettleAsync(new PurchaseSettleRequest
+        {
+            PurchaseId = p.PurchaseId,
+            ActualWin = prize,
+            IsHit = isHit,
+            HitLevel = level,
+            Remark = remark,
+            Lines = lineSettles
+        }, ct);
+
+        return new ItemResult
+        {
+            PurchaseId = p.PurchaseId,
+            Status = isHit ? "WON" : "LOST",
+            ActualWin = prize,
+            Message = isHit ? $"{level} {prize:0.##} 元（税前）" : "未中奖",
             LinesReady = lineSettles.Count,
             LinesTotal = p.Lines.Count
         };

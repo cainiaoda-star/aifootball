@@ -237,6 +237,7 @@ public static class RecommendationEngine
         ApplyAsianConflict(rec, homeOddsDelta, asianOpen, asianClose);
         ApplyLateReverse(rec, homeOddsDelta, lateHomeDelta);
         ApplyFormVeto(rec, homeFormPts, awayFormPts);
+        ApplySmallDropWithoutExchangeLead(rec);
         ApplyMarketPolicy(rec, spfHome, spfDraw, spfAway, homeExtreme, awayExtreme);
         ApplyLongPriceCaution(rec, spfHome, spfAway);
         ApplyALeagueCaution(rec);
@@ -765,6 +766,25 @@ public static class RecommendationEngine
     }
 
     /// <summary>
+    /// 小降单信号，必发已经不站主队：主胜没有比客胜高出满 10 个点，不发布。
+    /// 2026-11-01 周日004 首尔FC，小降 −0.06，必发 39.8 对 38.6，仍被标成精选主胜，终场 0:1。
+    /// 主胜仍高出满 10 个点（回测桶里的 40 对 30）保持等级 2。缺一侧必发时不套这条。
+    /// </summary>
+    private static void ApplySmallDropWithoutExchangeLead(MatchRecommendation rec)
+    {
+        if (rec.RecResult is not '3' || rec.SignalLevel != 2 || rec.IsOddsFallback) return;
+        if (!rec.SignalDesc.Contains("主胜小降", StringComparison.Ordinal)) return;
+        if (rec.SignalDesc.Contains("偏热", StringComparison.Ordinal)) return;
+        if (rec.RatioHome is not decimal home || rec.RatioAway is not decimal away) return;
+        if (home - away >= 10m) return;
+
+        rec.SignalDesc += $"；必发主胜 {home:0.#}% 对客胜 {away:0.#}%，没有高出 10 个点，小降不发布";
+        rec.RecResult = null;
+        rec.Confidence = null;
+        rec.SignalLevel = 0;
+    }
+
+    /// <summary>
     /// 模型改了方向之后，再过一遍否决：深盘冲突、尾盘反抽、近况、极端大热、低水。
     /// </summary>
     internal static void ReapplyGuards(
@@ -785,6 +805,7 @@ public static class RecommendationEngine
         ApplyAsianConflict(rec, homeOddsDelta, asianOpen, asianClose);
         ApplyLateReverse(rec, homeOddsDelta, lateHomeDelta);
         ApplyFormVeto(rec, homeFormPts, awayFormPts);
+        ApplySmallDropWithoutExchangeLead(rec);
         ApplyMarketPolicy(rec, spfHome, spfDraw, spfAway, homeExtreme, awayExtreme);
         ApplyLongPriceCaution(rec, spfHome, spfAway);
         ApplyALeagueCaution(rec);

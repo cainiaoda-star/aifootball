@@ -153,4 +153,148 @@ public class BdHandicapTests
         Assert.Contains("不进精选", rec.SignalDesc);
         Assert.False(RecommendationSelection.QualifiesForFeatured(rec));
     }
+
+    [Fact]
+    public void Jc_Handicap_List_Keeps_55_And_Drops_A_Deep_Line_Without_A_Total()
+    {
+        var low = Hcp("周日001", '3', 54.9m, -1m, 2.5m);
+        var ok = Hcp("周日002", '1', 55m, -1m, 2.5m);
+        var deep = Hcp("周日003", '3', 70m, -2m, null);
+        var deepWithLine = Hcp("周日004", '0', 61m, -2m, 3.25m);
+
+        var shown = RecommendationSelection.ForJcHandicap(new[] { low, ok, deep, deepWithLine });
+
+        Assert.Equal(new[] { "周日001", "周日002", "周日004" }, shown.Select(x => x.MatchNo).ToArray());
+        Assert.Equal('1', shown.Single(x => x.MatchNo == "周日002").RecHandicap);
+    }
+
+    [Fact]
+    public void Jc_Handicap_Does_Not_Publish_An_ALeague_Away_Cover()
+    {
+        var aleague = new MatchRecommendation
+        {
+            Board = Boards.Jc, MatchNo = "周日010", LeagueName = "澳超", Handicap = 0m
+        };
+        RecommendationSelection.ApplyJcHandicap(aleague, 6.0m, 4.2m, 1.40m, 2.5m, 5.5m, 3.8m, 1.45m);
+        Assert.Null(aleague.RecHandicap);
+
+        var epl = new MatchRecommendation
+        {
+            Board = Boards.Jc, MatchNo = "周日011", LeagueName = "英超", Handicap = 0m
+        };
+        RecommendationSelection.ApplyJcHandicap(epl, 6.0m, 4.2m, 1.40m, 2.5m, 5.5m, 3.8m, 1.45m);
+        Assert.Equal('0', epl.RecHandicap);
+        Assert.Equal(1.45m, epl.HandicapOdds);
+        Assert.True(epl.HandicapProbability >= 55m);
+        Assert.Single(RecommendationSelection.ForJcHandicap(new[] { epl }));
+    }
+
+    [Fact]
+    public void Jc_Draw_Is_Issued_Without_Joining_The_55_List()
+    {
+        var shaped = new MatchRecommendation
+        {
+            Board = Boards.Jc,
+            MatchNo = "周日020",
+            RecResult = '1',
+            SignalLevel = 1,
+            Confidence = 45m,
+            HitProbability = 37.2m,
+            SignalDesc = "均势看平：主客均≥2.20，平局 3.10（平局回测偏低，不进精选）"
+        };
+        var model = new MatchRecommendation
+        {
+            Board = Boards.Jc,
+            MatchNo = "周日021",
+            RecResult = '1',
+            SignalLevel = 1,
+            Confidence = 41m,
+            SignalDesc = "无强信号；模型看平，不进精选"
+        };
+        var fallback = new MatchRecommendation
+        {
+            Board = Boards.Jc,
+            MatchNo = "周日022",
+            RecResult = '1',
+            IsOddsFallback = true,
+            SignalDesc = "赔率兜底：平局赔率最低(3.05)，无强信号"
+        };
+
+        Assert.True(RecommendationSelection.IsIssuedDraw(shaped));
+        Assert.True(RecommendationSelection.IsIssuedDraw(model));
+        Assert.False(RecommendationSelection.IsIssuedDraw(fallback));
+        Assert.False(RecommendationSelection.QualifiesForFeatured(shaped));
+        Assert.Equal(new[] { "周日020", "周日021" },
+            RecommendationSelection.ForJcDraw(new[] { fallback, model, shaped }).Select(x => x.MatchNo).ToArray());
+    }
+
+    [Fact]
+    public void Jc_Calculated_Publishes_Spf_Below_55_And_Skips_ALeague_Away()
+    {
+        var home = new MatchRecommendation
+        {
+            Board = Boards.Jc, MatchNo = "周日030", RecResult = '3',
+            SignalLevel = 1, HitProbability = 48.2m
+        };
+        var draw = new MatchRecommendation
+        {
+            Board = Boards.Jc, MatchNo = "周日031", RecResult = '1',
+            SignalLevel = 1, HitProbability = 37m, IsOddsFallback = true
+        };
+        var away = new MatchRecommendation
+        {
+            Board = Boards.Jc, MatchNo = "周日032", LeagueName = "澳超", RecResult = '0',
+            SignalLevel = 1, HitProbability = 62m
+        };
+        var featured = new MatchRecommendation
+        {
+            Board = Boards.Jc, MatchNo = "周日033", RecResult = '3',
+            SignalLevel = 2, HitProbability = 58m, IsFeatured = true
+        };
+
+        Assert.Empty(RecommendationSelection.ForDisplay(Boards.Jc, new[] { home }));
+        var shown = RecommendationSelection.ForJcCalculated(new[] { away, draw, home, featured });
+        Assert.Equal(new[] { "周日030", "周日033" }, shown.Select(x => x.MatchNo).ToArray());
+        Assert.DoesNotContain(shown, x => x.IsOddsFallback);
+        Assert.False(shown.Single(x => x.MatchNo == "周日030").IsFeatured);
+        Assert.True(shown.Single(x => x.MatchNo == "周日033").IsFeatured);
+    }
+
+    [Fact]
+    public void Bd_Calculated_Publishes_Below_55_Including_Handicap_Draw()
+    {
+        var low = Hcp("1", '1', 42m, -1m, 2.5m);
+        low.RecResult = '3';
+        low.HitProbability = 40m;
+        var ok = Hcp("2", '0', 61m, -1m, 2.5m);
+        ok.RecResult = '0';
+        ok.HitProbability = 58m;
+        var deep = Hcp("3", '3', 70m, -2m, null);
+        deep.RecResult = '3';
+        var away = new MatchRecommendation
+        {
+            Board = Boards.Bd, MatchNo = "4", LeagueName = "澳超", RecResult = '0',
+            HitProbability = 70m, RecHandicap = '3', HandicapProbability = 48m,
+            Handicap = 0m, TotalLine = 2.5m
+        };
+
+        var shown = RecommendationSelection.ForBdCalculated(new[] { low, ok, deep, away });
+        Assert.Equal(new[] { "1", "2", "4" }, shown.Select(x => x.MatchNo).ToArray());
+        Assert.Equal('1', shown.Single(x => x.MatchNo == "1").RecHandicap);
+        Assert.False(shown.Single(x => x.MatchNo == "1").IsFeatured);
+        Assert.True(shown.Single(x => x.MatchNo == "2").IsFeatured);
+
+        var plain = RecommendationSelection.ForBdPlain(new[] { low, ok, away });
+        Assert.Equal(new[] { "1", "2" }, plain.Select(x => x.MatchNo).ToArray());
+    }
+
+    static MatchRecommendation Hcp(string no, char side, decimal prob, decimal line, decimal? total) => new()
+    {
+        Board = Boards.Jc,
+        MatchNo = no,
+        RecHandicap = side,
+        HandicapProbability = prob,
+        Handicap = line,
+        TotalLine = total
+    };
 }
