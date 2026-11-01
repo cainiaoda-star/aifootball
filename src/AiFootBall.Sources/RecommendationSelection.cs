@@ -15,13 +15,17 @@ public static class RecommendationSelection
     public const int BdStrongLimit = 8;
 
     /// <summary>
-    /// 竞彩销售：北京时间每天 9:00 开售，21:58 停售。
-    /// 停售到次日开售之间开赛的场次，最后能买的时刻是前一个 21:58。
+    /// 竞彩销售：北京时间每天 9:00 开售。周一到周五 21:55 停，周六日 22:55 停。
+    /// 停售到次日开售之间开赛的场次，最后能买的时刻是前一个停售点。
     /// </summary>
     public static class JcSaleHours
     {
         public static readonly TimeOnly Open = new(9, 0);
-        public static readonly TimeOnly Close = new(21, 58);
+        public static readonly TimeOnly WeekdayClose = new(21, 55);
+        public static readonly TimeOnly WeekendClose = new(22, 55);
+
+        public static TimeOnly CloseOn(DateTime day)
+            => day.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday ? WeekendClose : WeekdayClose;
 
         public static DateTime Now()
         {
@@ -32,7 +36,7 @@ public static class RecommendationSelection
         public static bool IsOpen(DateTime beijing)
         {
             var clock = TimeOnly.FromDateTime(beijing);
-            return clock >= Open && clock <= Close;
+            return clock >= Open && clock <= CloseOn(beijing);
         }
 
         /// <summary>这场在 beijing 这一刻是否还来得及买。已开赛为否。</summary>
@@ -44,16 +48,18 @@ public static class RecommendationSelection
 
         public static DateTime LastBuyAt(DateTime kickoff)
         {
+            var close = CloseOn(kickoff);
             var clock = TimeOnly.FromDateTime(kickoff);
-            if (clock >= Open && clock <= Close) return kickoff;
-            if (clock > Close) return kickoff.Date + Close.ToTimeSpan();
-            return kickoff.Date.AddDays(-1) + Close.ToTimeSpan();
+            if (clock >= Open && clock <= close) return kickoff;
+            if (clock > close) return kickoff.Date + close.ToTimeSpan();
+            var prev = kickoff.Date.AddDays(-1);
+            return prev + CloseOn(prev).ToTimeSpan();
         }
 
         /// <summary>
         /// 开售时段只留当天那一期。9:00 前，当天仍算前一天。
-        /// 停售之后（21:58 到次日 9:00）当天剩下的场次已经买不了，同时带上下一期。
-        /// 周六白天仍不选「周日xxx」。
+        /// 停售之后到次日 9:00，当天剩下的场次已经买不了，同时带上下一期。
+        /// 周六白天仍不选「周日xxx」。周六停售改到 22:55，22:55 之前仍只留周六。
         /// </summary>
         public static bool IsTodaysIssue(string? matchNo, DateTime beijing)
         {
@@ -71,7 +77,7 @@ public static class RecommendationSelection
         static DateTime NextSaleDay(DateTime beijing)
         {
             var clock = TimeOnly.FromDateTime(beijing);
-            if (clock > Close) return beijing.Date.AddDays(1);
+            if (clock > CloseOn(beijing)) return beijing.Date.AddDays(1);
             if (clock < Open) return beijing.Date;
             return beijing.Date.AddDays(1);
         }
@@ -88,8 +94,8 @@ public static class RecommendationSelection
         };
 
         public static string Note(DateTime beijing) => IsOpen(beijing)
-            ? "只选当天开售的这一期，第二天的不选。21:58 停售，之后开赛的过了 21:58 不推荐"
-            : "现在停售，9:00 再开。当天剩下的已经过了 21:58，名单加上下一期还能买的场次";
+            ? "只选当天开售的这一期，第二天的不选。周六日 22:55 停，其余 21:55 停，之后开赛的过了停售不推荐"
+            : $"现在停售，9:00 再开。当天剩下的已经过了 {CloseOn(beijing):HH:mm}，名单加上下一期还能买的场次";
     }
 
     /// <summary>
