@@ -247,6 +247,12 @@ public sealed class MilkFunnel
     /// </summary>
     public int DivergentDropped { get; set; }
 
+    /// <summary>
+    /// 因「临场市场转向客队、这一注却指主胜」被撤掉的注数（2026-11-05 加）。
+    /// 方向闸只认 SPF/比分去水的静态方向，拦不住比分盘深档先转向的场次，这里补读净胜球诊断。
+    /// </summary>
+    public int TurnDropped { get; set; }
+
     /// <summary>最终上榜注数。</summary>
     public int Final { get; set; }
 

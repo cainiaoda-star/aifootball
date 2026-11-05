@@ -23,10 +23,11 @@ public sealed class RecommendationService
     private readonly MilkScanService? _milk;
     private readonly TicketRepository? _tickets;
     private readonly MilkPickRepository? _milkPicks;
+    private readonly OddsCaptureRepository? _oddsCapture;
 
     public RecommendationService(BettingCardSource cardSource, BettingRepository repo, JcOddsRepository jcOdds,
         HitProbabilityService? hit = null, MilkScanService? milk = null, TicketRepository? tickets = null,
-        MilkPickRepository? milkPicks = null)
+        MilkPickRepository? milkPicks = null, OddsCaptureRepository? oddsCapture = null)
     {
         _cardSource = cardSource;
         _repo = repo;
@@ -35,6 +36,7 @@ public sealed class RecommendationService
         _milk = milk;
         _tickets = tickets;
         _milkPicks = milkPicks;
+        _oddsCapture = oddsCapture;
     }
 
     /// <summary>采样竞彩四类玩法固定奖金，写入 FbJcOddsHistory 时间序列。</summary>
@@ -118,7 +120,8 @@ public sealed class RecommendationService
     /// 诊断要和榜一起返回、一起落库，赛后才有东西可复盘。
     /// </summary>
     public async Task<MilkBuildResult> RecommendMilkWithGateAsync(
-        IReadOnlyList<MatchRecommendation>? jcRecs = null, CancellationToken ct = default)
+        IReadOnlyList<MatchRecommendation>? jcRecs = null, CancellationToken ct = default,
+        bool perMatch = false)
     {
         var recs = jcRecs ?? await RecommendAsync(Boards.Jc, null, ct);
         var fids = recs.Where(r => r.MatchId is > 0).Select(r => r.MatchId!.Value).Distinct().ToList();
@@ -142,7 +145,23 @@ public sealed class RecommendationService
         catch (OperationCanceledException) { throw; }
         catch { asian = new(); }
 
-        var built = MilkPickEngine.BuildDetailed(recs, odds, snap.Scores, asian);
+        // 净胜球诊断（每 2 分钟刷新）：临场转向信号，主胜方向注 + 转向客队 → 撤注。
+        // 取不到就整批跳过，别让一个可选字段把整张榜拖死。
+        Dictionary<long, ScoreDiagRow> scoreDiags;
+        try
+        {
+            scoreDiags = new Dictionary<long, ScoreDiagRow>();
+            if (_oddsCapture is not null)
+                foreach (var mid in fids)
+                {
+                    var d = await _oddsCapture.GetScoreDiagAsync(mid, ct);
+                    if (d is not null) scoreDiags[mid] = d;
+                }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { scoreDiags = new(); }
+
+        var built = MilkPickEngine.BuildDetailed(recs, odds, snap.Scores, asian, scoreDiags, perMatch);
         // 模型没跑起来的时候，空榜必须自己说出原因——否则「空榜」和「今天确实没注」长得一模一样。
         if (!built.Funnel.ScoresReady)
             built.Funnel.ScoresNote = _hit?.LastError ?? "比分模型样本不足（可用样本 < 30 场），本次不出榜";
@@ -530,6 +549,57 @@ public sealed class RecommendationService
 
         var all = await RecommendAllAndSaveAsync(ct);
         return (true, stale, all.Values.Sum(v => v.Count));
+    }
+
+    /// <summary>
+    /// 临场转向哨兵（2026-11-05 加）：开赛前扫一遍当天已发出的未开赛大奶注，
+    /// 对比净胜球诊断的转向信号与注的方向，命中的落告警到 dbo.FbTurnAlert。
+    ///
+    /// 这是「早干啥去了」的直接补丁——数据每 2 分钟在采、净胜球诊断在刷新，
+    /// 但以前没有任何一条代码把「已出注的场次临场发生了市场转向」主动推出来。
+    /// 返回本次新落库的告警条数。
+    /// </summary>
+    public async Task<int> RunTurnGuardAsync(CancellationToken ct = default)
+    {
+        if (_milkPicks is null || _oddsCapture is null) return 0;
+
+        var open = await _milkPicks.GetOpenDayAsync(DateTime.Today, ct);
+        if (open.Count == 0) return 0;
+
+        var matchIds = open.Where(p => p.MatchId > 0).Select(p => p.MatchId).Distinct().ToList();
+        if (matchIds.Count == 0) return 0;
+
+        // 净胜球诊断：一场一行，直接读已算好的标量（不碰明细）。
+        var diagMap = new Dictionary<long, ScoreDiagRow>();
+        foreach (var mid in matchIds)
+        {
+            var d = await _oddsCapture.GetScoreDiagAsync(mid, ct);
+            if (d is not null) diagMap[mid] = d;
+        }
+
+        // 让胜赔率（NSPF 让胜）：出注时 vs 临场最新，看主队赢盘有没有被市场抛弃。
+        var nspf = await _jcOdds.GetLatestNspfAsync(matchIds, ct);
+        // 出注时让胜赔率：从 FbJcOddsHistory 里取该场最早的 NSPF 让胜快照。
+        // 这里用最新 NSPF 的「让胜」字段做临场值，出注值由 GetTurnGuardNspfOpenAsync 补。
+        var nspfOpen = await _jcOdds.GetEarliestNspfAsync(matchIds, ct);
+
+        var alerts = new List<TurnAlertRow>();
+        foreach (var p in open)
+        {
+            if (!diagMap.TryGetValue(p.MatchId, out var diag)) continue;
+
+            var pickDir = TurnGuard.PickDirection(p.PlayType, p.OptionCode);
+
+            (decimal OddsAtIssue, decimal OddsNow)? rangSheng = null;
+            if (nspfOpen.TryGetValue(p.MatchId, out var openWin) && nspf.TryGetValue(p.MatchId, out var now))
+                rangSheng = (openWin.Win, now.Win);
+
+            var alert = TurnGuard.Judge(p, pickDir, diag, rangSheng);
+            if (alert is not null) alerts.Add(alert);
+        }
+
+        if (alerts.Count == 0) return 0;
+        return await _milkPicks.SaveTurnAlertsAsync(DateTime.Today, alerts, ct);
     }
 
     /// <summary>

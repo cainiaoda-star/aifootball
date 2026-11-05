@@ -245,6 +245,80 @@ public sealed class MilkPickRepository
         return settled;
     }
 
+    /// <summary>
+    /// 临场转向告警（2026-11-05 加）：开赛前持续盯着「已发出的大奶注」，
+    /// 一旦市场的方向在临场悄悄漂走，立刻落一条告警——而不是等赛后/临场被用户戳破才去查。
+    ///
+    /// 背景：方向闸（MilkDirectionGate）只在出注那一刻跑一次，存的是静态快照。
+    /// 而市场转向是时间序列上的漂移——让胜赔率一路爬升、净胜球期望持续下修、
+    /// 深档整批降价——净胜球诊断（FbScoreDiag）每 2 分钟在刷新，却没有一条代码
+    /// 把「已出注的场次临场发生了市场转向」主动推出来。这就是「早干啥去了」的答案。
+    ///
+    /// 本方法由 turn-guard 定时任务调用，扫描当天未开赛、已发出、未告警过的大奶注。
+    /// </summary>
+    public async Task<int> SaveTurnAlertsAsync(
+        DateTime alertDate, IReadOnlyList<TurnAlertRow> alerts, CancellationToken ct = default)
+    {
+        var d = alertDate.Date;
+        await using var conn = await _factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        var rows = 0;
+        foreach (var a in alerts)
+        {
+            if (a.MatchId <= 0) continue;
+            rows += await conn.ExecuteAsync(new CommandDefinition(
+                @"IF NOT EXISTS (SELECT 1 FROM dbo.FbTurnAlert WHERE AlertDate=@d AND MatchId=@mid AND Reason=@reason)
+                  INSERT INTO dbo.FbTurnAlert
+                    (AlertDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
+                     PickOption, Reason, Severity, ScoreDiagTag, ExpGdOpen, ExpGdNow, ExpGdMove,
+                     CreatedAt)
+                  VALUES (@d, @mid, @no, @lg, @home, @away, @time,
+                          @pick, @reason, @sev, @tag, @open, @now, @move, SYSDATETIME())",
+                new
+                {
+                    d, mid = a.MatchId, no = a.MatchNo, lg = a.LeagueName,
+                    home = a.HomeTeam, away = a.AwayTeam, time = a.MatchTime,
+                    pick = a.PickOption, reason = a.Reason, sev = a.Severity,
+                    tag = a.ScoreDiagTag, open = a.ExpGdOpen, now = a.ExpGdNow, move = a.ExpGdMove
+                }, tx, cancellationToken: ct));
+        }
+
+        await tx.CommitAsync(ct);
+        return rows;
+    }
+
+    /// <summary>当日未解决的临场转向告警，按严重度降序、开赛时间正序。</summary>
+    public async Task<List<TurnAlertRow>> GetTurnAlertsAsync(DateTime alertDate, CancellationToken ct = default)
+    {
+        var d = alertDate.Date;
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<TurnAlertRow>(new CommandDefinition(
+            @"SELECT AlertId, AlertDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
+                     PickOption, Reason, Severity, ScoreDiagTag, ExpGdOpen, ExpGdNow, ExpGdMove, CreatedAt
+              FROM dbo.FbTurnAlert
+              WHERE AlertDate=@d
+              ORDER BY CASE WHEN Severity='high' THEN 0 ELSE 1 END, MatchTime, MatchNo",
+            new { d }, cancellationToken: ct))).ToList();
+    }
+
+    /// <summary>当天已发出、未开赛、未结算的大奶注，供临场转向哨兵扫描。</summary>
+    public async Task<List<MilkPickRow>> GetOpenDayAsync(DateTime pickDate, CancellationToken ct = default)
+    {
+        var d = pickDate.Date;
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<MilkPickRow>(new CommandDefinition(
+            @"SELECT p.PickId, p.PickDate, p.MatchId, p.MatchNo, p.LeagueName, p.HomeTeam, p.AwayTeam,
+                     p.MatchTime, p.PlayType, p.OptionCode, p.OptionName, p.Odds, p.ModelProbability, p.Ev,
+                     p.ActualScore, p.ActualHalfScore, p.ActualGoals, p.Hit, p.SettledAt
+              FROM dbo.FbMilkPick p
+              JOIN dbo.FbMatch m ON m.MatchId = p.MatchId
+              WHERE p.PickDate=@d AND p.Hit IS NULL AND p.SettledAt IS NULL
+                AND m.Status <> 3 AND m.MatchTime > SYSDATETIME()
+              ORDER BY m.MatchTime, p.MatchNo",
+            new { d }, cancellationToken: ct))).ToList();
+    }
+
     private sealed class MilkPendingRow
     {
         public long PickId { get; set; }
@@ -255,6 +329,38 @@ public sealed class MilkPickRepository
         public int? HalfHomeScore { get; set; }
         public int? HalfAwayScore { get; set; }
     }
+}
+
+/// <summary>
+/// 临场转向告警一行（2026-11-05 加）。
+/// 记录「哪场、哪注、市场的方向怎么在临场漂走了」——系统主动喊出来的报警凭证。
+/// </summary>
+public sealed class TurnAlertRow
+{
+    public long AlertId { get; set; }
+    public DateTime AlertDate { get; set; }
+    public long MatchId { get; set; }
+    public string MatchNo { get; set; } = "";
+    public string? LeagueName { get; set; }
+    public string? HomeTeam { get; set; }
+    public string? AwayTeam { get; set; }
+    public DateTime? MatchTime { get; set; }
+
+    /// <summary>这一注的玩法+选项显示名，如「半全场 胜胜」。</summary>
+    public string PickOption { get; set; } = "";
+
+    /// <summary>一句话说明为什么报警。</summary>
+    public string Reason { get; set; } = "";
+
+    /// <summary>high / mid。high = 净胜球期望下修且深档整批降价；mid = 单一转向信号。</summary>
+    public string Severity { get; set; } = "mid";
+
+    /// <summary>净胜球诊断的尾盘标签（如「客队深档整批降价」）。</summary>
+    public string? ScoreDiagTag { get; set; }
+    public decimal? ExpGdOpen { get; set; }
+    public decimal? ExpGdNow { get; set; }
+    public decimal? ExpGdMove { get; set; }
+    public DateTime? CreatedAt { get; set; }
 }
 
 /// <summary>FbMilkPick 读回一行。</summary>

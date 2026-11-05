@@ -1,4 +1,5 @@
 using AiFootBall.Core.Models;
+using AiFootBall.Data;
 
 namespace AiFootBall.Sources;
 
@@ -286,7 +287,9 @@ public static class MilkPickEngine
         IReadOnlyList<MatchRecommendation> recs,
         IReadOnlyDictionary<long, List<JcOddsHistoryPoint>> odds,
         ScorelineModel scores,
-        IReadOnlyDictionary<long, (decimal? Open, decimal? Close)>? asian = null)
+        IReadOnlyDictionary<long, (decimal? Open, decimal? Close)>? asian = null,
+        IReadOnlyDictionary<long, ScoreDiagRow>? scoreDiags = null,
+        bool perMatch = false)
     {
         var result = new List<MilkPick>();
         var gates = new List<MilkDirectionDiagnosis>();
@@ -603,6 +606,25 @@ public static class MilkPickEngine
             .ToList();
         funnel.DivergentDropped = beforeDivergentDrop - coherent.Count;
 
+        // 2.6) 临场转向撤注（2026-11-05 加）：方向闸只认「SPF/比分去水的静态方向」，
+        // 拦不住「SPF 还没动、但比分盘深档已经先转向」的场次——塞尔塔就是样本：
+        // SPF 去水仍主胜 39% 最强（闸判 Pass），但净胜球期望已从 0.371 下修到 0.226、
+        // 客队深档 6 档整批降价，市场真金白银在往客队压。这一注指主胜就是逆着市场走。
+        // 所以独立读净胜球诊断（FbScoreDiag，每 2 分钟刷新），主胜方向注 + 转向客队 → 撤。
+        if (scoreDiags is not null && scoreDiags.Count > 0)
+        {
+            var beforeTurnDrop = coherent.Count;
+            coherent = coherent
+                .Where(x => !(x.MatchId is long tMid
+                              && scoreDiags.TryGetValue(tMid, out var sd)
+                              && FullTimeDirection(x) == '3'
+                              && (sd.ExpGdMove is decimal mv && mv <= -TurnGuard.GdShrinkThreshold
+                                  || sd.DeepNegDrop >= TurnGuard.DeepDropThreshold
+                                  || (sd.TailTag?.Contains("客队深档", StringComparison.Ordinal) ?? false))))
+                .ToList();
+            funnel.TurnDropped = beforeTurnDrop - coherent.Count;
+        }
+
         // 3) 同场同玩法最多两注。**必须在一致性之后做**（2026-11-04 晚修）：
         //    早前先卡名额、再判一致性，一场里概率最高的两个比分很可能恰好是被锚点否掉的
         //    方向（比如锚点是主胜，两个名额全给了 1:1 和 1:2），于是这两个被撤，
@@ -614,6 +636,25 @@ public static class MilkPickEngine
                 .ThenByDescending(x => x.Ev)
                 .Take(MaxPerMatchPerPlay))
             .ToList();
+
+        // 3.5) 逐场跟进模式（2026-11-06 起）：每场只留概率最高的一注，不再全局砍单。
+        //      这是「每日复盘」新口径——竞彩每场都跟一个大奶（比分/半全场/总进球三选一），
+        //      赛后逐场写复盘。全局砍单（第 4 步）会把「没进榜的场次」整个丢掉，
+        //      复盘就缺了那些场。所以 perMatch 时每场取锚点方向里概率最高的那一注，
+        //      跳过按玩法取前 N 的全局压缩。
+        if (perMatch)
+        {
+            var perMatchPicks = capped
+                .GroupBy(x => x.MatchId)
+                .Select(g => g
+                    .OrderByDescending(x => x.ModelProbability)
+                    .ThenByDescending(x => x.Ev)
+                    .First())
+                .ToList();
+
+            funnel.Final = perMatchPicks.Count;
+            return new MilkBuildResult { Picks = perMatchPicks, Gates = gates, ShowRows = showRows, Funnel = funnel };
+        }
 
         // 4) 按玩法分组各取前几名，不混在一起排。
         // 混排时比分档位多、半全场只有三档，混着排会让半全场整片消失；前端也按玩法分组展示。

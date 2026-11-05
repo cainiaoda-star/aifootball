@@ -260,7 +260,9 @@
   .milk-stats-bar{font-size:12px;color:var(--dim);margin-bottom:10px}
   .milk-stats-bar button{margin-left:8px;font-size:12px;padding:3px 10px}
   .milk-record{margin:14px 0 4px;padding-top:12px;border-top:1px dashed var(--line)}
-  .milk-record .milk-head{margin-bottom:6px}
+  .milk-record .milk-head{margin-bottom:6px;cursor:pointer;user-select:none}
+  .milk-record .milk-head:hover h3{color:var(--accent, #e6c36a)}
+  .milk-record .milk-fold-arrow{display:inline-block;font-size:13px;color:var(--dim);transition:transform .15s}
   /* 方向闸（2026-11-05）：被拦下的场次和诱盘告警，放在大奶榜上方，先看这个再看榜。 */
   .milk-gate{margin:14px 0 4px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}
   .milk-gate .gate-head{font-size:13px;margin-bottom:6px}
@@ -298,6 +300,20 @@
   .show-diverge-note{font-size:11px;color:#ff9b9b;margin-left:6px}
   /* 变盘监控（2026-11-05）：只摆事实——几点、哪档、从多少到多少、距开赛多久。 */
   .milk-moves{margin:14px 0 4px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}
+  .turn-alert-wrap{margin:14px 0 4px}
+  .turn-alert{border:1px solid;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.6}
+  .turn-alert-ok{border-color:var(--line);color:var(--dim);background:var(--panel2)}
+  .turn-alert-warn{border-color:rgba(255,150,90,.5);background:rgba(255,150,90,.10);color:var(--text)}
+  .turn-alert-head{font-weight:650;margin-bottom:8px;color:#ff9d6b}
+  .turn-alert-row{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline;padding:4px 0;border-top:1px dashed rgba(255,150,90,.25)}
+  .turn-alert-row:first-of-type{border-top:none}
+  .turn-alert-sev{font-size:11px;padding:1px 7px;border-radius:5px;font-weight:650}
+  .turn-alert-sev.high{background:rgba(255,90,90,.18);color:#ff8f8f;border:1px solid rgba(255,90,90,.4)}
+  .turn-alert-sev.mid{background:rgba(255,170,90,.15);color:#ffb07a;border:1px solid rgba(255,170,90,.35)}
+  .turn-alert-match{font-weight:600}
+  .turn-alert-pick{color:var(--dim);font-size:12px}
+  .turn-alert-reason{color:var(--dim);font-size:12px;flex-basis:100%}
+
   .mv-head{font-size:13px;font-weight:600;margin-bottom:8px}
   .tr-hist{float:right;font-weight:400;font-size:12px;display:flex;align-items:center;gap:8px}
   .tr-hist input[type=date]{margin:0 4px;padding:3px 6px;font-size:12px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px}
@@ -676,10 +692,12 @@
       <button type="button" id="tabRecommend" class="active">今日推荐</button>
       <button type="button" id="tabMybets">我的投注</button>
       <button type="button" id="tabSummary">每日复盘</button>
+      <button type="button" id="tabFollow">每日跟进</button>
       <button type="button" id="tabHistory">历史推荐</button>
       <button type="button" id="tabReview">复盘查询</button>
       <button type="button" id="tabJobs">采集设置</button>
       <button type="button" id="tabSkills">技能</button>
+      <button type="button" id="tabMonitor">数据监控</button>
     </div>
   </header>
   <main>
@@ -696,15 +714,16 @@
         <span class="date" id="refreshStatus"></span>
       </div>
       <div id="boards"></div>
-      <div id="milkPanel" class="milk-panel" style="display:none"></div>
       <div id="betPickBar" class="bet-pick-bar" aria-live="polite"></div>
-      <div id="analysis"></div>
       <div id="mybets" style="display:none"></div>
       <div id="summary" style="display:none"></div>
+      <div id="follow" style="display:none"></div>
+      <div id="analysis" style="display:none"></div>
       <div id="history" style="display:none"></div>
       <div id="review" style="display:none"></div>
       <div id="jobs" style="display:none"></div>
       <div id="skills" style="display:none"></div>
+      <div id="monitor" style="display:none"></div>
     </div>
     <div id="digitalView" style="display:none">
       <div class="lotto-toolbar">
@@ -1299,8 +1318,6 @@ async function loadRecommendations(){
       $('#dateLabel').textContent = '已保存的推荐';
       renderSavedRecommend(data);
       $('#analysis').innerHTML = '';
-      const mp = $('#milkPanel');
-      if(mp){ mp.style.display = 'none'; mp.dataset.hasContent = ''; mp.innerHTML = ''; }
       return;
     }
     const data = await api('/api/recommend');
@@ -1310,18 +1327,16 @@ async function loadRecommendations(){
     _totals = data.totals || [];
     $('#dateLabel').textContent = '';
     renderBoards();
-    loadAnalysis();
-    loadMilkWatch();
   }catch(err){
     if(err.message !== 'unauthorized') $('#boards').innerHTML = `<div class="empty">加载失败：${err.message}</div>`;
   }
 }
 
 async function loadMilkWatch(){
-  const box = $('#milkPanel');
+  const box = $('#milkWatch');
   if(!box) return;
-  // 只挂在「今日推荐」；其它页签（含我的投注）不展示
-  if(currentSportsTab !== 'recommend'){
+  // 只挂在「数据监控」；其它页签不展示
+  if(currentSportsTab !== 'monitor'){
     box.style.display = 'none';
     return;
   }
@@ -1360,7 +1375,7 @@ async function loadMilkWatch(){
         <td><div class="milk-tags">${tags}</div><div class="milk-row-meta">${esc(meta)}</div></td>
       </tr>`;
     }).join('');
-    if(currentSportsTab !== 'recommend'){ box.style.display = 'none'; return; }
+    if(currentSportsTab !== 'monitor'){ box.style.display = 'none'; return; }
     box.dataset.hasContent = '1';
     box.style.display = 'block';
     box.innerHTML = `<div class="milk-head"><h3>爆冷观察</h3>
@@ -1374,7 +1389,7 @@ async function loadMilkWatch(){
     bindMilkStats();
   }catch(err){
     if(err.message === 'unauthorized') return;
-    if(currentSportsTab !== 'recommend'){ box.style.display = 'none'; return; }
+    if(currentSportsTab !== 'monitor'){ box.style.display = 'none'; return; }
     box.dataset.hasContent = '1';
     box.style.display = 'block';
     box.innerHTML = `<div class="empty">大奶观察加载失败：${esc(err.message)}</div>`;
@@ -1630,8 +1645,6 @@ function renderBoards(){
   loadWater();
   loadJcWater();
   loadMilkRecord();
-  loadOddsMoves();
-  loadOddsTrend();
 }
 
 /* ---------- 大奶战绩（FbMilkPick 台账） ---------- */
@@ -1644,8 +1657,22 @@ async function loadMilkRecord(days){
     const r = await api(`/api/milk/pick-stats?days=${span}`);
     box.innerHTML = milkRecordHtml(r);
     box.querySelectorAll('[data-milk-days]').forEach(btn => {
-      btn.onclick = () => loadMilkRecord(Number(btn.getAttribute('data-milk-days')));
+      btn.onclick = (ev) => {
+        ev.stopPropagation();
+        loadMilkRecord(Number(btn.getAttribute('data-milk-days')));
+      };
     });
+    const head = box.querySelector('[data-milk-record-toggle]');
+    if(head){
+      head.onclick = () => {
+        const body = box.querySelector('.milk-record-body');
+        const arrow = head.querySelector('.milk-fold-arrow');
+        if(!body) return;
+        const collapsed = body.style.display === 'none';
+        body.style.display = collapsed ? '' : 'none';
+        if(arrow) arrow.textContent = collapsed ? '▾' : '▸';
+      };
+    }
   }catch(e){
     box.innerHTML = `<div class="dim">大奶战绩取不到：${esc(e && e.message ? e.message : String(e))}</div>`;
   }
@@ -1658,15 +1685,19 @@ function milkRecordHtml(r){
   const roi = Number(o.roi || 0);
   const btn = d => `<button type="button" class="btn-mini" data-milk-days="${d}">近${d}天</button>`;
 
-  let html = `<div class="milk-head"><h3>大奶战绩</h3>
+  let html = `<div class="milk-head" data-milk-record-toggle>
+    <h3>大奶战绩 <span class="milk-fold-arrow">▸</span></h3>
     <span class="dim">近 ${esc(String(r.days || 30))} 天 · 已结算 <b>${picked}</b> 注 · 命中 <b class="hit-tag">${hits}</b> 注 ·
       命中率 <b>${Number(o.hitRatePct || 0).toFixed(1)}%</b> · 平注 ROI <b class="${roi >= 1 ? 'hit-tag' : 'miss-tag'}">${roi.toFixed(2)}</b>
       ${r.pending ? ` · 待结算 ${r.pending} 注` : ''}</span>
     <span class="milk-tags">${btn(30)}${btn(90)}</span>
   </div>`;
 
+  html += `<div class="milk-record-body" style="display:none">`;
+
   if(!picked){
     html += `<p class="milk-note">还没有已结算的大奶注。台账从 2026-11-04 开始记，等今晚赛果落库后这里才会有数。</p>`;
+    html += `</div>`;
     return html;
   }
 
@@ -1708,6 +1739,7 @@ function milkRecordHtml(r){
   }
 
   html += `<p class="milk-note">平注 ROI = 每注 1 元、命中按赔率返还的口径；「高估」= 模型平均概率 − 实际命中率，正数说明模型把这一档算乐观了。样本少于 30 注时波动很大，别急着改参数。</p>`;
+  html += `</div>`;
   return html;
 }
 
@@ -2563,18 +2595,6 @@ function renderMilkBoard(b, strongOnly){
   </div>`;
 
   html += milkTicketHtml(b.milkTicket);
-  html += milkGateHtml(b.milkGate);
-  html += milkFunnelHtml(b.milkGate, picks.length > 0);
-  html += milkShowHtml(b.showRows);
-
-  // 变盘监控：11-04 那场 16:02 就把方向定死了，出注时一次都没比较过前后值。
-  // 这里把「几点、哪一档、从多少到多少」直接摆出来，不做判断。
-  html += `<div class="milk-moves" id="milkMoves"><div class="dim">变盘监控加载中…</div></div>`;
-
-  // 逐场走向：每场每玩法「首轮 → 现价」怎么走的，加上台账断档。
-  // 明细表里 124 万行谁都看不出来「这场在往哪走」，要的是一行一个结论。
-  html += `<div class="milk-moves" id="oddsTrend"><div class="dim">逐场走向加载中…</div></div>`;
-  html += `<div class="milk-moves" id="scoreDiag"><div class="dim">净胜球诊断加载中…</div></div>`;
 
   // 战绩：台账（FbMilkPick）已结算的才进统计，未结算的单列一行提示。
   html += `<div class="milk-record" id="milkRecord"><div class="dim">大奶战绩加载中…</div></div>`;
@@ -2648,11 +2668,7 @@ function renderMilkBoard(b, strongOnly){
     // 换日期/换筛选后旧勾选要清掉，否则会拿昨天的注往今天填
     for(const k of [..._milkPickSet]) if(!aliveKeys.has(k)) _milkPickSet.delete(k);
   }
-  html += `<p class="dim" style="margin:8px 2px">胜平负 / 让球 / 大小球 / 胜负彩 / 北单 一律停止发布（采集仍在跑）。按场合并：一行一场，三列玩法。<b>榜单按命中率排，不按 EV 排</b>——EV 会奖励高赔率，把 1.9% 的 3:0@80 顶到第一；命中率高的注才是「会中」的注。<br>
-<b>EV 到不了 1，这是竞彩的抽水，不是算错。</b>概率 = 模型 40% + 盘口去水 60%，水位是官方固定的：比分 1.410（返奖 <b>71%</b>）、半全场和总进球 1.254（<b>80%</b>）、胜平负 1.139（88%）。所以每注 EV 的天花板就是对应返奖率，EV 0.78 的分比注已经贴着公平价了，再往上只能靠模型比市场准——而实测模型比市场差。<br>
-<b>串关会把水位连乘：</b>比分 + 半全场 + 总进球 三串一，返奖 ≈ 0.71×0.80×0.80 = <b>45%</b>，也就是每 100 元期望回收 45 元。想少亏就别串，或者至少别串比分。<br>
-「EV 最高」角标只标全榜一注，代表纯赔率视角下最划算的那注，它常常不是最可能中的那注——想赌高赔看角标，想提高中奖率看排序和你手上那张票。</p>
-  </div>`;
+  html += `</div>`;
   return html;
 }
 
@@ -3280,6 +3296,62 @@ async function loadAnalysis(){
   }catch(e){ $('#analysis').innerHTML=''; }
 }
 
+/* ---------- 数据监控（2026-11-05）：把方向闸/漏斗/逆市场展示 + 变盘/走向/净胜球诊断
+   从「今日推荐」迁出来，单独一个 tab，推荐页只留榜单和战绩。 ---------- */
+async function loadMonitor(){
+  const box = $('#monitor');
+  if(!box) return;
+  // 从已加载的推荐数据里找到大奶 board，取方向闸 / 漏斗 / showRows 三块的数据。
+  let b = null;
+  for(const x of (_boards || [])){ if(x.milkPicks){ b = x; break; } }
+  let html = '';
+  html += `<div class="turn-alert-wrap" id="turnAlert"><div class="dim">临场转向哨兵扫描中…</div></div>`;
+  if(b){
+    const picks = (b.milkPicks || []);
+    html += milkGateHtml(b.milkGate);
+    html += milkFunnelHtml(b.milkGate, picks.length > 0);
+    html += milkShowHtml(b.showRows);
+  }
+  html += `<div class="milk-panel" id="milkWatch"><div class="dim">爆冷观察加载中…</div></div>`;
+  html += `<div class="milk-moves" id="milkMoves"><div class="dim">变盘监控加载中…</div></div>`;
+  html += `<div class="milk-moves" id="oddsTrend"><div class="dim">逐场走向加载中…</div></div>`;
+  html += `<div class="milk-moves" id="scoreDiag"><div class="dim">净胜球诊断加载中…</div></div>`;
+  box.innerHTML = html;
+  loadTurnAlerts();
+  loadMilkWatch();
+  loadOddsMoves();
+  loadOddsTrend();
+}
+
+// 临场转向告警：系统主动喊出来的「已出注场次开赛前市场转向」报警。
+// 数据由 turn-guard 定时任务每 10 分钟扫描落库，这里只读展示。
+async function loadTurnAlerts(){
+  const wrap = $('#turnAlert');
+  if(!wrap) return;
+  let rows = [];
+  try{ rows = await api('/api/milk/turn-alerts'); }
+  catch(e){ wrap.innerHTML = `<div class="dim">临场转向哨兵不可用：${esc(e.message)}</div>`; return; }
+  if(!rows || rows.length === 0){
+    wrap.innerHTML = `<div class="turn-alert turn-alert-ok">临场转向哨兵：当前无市场转向告警</div>`;
+    return;
+  }
+  const high = rows.filter(r => r.severity === 'high').length;
+  let html = `<div class="turn-alert turn-alert-warn">
+    <div class="turn-alert-head">⚠ 临场转向哨兵：${rows.length} 场已出注场次在开赛前市场方向漂移${high ? `（其中 ${high} 场高危）` : ''}</div>`;
+  for(const r of rows){
+    const sev = r.severity === 'high' ? '高危' : '关注';
+    html += `<div class="turn-alert-row">
+      <span class="turn-alert-sev ${r.severity}">${sev}</span>
+      <span class="turn-alert-match">${esc(r.matchNo||'')} ${esc(r.homeTeam||'')} vs ${esc(r.awayTeam||'')}</span>
+      <span class="turn-alert-pick">${esc(r.pickOption||'')}</span>
+      <span class="turn-alert-reason">${esc(r.reason||'')}</span>
+    </div>`;
+  }
+  html += `</div>`;
+  wrap.innerHTML = html;
+}
+
+
 /* ============ 大类切换 + 体育彩票页签 ============ */
 
 let currentCat = 'sports';
@@ -3291,10 +3363,12 @@ $('#catDigital').onclick = () => switchCat('digital');
 $('#tabRecommend').onclick = () => switchTab('recommend');
 $('#tabMybets').onclick = () => switchTab('mybets');
 $('#tabSummary').onclick = () => switchTab('summary');
+$('#tabFollow').onclick = () => switchTab('follow');
 $('#tabHistory').onclick = () => switchTab('history');
 $('#tabReview').onclick = () => switchTab('review');
 $('#tabJobs').onclick = () => switchTab('jobs');
 $('#tabSkills').onclick = () => switchTab('skills');
+$('#tabMonitor').onclick = () => switchTab('monitor');
 
 function switchCat(cat){
   currentCat = cat;
@@ -3599,28 +3673,32 @@ function switchTab(t){
   const isRec = t === 'recommend';
   const isBet = t === 'mybets';
   const isSum = t === 'summary';
+  const isFollow = t === 'follow';
   const isHis = t === 'history';
   const isRev = t === 'review';
   const isJob = t === 'jobs';
   const isSkill = t === 'skills';
+  const isMon = t === 'monitor';
   $('#tabRecommend').classList.toggle('active', isRec);
   $('#tabMybets').classList.toggle('active', isBet);
   $('#tabSummary').classList.toggle('active', isSum);
+  $('#tabFollow').classList.toggle('active', isFollow);
   $('#tabHistory').classList.toggle('active', isHis);
   $('#tabReview').classList.toggle('active', isRev);
   $('#tabJobs').classList.toggle('active', isJob);
   $('#tabSkills').classList.toggle('active', isSkill);
+  $('#tabMonitor').classList.toggle('active', isMon);
   $('#boards').style.display = isRec ? '' : 'none';
-  $('#analysis').style.display = isRec ? '' : 'none';
-  const milkPanel = $('#milkPanel');
-  if(milkPanel) milkPanel.style.display = isRec && milkPanel.dataset.hasContent === '1' ? '' : 'none';
+  $('#analysis').style.display = isSum ? '' : 'none';
   $('#mybets').style.display = isBet ? '' : 'none';
   $('#summary').style.display = isSum ? '' : 'none';
+  $('#follow').style.display = isFollow ? '' : 'none';
   $('#history').style.display = isHis ? '' : 'none';
   $('#review').style.display = isRev ? '' : 'none';
   $('#jobs').style.display = isJob ? '' : 'none';
   $('#skills').style.display = isSkill ? '' : 'none';
-  const titles = {recommend:'今日推荐', mybets:'我的投注', summary:'每日复盘', history:'历史推荐', review:'复盘查询', jobs:'采集设置', skills:'技能'};
+  $('#monitor').style.display = isMon ? '' : 'none';
+  const titles = {recommend:'今日推荐', mybets:'我的投注', summary:'每日复盘', follow:'每日跟进', history:'历史推荐', review:'复盘查询', jobs:'采集设置', skills:'技能', monitor:'数据监控'};
   const pageTitle = $('#pageTitle');
   if(pageTitle) pageTitle.textContent = titles[t] || '今日推荐';
   document.title = 'AiFootBall · 体育彩票 · ' + (titles[t] || '今日推荐');
@@ -3629,11 +3707,13 @@ function switchTab(t){
   const pickBar = $('#betPickBar');
   if(pickBar) pickBar.style.display = isRec ? '' : 'none';
   if(isBet) loadMybets().then(() => applyPendingBetFill());
-  if(isSum) loadSummary();
+  if(isSum){ loadSummary(); loadAnalysis(); }
+  if(isFollow) loadDailyFollow();
   if(isHis) loadHistory();
   if(isRev) loadReview();
   if(isJob) loadJobs();
   if(isSkill) loadSkills();
+  if(isMon) loadMonitor();
 }
 
 async function loadSkills(){
@@ -4951,14 +5031,9 @@ function reviewLines(lines){
 
 function renderSummary(d){
   let html = '';
-  const nextOff = d.date >= localYmd(new Date());
   const finished = (d.items || []).length;
   html += `<div class="page-head">
-    <div class="date-nav">
-      <button type="button" id="sumPrev">前一天</button>
-      <span class="date-val">${d.date}</span>
-      <button type="button" id="sumNext" ${nextOff?'disabled':''}>后一天</button>
-    </div>
+    ${dateQueryHtml('sum', d.date, false)}
     <span class="meta">${finished ? '库里已完场 ' + finished + ' 场' : '每天 08:20 写前一天'}</span>
   </div>`;
 
@@ -4999,9 +5074,7 @@ function renderSummary(d){
   }
 
   $('#summary').innerHTML = html;
-  $('#sumPrev').onclick = () => { summaryDate = shiftYmd(summaryDate, -1); loadSummary(); };
-  const next = $('#sumNext');
-  if(next && !next.disabled) next.onclick = () => { summaryDate = shiftYmd(summaryDate, 1); loadSummary(); };
+  bindDateQuery('sum', () => summaryDate, v => { summaryDate = v; }, loadSummary);
 }
 
 function oddsPrice(notes, label){
@@ -5274,6 +5347,113 @@ function renderReview(){
   box.innerHTML = html;
   bindDateQuery('rev', () => reviewDate, v => { reviewDate = v; }, renderReview);
 }
+
+/* ---------- 每日跟进（2026-11-06 新口径） ----------
+   竞彩每场一注大奶（比分/半全场/总进球三选一），记录抓取时间、水位必发变化、
+   重大变化标注，赛后逐场写复盘，每天沉淀一条技能。 */
+let followDate = localYmd(new Date());
+
+async function loadDailyFollow(){
+  const box = $('#follow');
+  box.innerHTML = '<div class="empty">加载中…</div>';
+  try{
+    const d = await api('/api/daily-follow?date=' + encodeURIComponent(followDate));
+    followDate = d.date || followDate;
+    renderDailyFollow(d);
+  }catch(e){
+    box.innerHTML = `<div class="empty">加载失败：${esc(e.message || e)}</div>`;
+  }
+}
+
+function renderDailyFollow(d){
+  const box = $('#follow');
+  const playBadge = pt => pt === 'BF' ? '比分' : pt === 'BQ' ? '半全场' : pt === 'JQ' ? '总进球' : pt;
+  const playCls = pt => pt === 'BF' ? 'badge-jc' : pt === 'BQ' ? 'badge-bd' : 'badge-sfc';
+
+  let html = `<div class="page-head">${dateQueryHtml('follow', d.date, false)}
+    <span class="meta">共 ${d.total} 场 · 结算 ${d.settled} 场 · 命中 ${d.hit} 场 · ${d.hitRate}%</span></div>`;
+
+  // 每日技能总结（若有）
+  if(d.skill){
+    html += `<div class="board" style="border-left:4px solid #6b4c9a">
+      <div class="board-head"><span class="badge" style="background:#6b4c9a">今日技能</span><span class="meta">${esc(d.skill.title)}</span></div>
+      <div class="skill-body" style="padding:12px 14px">
+        <div style="font-size:14px;line-height:1.6">${esc(d.skill.body)}</div>
+        ${d.skill.evidence ? `<div class="dim" style="margin-top:8px;font-size:12px">依据：${esc(d.skill.evidence)}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  if(!d.items || d.items.length === 0){
+    box.innerHTML = html + `<div class="empty">${d.date} 还没有逐场跟进。等竞彩开赛后每天自动生成。</div>`;
+    bindDateQuery('follow', () => followDate, v => { followDate = v; }, loadDailyFollow);
+    return;
+  }
+
+  const sorted = [...d.items].sort((a,b)=>{
+    if(a.settledAt && !b.settledAt) return 1;
+    if(!a.settledAt && b.settledAt) return -1;
+    return new Date(a.matchTime) - new Date(b.matchTime);
+  });
+
+  // 变更历史按 MatchId 建索引，供每场卡片内展示「初判 → 改判」链。
+  const changeMap = {};
+  for(const c of (d.changes || [])){
+    if(!changeMap[c.matchId]) changeMap[c.matchId] = [];
+    changeMap[c.matchId].push(c);
+  }
+
+  for(const it of sorted){
+    const settled = !!it.settledAt;
+    const hitTag = !settled ? '<span class="dim">待开赛</span>'
+      : it.hit === true ? '<span class="hit-tag">命中</span>'
+      : '<span class="miss-tag">未中</span>';
+    const major = it.majorChange ? `<div class="major-change" style="margin:4px 0;color:#c0392b;font-size:12px;font-weight:600">⚠ ${esc(it.majorChange)}</div>` : '';
+    const water = it.oddsOpenHome != null || it.oddsLastHome != null
+      ? `<div class="dim" style="font-size:12px;margin:2px 0">水位 主 ${fmtOdds(it.oddsOpenHome)}→${fmtOdds(it.oddsLastHome)} / 平 ${fmtOdds(it.oddsOpenDraw)}→${fmtOdds(it.oddsLastDraw)} / 客 ${fmtOdds(it.oddsOpenAway)}→${fmtOdds(it.oddsLastAway)} · 必发主 ${fmtPct(it.exRatioOpen)}→${fmtPct(it.exRatioLast)}</div>`
+      : '';
+    const capture = it.lastCapturedAt ? `<span class="dim">抓取 ${esc(fmtDateTime(it.lastCapturedAt))}</span>` : '';
+    const review = settled && it.reviewText
+      ? `<div class="review-line" style="margin-top:8px;padding:8px 10px;background:var(--panel2);border-radius:8px;font-size:13px;line-height:1.6">${esc(it.reviewText)}</div>`
+      : '';
+
+    // 本场的推荐变更链（初判 → 每次改判）
+    let changeHtml = '';
+    const chs = changeMap[it.matchId] || [];
+    if(chs.length > 0){
+      changeHtml = `<div style="margin:6px 0;padding:8px 10px;background:var(--panel2);border-left:3px solid #e67e22;border-radius:6px;font-size:12px;line-height:1.7">`;
+      // 第一条变更的 From 即初判
+      const first = chs[0];
+      changeHtml += `<div style="color:#8a6d3b">📌 初判：<b>${esc(first.fromOptionName || first.fromOptionCode || '—')}</b></div>`;
+      for(const c of chs){
+        changeHtml += `<div style="margin-top:4px">⏱ ${esc(fmtDateTime(c.changedAt))} · <b>${esc(c.fromOptionName || c.fromOptionCode)}</b> → <b style="color:#c0392b">${esc(c.toOptionName || c.toOptionCode)}</b>${c.triggerSignal ? `<div class="dim">触发：${esc(c.triggerSignal)}</div>` : ''}</div>`;
+      }
+      changeHtml += `</div>`;
+    }
+
+    html += `<div class="board">
+      <div class="board-head">
+        <span class="badge ${playCls(it.playType)}">${playBadge(it.playType)}</span>
+        <span class="meta">${esc(it.matchNo || '')} ${esc(it.leagueName || '')} ${esc(it.homeTeam || '')} vs ${esc(it.awayTeam || '')} ${it.matchTime ? esc(fmtDateTime(it.matchTime)) : ''}</span>
+        ${hitTag}
+      </div>
+      <div style="padding:10px 14px">
+        <div style="font-size:15px;font-weight:600">${esc(it.optionName || it.optionCode)} <span class="dim" style="font-weight:400">@ ${it.odds ?? '—'} · 模型概率 ${it.modelProbability ?? '—'}%</span></div>
+        ${major}
+        ${changeHtml}
+        ${water}
+        <div class="dim" style="font-size:12px;margin:2px 0">理由：${esc(it.reason || '—')} ${capture}</div>
+        ${settled ? `<div style="font-size:13px;margin-top:4px">赛果 <b>${esc(it.actualScore || '—')}</b>${it.actualHalfScore ? '（半场 ' + esc(it.actualHalfScore) + '）' : ''} · 进球 ${it.actualGoals ?? '—'}</div>` : ''}
+        ${review}
+      </div>
+    </div>`;
+  }
+
+  box.innerHTML = html;
+  bindDateQuery('follow', () => followDate, v => { followDate = v; }, loadDailyFollow);
+}
+
+function fmtPct(v){ return v == null ? '—' : Number(v).toFixed(1) + '%'; }
 
 if(token){
   showMain();

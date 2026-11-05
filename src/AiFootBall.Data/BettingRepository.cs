@@ -173,6 +173,32 @@ public sealed class BettingRepository
         return result;
     }
 
+    /// <summary>按 fid 批量取欧赔初盘主/平/客（平均值 CompanyId=0，IsOpening=1）。</summary>
+    public async Task<Dictionary<long, (decimal? Home, decimal? Draw, decimal? Away)>> GetOpenEuAsync(
+        IEnumerable<long> matchIds, CancellationToken ct = default)
+    {
+        var ids = matchIds.Distinct().ToArray();
+        if (ids.Length == 0) return new();
+
+        await using var conn = await _factory.OpenAsync(ct);
+        var result = new Dictionary<long, (decimal?, decimal?, decimal?)>();
+        foreach (var chunk in Chunk(ids))
+        {
+            var rows = await conn.QueryAsync<ClosingEuRow>(new CommandDefinition(
+                $@"SELECT MatchId,
+                         MAX(CASE WHEN IsOpening = 1 THEN HomeWin END) AS HomeWin,
+                         MAX(CASE WHEN IsOpening = 1 THEN Draw END) AS Draw,
+                         MAX(CASE WHEN IsOpening = 1 THEN AwayWin END) AS AwayWin
+                  FROM dbo.FbOdds
+                  WHERE MatchId IN @ids AND OddsType = 'EU' AND CompanyId = 0
+                  GROUP BY MatchId",
+                new { ids = chunk }, cancellationToken: ct));
+            foreach (var row in rows)
+                result[row.MatchId] = (row.HomeWin, row.Draw, row.AwayWin);
+        }
+        return result;
+    }
+
     /// <summary>按 fid 批量取欧赔终盘主/平/客（平均值 CompanyId=0），受注场次没有 SP 时用来判断冷热。</summary>
     public async Task<Dictionary<long, (decimal? Home, decimal? Draw, decimal? Away)>> GetClosingEuAsync(
         IEnumerable<long> matchIds, CancellationToken ct = default, double? freshHours = null)

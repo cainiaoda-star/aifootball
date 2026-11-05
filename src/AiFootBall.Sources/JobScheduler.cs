@@ -16,13 +16,15 @@ public sealed class JobScheduler
     private readonly RecommendationService? _recommendation;
     private readonly PurchaseSettlementService? _purchaseSettle;
     private readonly LottoRecommendationService? _lottoRec;
+    private readonly DailyFollowService? _dailyFollow;
     private readonly Action<string>? _log;
     private readonly object _gate = new();
     private readonly List<Entry> _entries = new();
 
     public JobScheduler(JobsOptions options, CollectionService collection, SyncLogRepository sync,
         RecommendationService? recommendation = null, PurchaseSettlementService? purchaseSettle = null,
-        Action<string>? log = null, LottoRecommendationService? lottoRec = null)
+        Action<string>? log = null, LottoRecommendationService? lottoRec = null,
+        DailyFollowService? dailyFollow = null)
     {
         _options = options;
         _collection = collection;
@@ -30,6 +32,7 @@ public sealed class JobScheduler
         _recommendation = recommendation;
         _purchaseSettle = purchaseSettle;
         _lottoRec = lottoRec;
+        _dailyFollow = dailyFollow;
         _log = log;
     }
 
@@ -64,8 +67,12 @@ public sealed class JobScheduler
         ["odds-backfill"] = TimeSpan.FromMinutes(90),
         ["save-recommendations"] = TimeSpan.FromMinutes(30),
         ["refresh-near-kickoff"] = TimeSpan.FromMinutes(30),
+        ["turn-guard"] = TimeSpan.FromMinutes(10),
         ["recommend-evidence"] = TimeSpan.FromMinutes(20),
         ["daily-review"] = TimeSpan.FromMinutes(20),
+        ["daily-follow-build"] = TimeSpan.FromMinutes(20),
+        ["daily-follow-settle"] = TimeSpan.FromMinutes(20),
+        ["daily-follow-skill"] = TimeSpan.FromMinutes(10),
         ["settle-hourly"] = TimeSpan.FromMinutes(30),
         ["settle-purchases"] = TimeSpan.FromMinutes(20),
         ["settle-recommendations"] = TimeSpan.FromMinutes(30),
@@ -587,6 +594,46 @@ public sealed class JobScheduler
                 break;
             }
 
+            // 每日逐场跟进（2026-11-06 起新口径）：竞彩每场一注 + 抓取时间 + 水位必发变化标注。
+            case "daily-follow-build":
+            {
+                if (_dailyFollow is null)
+                {
+                    result = CollectionResult.Fail("逐场跟进服务未注入");
+                    break;
+                }
+                result = await _dailyFollow.BuildDailyAsync(DateTime.Today, ct);
+                break;
+            }
+
+            // 逐场跟进赛后复盘：抓赛果，每场回填命中/错误原因。
+            case "daily-follow-settle":
+            {
+                if (_dailyFollow is null)
+                {
+                    result = CollectionResult.Fail("逐场跟进服务未注入");
+                    break;
+                }
+                var now = DateTime.Now;
+                var day = now.Hour < 12 ? now.Date.AddDays(-1) : now.Date;
+                result = await _dailyFollow.SettleDailyAsync(day, ct);
+                break;
+            }
+
+            // 每日技能总结：从当日复盘提炼一条知识技能。
+            case "daily-follow-skill":
+            {
+                if (_dailyFollow is null)
+                {
+                    result = CollectionResult.Fail("逐场跟进服务未注入");
+                    break;
+                }
+                var now = DateTime.Now;
+                var day = now.Hour < 12 ? now.Date.AddDays(-1) : now.Date;
+                result = await _dailyFollow.SummarizeSkillAsync(day, ct);
+                break;
+            }
+
             // 临场重算：只挑「马上开赛、但最后一版数据还早于赛前 60 分钟」的场次。
             // 四个固定保存时点之外，赛前盘的变化必须进来，否则「终盘规则」用的是早盘价。
             case "refresh-near-kickoff":
@@ -600,6 +647,22 @@ public sealed class JobScheduler
                 result = refreshed
                     ? CollectionResult.Ok(saved, $"临场重算：{stale} 场临近开赛但数据早于赛前 60 分钟，已重算并保存 {saved} 场")
                     : CollectionResult.Ok(0, "临场重算：没有需要重算的场次");
+                break;
+            }
+
+            // 临场转向哨兵：开赛前扫当天已发出的未开赛大奶注，市场方向漂走就报警。
+            // 这是「市场在偷偷转向、系统却没喊」的直接补丁（2026-11-05 加）。
+            case "turn-guard":
+            {
+                if (_recommendation is null)
+                {
+                    result = CollectionResult.Fail("推荐服务未注入");
+                    break;
+                }
+                var alerts = await _recommendation.RunTurnGuardAsync(ct);
+                result = alerts > 0
+                    ? CollectionResult.Ok(alerts, $"临场转向哨兵：发现 {alerts} 场已出注场次市场方向漂移，已落告警")
+                    : CollectionResult.Ok(0, "临场转向哨兵：本轮无市场转向告警");
                 break;
             }
 

@@ -58,7 +58,8 @@ builder.Services.AddSingleton(sp => new RecommendationService(
     sp.GetRequiredService<HitProbabilityService>(),
     sp.GetRequiredService<MilkScanService>(),
     sp.GetRequiredService<TicketRepository>(),
-    sp.GetRequiredService<MilkPickRepository>()));
+    sp.GetRequiredService<MilkPickRepository>(),
+    sp.GetRequiredService<OddsCaptureRepository>()));
 builder.Services.AddSingleton<UserRepository>();
 builder.Services.AddSingleton<BettingRepository>();
 builder.Services.AddSingleton<AnalysisRepository>();
@@ -71,6 +72,8 @@ builder.Services.AddSingleton<SummaryRepository>();
 builder.Services.AddSingleton<MilkRepository>();
 builder.Services.AddSingleton<MilkPickRepository>();
 builder.Services.AddSingleton<MilkScanService>();
+builder.Services.AddSingleton<DailyFollowRepository>();
+builder.Services.AddSingleton<DailyFollowService>();
 builder.Services.AddSingleton<AuthService>();
 builder.Services.AddSingleton<PurchaseSettlementService>();
 builder.Services.AddSingleton(sp => new JobScheduler(
@@ -80,7 +83,8 @@ builder.Services.AddSingleton(sp => new JobScheduler(
     sp.GetRequiredService<RecommendationService>(),
     sp.GetRequiredService<PurchaseSettlementService>(),
     message => sp.GetRequiredService<ILoggerFactory>().CreateLogger("Scheduler").LogInformation("{Message}", message),
-    sp.GetRequiredService<LottoRecommendationService>()));
+    sp.GetRequiredService<LottoRecommendationService>(),
+    sp.GetRequiredService<DailyFollowService>()));
 builder.Services.AddHostedService<SchedulerHostedService>();
 // token 健康守护：连续被人机验证拦截时自动用本机浏览器续期，避免回补空转
 builder.Services.AddHostedService<TokenHealthService>();
@@ -677,6 +681,64 @@ app.MapPost("/api/jobs/{name}/run", async (string name, JobScheduler scheduler) 
     // 手动补采可能跑十几分钟；不要绑请求 CancellationToken，否则客户端超时会把采集掐断
     var (ok, message) = await scheduler.RunOnceAsync(name, CancellationToken.None);
     return ok ? Results.Ok(new { ok, message }) : Results.BadRequest(new { ok, message });
+});
+
+// 补写指定日期的复盘（定时任务错过时手动兜底）。默认写「前一天」，带 date 参数写指定那天。
+app.MapPost("/api/review/write", async (RecommendationService svc, string? date, CancellationToken ct) =>
+{
+    DateTime day;
+    if (!string.IsNullOrWhiteSpace(date) && DateTime.TryParse(date, out var dv)) day = dv;
+    else day = DateTime.Now.Hour < 12 ? DateTime.Now.Date.AddDays(-1) : DateTime.Now.Date;
+    var path = await svc.WriteDailyReviewAsync(day, ct);
+    return Results.Ok(new { day = day.ToString("yyyy-MM-dd"), path });
+});
+
+/* ---------------- 每日逐场跟进复盘（2026-11-06 新口径） ---------------- */
+
+// 读某天逐场跟进（每场一注 + 变化标注 + 赛后复盘）+ 当天技能总结 + 推荐变更历史。
+app.MapGet("/api/daily-follow", async (DailyFollowRepository repo, string? date, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+    var rows = await repo.GetDayAsync(d, ct);
+    var skill = await repo.GetSkillAsync(d, ct);
+    var changes = await repo.GetChangesAsync(d, ct);
+    var settled = rows.Where(r => r.SettledAt is not null).ToList();
+    var hit = settled.Count(r => r.Hit == true);
+    return Results.Ok(new
+    {
+        date = d.ToString("yyyy-MM-dd"),
+        total = rows.Count,
+        settled = settled.Count,
+        hit,
+        hitRate = settled.Count > 0 ? Math.Round(100.0 * hit / settled.Count, 1) : 0,
+        items = rows,
+        changes,
+        skill
+    });
+});
+
+// 手动生成/刷新某天逐场跟进。
+app.MapPost("/api/daily-follow/build", async (DailyFollowService svc, string? date, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+    var result = await svc.BuildDailyAsync(d, ct);
+    return result.Success ? Results.Ok(new { day = d.ToString("yyyy-MM-dd"), result.Message }) : Results.Problem(result.Message);
+});
+
+// 手动触发逐场赛后复盘。
+app.MapPost("/api/daily-follow/settle", async (DailyFollowService svc, string? date, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+    var result = await svc.SettleDailyAsync(d, ct);
+    return Results.Ok(new { day = d.ToString("yyyy-MM-dd"), result.Message });
+});
+
+// 手动触发每日技能总结。
+app.MapPost("/api/daily-follow/skill", async (DailyFollowService svc, string? date, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+    var result = await svc.SummarizeSkillAsync(d, ct);
+    return Results.Ok(new { day = d.ToString("yyyy-MM-dd"), result.Message });
 });
 
 app.MapGet("/api/jobs/logs", async (int? take, SyncLogRepository repo) =>
@@ -1448,6 +1510,14 @@ app.MapGet("/api/milk/picks", async (MilkPickRepository repo, string? date, Canc
 // 大奶台账 KPI：近 N 天按玩法分组的命中率、平注 ROI、模型高估幅度、热门选项
 app.MapGet("/api/milk/pick-stats", async (MilkPickRepository repo, int? days, CancellationToken ct) =>
     Results.Ok(await repo.GetReportAsync(days ?? 30, ct)));
+
+// 临场转向告警：系统主动喊出来的「已出注场次在开赛前市场转向」报警（2026-11-05 加）。
+// 由 turn-guard 定时任务扫描落库，本端点只读，供数据监控页顶部红标。
+app.MapGet("/api/milk/turn-alerts", async (MilkPickRepository repo, string? date, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+    return Results.Ok(await repo.GetTurnAlertsAsync(d, ct));
+});
 
 // 方向闸回测：用某天的历史盘口重算「这道闸会拦下什么」，不落库、不出票。
 // 11-04 三场反掉之后的验证入口，也是以后调阈值时唯一不必等开奖的办法。

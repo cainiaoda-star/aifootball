@@ -546,6 +546,48 @@ FROM ins;";
         IEnumerable<long> matchIds, CancellationToken ct = default)
         => GetLatestPlayAsync(matchIds, "NSPF", ct);
 
+    /// <summary>
+    /// 各场让球胜平负的「最早价」（临场转向哨兵用，2026-11-05 加）。
+    /// 键是 MatchId，值是让胜/让平/让负。转向哨兵拿「最早让胜 vs 最新让胜」比单边拉升。
+    /// </summary>
+    public Task<Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>> GetEarliestNspfAsync(
+        IEnumerable<long> matchIds, CancellationToken ct = default)
+        => GetEarliestPlayAsync(matchIds, "NSPF", ct);
+
+    private async Task<Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>> GetEarliestPlayAsync(
+        IEnumerable<long> matchIds, string playType, CancellationToken ct)
+    {
+        var ids = matchIds.Distinct().ToArray();
+        var map = new Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>();
+        if (ids.Length == 0) return map;
+
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.QueryAsync<(long MatchId, string OptionCode, decimal Odds)>(new CommandDefinition(
+            @"SELECT MatchId, OptionCode, Odds
+              FROM (
+                  SELECT MatchId, OptionCode, Odds,
+                         ROW_NUMBER() OVER (PARTITION BY MatchId, OptionCode ORDER BY CapturedAt ASC) AS rn
+                  FROM dbo.FbJcOddsHistory
+                  WHERE PlayType = @play AND MatchId IN @ids AND OptionCode IN ('3','1','0') AND Odds > 1
+              ) t
+              WHERE rn = 1",
+            new { ids, play = playType }, cancellationToken: ct));
+
+        foreach (var g in rows.GroupBy(r => r.MatchId))
+        {
+            decimal win = 0, draw = 0, loss = 0;
+            foreach (var row in g)
+            {
+                if (row.OptionCode == "3") win = row.Odds;
+                else if (row.OptionCode == "1") draw = row.Odds;
+                else if (row.OptionCode == "0") loss = row.Odds;
+            }
+            if (win > 1 && draw > 1 && loss > 1)
+                map[g.Key] = (win, draw, loss);
+        }
+        return map;
+    }
+
     private async Task<Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>> GetLatestPlayAsync(
         IEnumerable<long> matchIds, string playType, CancellationToken ct)
     {
