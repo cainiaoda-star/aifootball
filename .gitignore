@@ -25,3 +25,10 @@ _probe/
 # 日志与临时输出
 *.log
 *.err
+
+# 2026-11-05：生产环境本地产物，含真实数据/凭据，绝不进仓库
+# （deploy-package 里的 secrets/ 与 appsettings.json 已由上方规则覆盖）
+*.bak
+db-backup/
+production-data/
+deploy-package/
