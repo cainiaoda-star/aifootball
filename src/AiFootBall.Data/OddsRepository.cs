@@ -185,7 +185,12 @@ FROM dbo.FbMatch m JOIN #OddsMark k ON k.MatchId = m.MatchId;";
         return dt;
     }
 
-    /// <summary>取需要采集赔率的赛事。</summary>
+    /// <summary>
+    /// 取需要采集赔率的赛事。
+    /// 排序按「有无竞彩编号 → 联赛档位 → 时间」：回补额度有限（每次 900 场），
+    /// 原来单纯按 MatchTime 升序，10-04 一天的野鸡联赛就能吃掉全部额度，
+    /// 导致 10-21 之后欧冠/欧国联/亚冠等重头戏一直排不到（2026-11-04 实测 100 场竞彩场次无欧赔）。
+    /// </summary>
     public async Task<List<MatchBrief>> GetMatchIdsForOddsAsync(DateTime from, DateTime to, bool onlyMissing,
         int take, CancellationToken ct = default)
     {
@@ -199,7 +204,17 @@ WHERE m.MatchTime >= @From AND m.MatchTime < @To
   AND (@OnlyMissing = 0
        OR m.OddsCheckedAt IS NULL
        OR (m.OddsStatus IN (0, 2) AND m.OddsCheckedAt < DATEADD(DAY, -1, SYSDATETIME())))
-ORDER BY m.MatchTime", new
+ORDER BY
+  -- 竞彩受注场次优先：推荐只出竞彩，没有欧赔就算不出概率
+  CASE WHEN EXISTS (SELECT 1 FROM dbo.FbJcOddsHistory j WHERE j.MatchId = m.MatchId) THEN 0
+       WHEN EXISTS (SELECT 1 FROM dbo.BettingCard c WHERE c.MatchId = m.MatchId) THEN 1
+       ELSE 2 END,
+  -- 其次是主流联赛，野鸡联赛垫底
+  CASE WHEN m.LeagueName IN (N'英超',N'英冠',N'西甲',N'西乙',N'意甲',N'意乙',N'德甲',N'德乙',
+        N'法甲',N'法乙',N'荷甲',N'葡超',N'比甲',N'苏超',N'土超',N'俄超',N'欧冠',N'欧罗巴',N'欧协联',
+        N'欧国联',N'世预赛',N'亚冠杯',N'亚冠联2',N'日职',N'日职乙',N'K1联赛',N'K2联赛',
+        N'巴甲',N'巴乙',N'阿甲',N'美职联',N'墨西联',N'中超',N'中甲') THEN 0 ELSE 1 END,
+  m.MatchTime", new
         {
             Take = take <= 0 ? 100000 : take,
             From = from,

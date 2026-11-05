@@ -1,21 +1,21 @@
 @echo off
-chcp 65001 >nul
-REM ============================================
-REM  AiFootBall 一键启动脚本
-REM  1) 启动 OCR 服务 (127.0.0.1:5089)
-REM  2) 启动 API 服务 (127.0.0.1:5088)
-REM  ============================================
+REM AiFootBall one-click launcher. ASCII only on purpose: cmd reads this file
+REM under the OEM code page, so Chinese text here breaks command parsing
+REM (that is why the API window silently failed to start on 2026-11-03).
+REM OCR service removed 2026-11-04: ticket entry is manual now.
+setlocal
+set "ROOT=%~dp0"
 
-echo [1/2] 启动 OCR 服务...
-start "AiFootBall-OCR" /min cmd /c "cd /d %~dp0tools\ocr && node ocr-server.js"
-
-echo [2/2] 启动 API 服务...
-start "AiFootBall-API" /min cmd /c "cd /d %~dp0 && dotnet src\AiFootBall.Api\bin\Release\net8.0\AiFootBall.Api.dll --contentRoot %~dp0src\AiFootBall.Api"
+echo [1/1] starting API service (127.0.0.1:5088) ...
+start "AiFootBall-API" /min "%ROOT%boot-api.bat"
 
 echo.
-echo 服务启动中，请稍候几秒后访问:
-echo   前端页面: http://127.0.0.1:5088/
-echo   OCR 服务: http://127.0.0.1:5089/health
+echo One minimized window was opened.
+echo   Web UI  : http://127.0.0.1:5088/
+echo   API log : %ROOT%_api_out.log
+echo.
+echo Wait 8-20 seconds before opening the page.
+echo If the page does not load, read the API log above first.
 echo.
 if /I "%~1"=="silent" exit /b 0
 pause

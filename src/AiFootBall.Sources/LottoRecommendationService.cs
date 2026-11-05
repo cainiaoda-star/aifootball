@@ -7,11 +7,14 @@ public sealed class LottoRecommendationService
 {
     private readonly LotteryRepository _lotto;
     private readonly LottoRecommendationRepository _recs;
+    private readonly LottoUserTicketRepository _tickets;
 
-    public LottoRecommendationService(LotteryRepository lotto, LottoRecommendationRepository recs)
+    public LottoRecommendationService(LotteryRepository lotto, LottoRecommendationRepository recs,
+        LottoUserTicketRepository tickets)
     {
         _lotto = lotto;
         _recs = recs;
+        _tickets = tickets;
     }
 
     public async Task<List<LottoPlanSet>> GenerateAllAndSaveAsync(CancellationToken ct = default)
@@ -108,6 +111,100 @@ public sealed class LottoRecommendationService
         }
         return await ToDtoFromRecordsAsync(code, rows, draw, ct);
     }
+
+    /// <summary>保存用户选号票（选号器生成的或手输的）。期号缺省取最新开奖 +1。</summary>
+    public async Task<object> SaveUserTicketsAsync(string code, List<LottoUserTicketIn> tickets,
+        string? targetIssue, CancellationToken ct = default)
+    {
+        if (!LottoCodes.All.Contains(code, StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"未知彩种 {code}");
+        if (tickets.Count == 0 || tickets.Count > 100)
+            throw new InvalidOperationException("一次保存 1~100 注");
+        foreach (var t in tickets)
+        {
+            if (t.Reds.Count == 0) throw new InvalidOperationException("有注没有主号码");
+            if (LottoCodes.IsKl8(code))
+                t.PlayType = "选十"; // Mark() 靠这个词走选十判级
+        }
+
+        var issue = targetIssue?.Trim();
+        if (string.IsNullOrEmpty(issue))
+        {
+            var last = (await _lotto.GetDrawsAsync(code, 1, ct: ct)).FirstOrDefault();
+            issue = last is null
+                ? DateTime.Today.ToString("yyyyMMdd")
+                : LottoRecommendEngine.NextIssue(last.Issue);
+        }
+
+        var n = await _tickets.SaveAsync(code, issue, DateOnly.FromDateTime(DateTime.Now), tickets, ct);
+        return new { saved = n, targetIssue = issue };
+    }
+
+    /// <summary>用户票列表 + 按期对奖。没开奖的期返回 settled=false。</summary>
+    public async Task<object> GetUserTicketsAsync(string code, int days, CancellationToken ct = default)
+    {
+        var rows = await _tickets.GetRecentAsync(code, Math.Clamp(days, 1, 120), ct);
+        var draws = await _lotto.GetDrawsAsync(code, 200, ct: ct);
+        var byIssue = new Dictionary<string, LotteryDrawRecord>(StringComparer.Ordinal);
+        foreach (var d in draws)
+            byIssue.TryAdd(d.Issue, d);
+
+        var issues = new List<object>();
+        foreach (var group in rows.GroupBy(r => r.TargetIssue).OrderByDescending(g => g.Key))
+        {
+            byIssue.TryGetValue(group.Key, out var draw);
+            var picks = new List<object>();
+            foreach (var r in group)
+            {
+                var reds = ParseCsv(r.RedNumbers);
+                var blues = ParseCsv(r.BlueNumbers);
+                var grade = draw is null ? null : LottoHitMath.Mark(r.PlayType, reds, blues, draw.Reds, draw.Blues, code);
+                picks.Add(new
+                {
+                    r.TicketId,
+                    r.PlayType,
+                    reds = BallObjects(reds, grade?.RedHit),
+                    blues = BallObjects(blues, grade?.BlueHit),
+                    note = grade?.Note ?? "还没开奖",
+                    r.CoolScore, r.LevelName, r.Source, r.BetAmount
+                });
+            }
+
+            object? drawn = null;
+            if (draw is not null)
+            {
+                var reds = LottoHitMath.OfficialDigits(code, draw.Reds);
+                var blues = LottoCodes.IsDigitGame(code) ? new List<int>() : draw.Blues.ToList();
+                drawn = new
+                {
+                    issue = draw.Issue,
+                    drawDate = draw.DrawDate.ToString("yyyy-MM-dd"),
+                    reds,
+                    blues
+                };
+            }
+
+            issues.Add(new
+            {
+                issue = group.Key,
+                settled = draw is not null,
+                draw = drawn,
+                tickets = picks,
+                total = picks.Count,
+                betTotal = group.Sum(r => r.BetAmount)
+            });
+        }
+
+        return new
+        {
+            lotteryCode = code,
+            lotteryName = LottoCodes.DisplayName(code),
+            issues
+        };
+    }
+
+    private static List<object> BallObjects(List<int> nums, bool[]? hits) =>
+        nums.Select((n, i) => (object)new { n, hit = hits is not null && i < hits.Length && hits[i] }).ToList();
 
     private async Task<object?> LatestDrawDtoAsync(string code, CancellationToken ct)
     {

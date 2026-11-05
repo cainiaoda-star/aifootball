@@ -57,4 +57,29 @@ public class HotWatchTests
         Assert.Contains(RecommendationSelection.ForJcCalculated(new[] { rec }), x => x.MatchNo == "周日003");
         Assert.Contains(RecommendationSelection.ForJcHandicap(new[] { rec }), x => x.RecHandicap == '1');
     }
+
+    [Fact]
+    public void 热线只有一个数值来源()
+    {
+        // Line 必须是 RecommendationScoring.ExtremeHotRatio 的别名，不是另起的 75m。
+        // 引擎和模型护栏已经直接引用那个常量了，这里守住第三处。
+        Assert.Equal(RecommendationScoring.ExtremeHotRatio, HotWatch.Line);
+    }
+
+    [Theory]
+    [InlineData(74.9)]
+    [InlineData(75.0)]
+    public void 热线卡在七十五整(decimal ratio)
+    {
+        var rec = new MatchRecommendation
+        {
+            Board = Boards.Jc, MatchNo = "001", RecResult = '3', SignalLevel = 2,
+            RatioHome = ratio, RatioAway = 100m - ratio
+        };
+
+        HotWatch.Mark(rec);
+
+        // 74.9 只是偏热，仍留在推荐里；75.0 恰好到线，挪去大热区
+        Assert.Equal(ratio >= RecommendationScoring.ExtremeHotRatio, rec.HotWatch);
+    }
 }

@@ -104,6 +104,9 @@ public sealed class PurchaseSettlementService
 
         var finished = await _football.GetFinishedByIdsAsync(
             p.Lines.Where(l => l.MatchId is > 0).Select(l => l.MatchId!.Value), ct);
+        // 取消场次（Status=2）永远等不到完场：按官方规则该腿赔率按 1 计（退本金），不再挂 WAIT
+        var cancelled = await _football.GetCancelledByIdsAsync(
+            p.Lines.Where(l => l.MatchId is > 0).Select(l => l.MatchId!.Value), ct);
 
         var lineSettles = new List<PurchaseLineSettle>();
         var legs = new List<(bool hit, decimal? odds)>();
@@ -113,6 +116,17 @@ public sealed class PurchaseSettlementService
 
         foreach (var line in p.Lines.OrderBy(l => l.Seq))
         {
+            if (line.MatchId is > 0 && cancelled.Contains(line.MatchId.Value))
+            {
+                legs.Add((true, 1.0m));
+                lineSettles.Add(new PurchaseLineSettle
+                {
+                    Seq = line.Seq,
+                    ActualScore = "取消",
+                    LineHit = true
+                });
+                continue;
+            }
             if (line.MatchId is null or <= 0 || !finished.TryGetValue(line.MatchId.Value, out var m))
             {
                 if (line.MatchId is null or <= 0) missing++;

@@ -35,17 +35,30 @@ public sealed class FiveHundredMatchSource : IMatchSource
 
     public async Task<(IReadOnlyList<MatchRecord> Matches, IReadOnlyList<LeagueRecord> Leagues, IReadOnlyList<TeamRecord> Teams)>
         FetchByDateAsync(DateOnly date, CancellationToken ct = default)
+        => await FetchByDateAsync(date, resultsOnly: false, ct);
+
+    /// <summary>
+    /// </summary>
+    /// <param name="resultsOnly">
+    /// true = 只抓完场页。历史回填用：竞彩页（live.500.com/?e=...）对过去的日期只剩十几行残留赛程，
+    /// 却要多花一次请求，实测 2026-07-18 完场页 877 场、竞彩页只有 15 行——直接跳过，回填速度约快一倍。
+    /// 线上日常采集必须为 false，未开赛场次与让球只在竞彩页上有。
+    /// </param>
+    public async Task<(IReadOnlyList<MatchRecord> Matches, IReadOnlyList<LeagueRecord> Leagues, IReadOnlyList<TeamRecord> Teams)>
+        FetchByDateAsync(DateOnly date, bool resultsOnly, CancellationToken ct = default)
     {
         var ymd = date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var matches = new List<MatchRecord>();
         var leagues = new Dictionary<int, LeagueRecord>();
         var teams = new Dictionary<int, TeamRecord>();
 
-        var urls = new[]
-        {
-            $"https://live.500.com/wanchang.php?e={ymd}",
-            $"https://live.500.com/?e={ymd}"
-        };
+        var urls = resultsOnly
+            ? new[] { $"https://live.500.com/wanchang.php?e={ymd}" }
+            : new[]
+            {
+                $"https://live.500.com/wanchang.php?e={ymd}",
+                $"https://live.500.com/?e={ymd}"
+            };
 
         foreach (var url in urls)
         {

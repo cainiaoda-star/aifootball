@@ -520,7 +520,9 @@ public class RecommendationRulesTests
         };
         var buckets = new Dictionary<(char, string), (int Hits, int Total)>
         {
-            [('3', "2to3")] = (10, 20)
+            // 60 场 33%：达到 MinSampleForDemote，收缩后仍低于 55，允许降级。
+            // 20 场时只调置信度不降级，由 EmpiricalGateTests.MediumSample_30_MovesConfidenceOnly 覆盖。
+            [('3', "2to3")] = (20, 60)
         };
         HitProbabilityService.Stamp(
             rec,
@@ -785,9 +787,11 @@ public class RecommendationRulesTests
     [InlineData("2026-10-31 21:00", "2026-10-31 22:30", true)]
     [InlineData("2026-10-31 21:58", "2026-10-31 22:30", true)]
     [InlineData("2026-10-31 22:40", "2026-10-31 23:10", true)]
-    [InlineData("2026-10-31 22:56", "2026-10-31 23:10", false)]
+    [InlineData("2026-10-31 22:57", "2026-10-31 23:10", true)]
+    [InlineData("2026-10-31 22:59", "2026-10-31 23:10", false)]
     [InlineData("2026-10-30 21:55", "2026-10-30 22:30", true)]
-    [InlineData("2026-10-30 21:56", "2026-10-30 22:30", false)]
+    [InlineData("2026-10-30 21:57", "2026-10-30 22:30", true)]
+    [InlineData("2026-10-30 21:59", "2026-10-30 22:30", false)]
     [InlineData("2026-10-31 00:11", "2026-10-31 03:00", false)]
     [InlineData("2026-10-31 00:11", "2026-10-31 15:00", true)]
     [InlineData("2026-10-31 08:30", "2026-10-31 08:45", false)]
@@ -819,8 +823,8 @@ public class RecommendationRulesTests
         var one = RecommendationSelection.JcCoverTicket.OneMiss(Enumerable.Repeat(2.00m, 8).ToArray());
         var two = RecommendationSelection.JcCoverTicket.TwoMiss(Enumerable.Repeat(2.00m, 8).ToArray());
 
-        Assert.Equal(74m, RecommendationSelection.JcCoverTicket.Stake);
-        Assert.Equal("6串1#7串1#8串1", RecommendationSelection.JcCoverTicket.Pass);
+        Assert.Equal(74m, RecommendationSelection.JcCoverTicket.StakeFor(8));
+        Assert.Equal("6串1#7串1#8串1", RecommendationSelection.JcCoverTicket.PassFor(8));
         Assert.Equal("4串1#5串1#6串1", RecommendationSelection.JcCoverTicket.PassFor(6));
         Assert.Equal(22, RecommendationSelection.JcCoverTicket.BetCountFor(6));
         Assert.Equal(44m, RecommendationSelection.JcCoverTicket.StakeFor(6));

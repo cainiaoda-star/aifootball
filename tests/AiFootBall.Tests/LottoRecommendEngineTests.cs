@@ -84,6 +84,23 @@ public class LottoRecommendEngineTests
     }
 
     [Fact]
+    public void Pl5_Produces_Only_Direct_Picks_No_Dantuo()
+    {
+        var lt = new LotteryTypeInfo
+        {
+            Code = LottoCodes.Pl5, Name = "排列五",
+            RedCount = 5, RedMax = 9, BlueCount = 0, BlueMax = 0
+        };
+        var draws = FakePl5Draws(60);
+        var plan = LottoRecommendEngine.Recommend(lt, draws);
+
+        // 排列五只有直选单式，不搞胆全托（那是大乐透的玩法）
+        Assert.All(plan.Picks, p => Assert.Equal("直选", p.PlayType));
+        Assert.DoesNotContain(plan.Picks, p => p.Reds.Any(n => n < 0));
+        Assert.DoesNotContain(plan.Summary, "四胆");
+    }
+
+    [Fact]
     public void NextIssue_Increments()
     {
         Assert.Equal("2026123", LottoRecommendEngine.NextIssue("2026122"));
@@ -121,6 +138,23 @@ public class LottoRecommendEngineTests
                 Issue = (2026000 + n - i).ToString(),
                 DrawDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-i)),
                 Reds = Enumerable.Range(0, len).Select(_ => rnd.Next(0, 10)).ToList()
+            });
+        }
+        return list;
+    }
+
+    private static List<LotteryDrawRecord> FakePl5Draws(int n)
+    {
+        var rnd = new Random(11);
+        var list = new List<LotteryDrawRecord>();
+        for (var i = 0; i < n; i++)
+        {
+            list.Add(new LotteryDrawRecord
+            {
+                LotteryCode = LottoCodes.Pl5,
+                Issue = (2026000 + n - i).ToString(),
+                DrawDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-i)),
+                Reds = Enumerable.Range(0, 5).Select(_ => rnd.Next(0, 10)).ToList()
             });
         }
         return list;

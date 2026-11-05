@@ -10,22 +10,11 @@ namespace AiFootBall.Sources;
 /// </summary>
 public static class DailyReview
 {
-    public static string ReviewRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "AiFootBall.sln")))
-                return Path.Combine(dir.FullName, "reviews");
-            dir = dir.Parent;
-        }
-
-        throw new DirectoryNotFoundException("找不到 AiFootBall.sln，复盘不能写到代码目录外。");
-    }
+    public static string ReviewRoot() => DeployPaths.Under("reviews");
 
     public static async Task<string> WriteAsync(
         RecommendationService svc, BettingRepository repo, DateTime day, CancellationToken ct = default,
-        MilkScanService? milk = null)
+        MilkScanService? milk = null, TicketRepository? tickets = null)
     {
         var jcCards = await repo.GetCardsByKickoffAsync(Boards.Jc, day, ct);
         var bdCards = await repo.GetCardsByKickoffAsync(Boards.Bd, day, ct);
@@ -53,7 +42,35 @@ public static class DailyReview
         var path = Path.Combine(dir, day.ToString("yyyy-MM-dd") + ".md");
         var notePath = Path.Combine(dir, day.ToString("yyyy-MM-dd") + ".note.md");
         var note = File.Exists(notePath) ? await File.ReadAllTextAsync(notePath, ct) : null;
-        await File.WriteAllTextAsync(path, WithFieldNote(Render(day, DateTime.Now, rows, milkBody), note), Encoding.UTF8, ct);
+
+        // 复盘只写「今天哪场中没中」，看不出「模型说 55% 的那些场到底是不是 55%」。
+        // 把近 30 天校准接在后面，才能判断门槛该不该动。
+        var calib = await CalibrationService.BuildAsync(repo, 30, ct);
+        var body = Render(day, DateTime.Now, rows, milkBody) + Environment.NewLine + CalibrationService.ToMarkdown(calib);
+
+        // 校准回答「方向准不准」，票面 KPI 回答「这样买票回不回本」。
+        // 串关可以经常中奖却长期亏钱，两者必须分开看。
+        if (tickets is not null)
+        {
+            try
+            {
+                var kpi = await tickets.GetKpiAsync(90, ct);
+                body += TicketKpiReport.ToMarkdown(kpi);
+            }
+            catch (Exception) { /* 台账不可用时不拖垮复盘 */ }
+        }
+
+        // 否决台账回答「没发的那些场，挡得对不对」。
+        // 只记录挡掉的场次不打紧，关键是让「阈值」第一次有了可被检验的数据。
+        try
+        {
+            var jcVeto = VetoLog.Report(30, await repo.GetVetoStatsAsync(30, ct, Boards.Jc));
+            var bdVeto = VetoLog.Report(30, await repo.GetVetoStatsAsync(30, ct, Boards.Bd));
+            body += VetoLog.ToMarkdown(jcVeto, bdVeto);
+        }
+        catch (Exception) { /* 台账表未建时不影响复盘 */ }
+
+        await File.WriteAllTextAsync(path, WithFieldNote(body, note), Encoding.UTF8, ct);
         return path;
     }
 
@@ -65,9 +82,15 @@ public static class DailyReview
         var sb = new StringBuilder();
         sb.AppendLine($"# {day:yyyy-MM-dd} 复盘");
         sb.AppendLine();
-        sb.AppendLine($"写于 {writtenAt:yyyy-MM-dd HH:mm}。用终盘赔率和最后一次必发重算，不是保存那一刻的页面。");
+        sb.AppendLine($"写于 {writtenAt:yyyy-MM-dd HH:mm}。用终盘赔率和**开赛前最后一次**必发重算，不是保存那一刻的页面。");
+        sb.AppendLine("必发会一直记到赛中，取最后一条等于把比分喂进信号，所以复盘卡在开赛时刻。");
         sb.AppendLine("竞彩每场都写。胜负彩按开赛日每场都写。北单 A、B、C 级每场都写。没进精选、没有方向的也写。精选少了，这篇不能跟着短。");
         sb.AppendLine("胜负彩页面会把受注场次都列出来。这篇里「页面会发布」仍只算过了 55% 的场。");
+        sb.AppendLine();
+        sb.AppendLine("> **2026-11-04 起，胜平负 / 让球 / 大小球 / 胜负彩 / 北单全部停止对外发布，只发竞彩大奶。**");
+        sb.AppendLine("> 下面的「页面会发布」是当天按旧口径算出来的方向，只作校准样本，不代表那天真的发了；");
+        sb.AppendLine("> 那天真正发出去的只有大奶，见「大奶」一节和票面台账。");
+        sb.AppendLine();
         sb.AppendLine("这一篇不改 55% 门槛，不改必发 75% 不追热，不够不凑。单日样本不拿来调规则，近 60 日完场优先。");
         sb.AppendLine();
         sb.AppendLine("## 总账");
@@ -98,7 +121,7 @@ public static class DailyReview
         sb.AppendLine();
         sb.AppendLine("- 精选门槛停在 55%。发布场次少，是不够，不是漏写复盘。");
         sb.AppendLine("- 必发一侧 ≥75% 不追这一侧。60% 到 75% 仍可作偏热方向，未中就记在上面，不因一场把线挪走。");
-        sb.AppendLine("- 库里没有，不代表当时没精选。保存只有 08:40、11:40、16:40、20:40。中间改口看 `evidence/recommendations` 里的图片。");
+        sb.AppendLine("- 库里没有，不代表当时没精选。保存有 08:40、11:40、16:40、20:40，终版在停售前 8 分钟（工作日 21:50、周末 22:50）。中间改口看 `evidence/recommendations` 里的图片。");
         sb.AppendLine();
         AppendMilk(sb, milkBody);
         AppendOu(sb, rows);
@@ -218,6 +241,7 @@ public static class DailyReview
                 Qualified = qualified.Contains(ReviewKey(rec)),
                 SavedText = savedText,
                 Signal = rec.SignalDesc ?? "",
+                Tags = rec.Tags,
                 ExchangeText = exchangeText,
                 HotSide = hot,
                 Verdict = verdict,
@@ -455,7 +479,7 @@ public static class DailyReview
         sb.AppendLine($"- 终盘重算：{r.DirectionText}{prob}，信号 {r.Level}，{mark}{delta}");
         if (!string.IsNullOrWhiteSpace(r.Signal))
             sb.AppendLine($"- 依据：{r.Signal}");
-        if (r.DirectionText == "没有方向" && r.Signal.Contains("极端大热", StringComparison.Ordinal))
+        if (r.DirectionText == "没有方向" && (r.Tags & SignalTag.ExchangeExtremeHot) != 0)
             sb.AppendLine("- 终盘这一侧已经到 75%，方向被撤掉。撤掉之前若还在 75% 以下，当时可以是精选。空库不能当成没推荐过。");
         if (!string.IsNullOrWhiteSpace(r.ExchangeText))
             sb.AppendLine($"- {r.ExchangeText}");
@@ -513,6 +537,8 @@ public sealed class ReviewRow
     public bool Qualified { get; init; }
     public string? SavedText { get; init; }
     public string Signal { get; init; } = "";
+    /// <summary>Signal 的结构化版本。复盘说明按位判断，不靠 Signal 里的字。</summary>
+    public SignalTag Tags { get; init; } = SignalTag.None;
     public string ExchangeText { get; init; } = "";
     public bool HotSide { get; init; }
     public string Verdict { get; init; } = "";

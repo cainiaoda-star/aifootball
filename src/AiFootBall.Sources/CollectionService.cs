@@ -26,7 +26,8 @@ public static class HttpClients
             MaxConnectionsPerServer = Math.Max(8, opt.OddsConcurrency * 3)
         };
         var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(opt.TimeoutSeconds) };
-        http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", opt.UserAgent);
+        // 若已装载 500.com 的验证 token，UA 必须与取 token 时一致（token 绑指纹）
+        http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", BotGuard.UserAgent ?? opt.UserAgent);
         http.DefaultRequestHeaders.TryAddWithoutValidation("Accept",
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
         http.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9");
@@ -64,7 +65,8 @@ public sealed class CollectionService
     public async Task<CollectionResult> CollectLotteryAsync(string? code, bool backfill = true,
         IProgress<string>? log = null, CancellationToken ct = default)
     {
-        var types = await _lotto.GetLotteryTypesAsync(ct);
+        // 含停用彩种：七乐彩/七星彩不选号，但开奖要继续采，历史链不能断。
+        var types = await _lotto.GetLotteryTypesAsync(includeInactive: true, ct);
         if (!string.IsNullOrWhiteSpace(code))
             types = types.Where(t => t.Code.Equals(code, StringComparison.OrdinalIgnoreCase)).ToList();
 
@@ -150,7 +152,7 @@ public sealed class CollectionService
     /* ---------------- 足球赛事 ---------------- */
 
     public async Task<CollectionResult> CollectFootballAsync(IReadOnlyList<DateOnly> dates,
-        IProgress<string>? log = null, CancellationToken ct = default)
+        IProgress<string>? log = null, CancellationToken ct = default, bool resultsOnly = false)
     {
         var source = new FiveHundredMatchSource(_http, _opt);
         var total = 0;
@@ -161,7 +163,7 @@ public sealed class CollectionService
             ct.ThrowIfCancellationRequested();
             try
             {
-                var (matches, leagues, teams) = await source.FetchByDateAsync(date, ct);
+                var (matches, leagues, teams) = await source.FetchByDateAsync(date, resultsOnly, ct);
                 if (matches.Count == 0)
                 {
                     log?.Report($"[{date:yyyy-MM-dd}] 无赛事（可能非比赛日）");
@@ -214,6 +216,8 @@ public sealed class CollectionService
         var batchSize = Math.Max(concurrency, _opt.OddsBatchSize);
 
         int rows = 0, done = 0, withOdds = 0, noData = 0, failed = 0;
+        var verifyBefore = OddsHttp.StatVerify;
+        var abortedByVerify = false;
 
         for (var offset = 0; offset < matches.Count; offset += batchSize)
         {
@@ -262,9 +266,24 @@ public sealed class CollectionService
                 log?.Report($"  ! {err.MatchId} {err.Error}");
 
             log?.Report($"  进度 {done}/{matches.Count}：有赔率 {withOdds}，无数据 {noData}，失败 {failed}，累计 {rows} 行（节流 {FiveHundredOddsSource.ThrottleIntervalMs}ms）");
+
+            // token 被打回验证状态时，继续跑只是空转：每场白等 30 秒冷却，还会把场次标成"无数据"。
+            // 连续 6 次拦截即中止本轮回补，交给 TokenHealthService 续期后由下一轮继续。
+            if (OddsHttp.StatVerify - verifyBefore >= 6)
+            {
+                abortedByVerify = true;
+                log?.Report($"  ! 已连续被人机验证拦截 {OddsHttp.StatVerify - verifyBefore} 次，中止本轮剩余 {matches.Count - done} 场，等待 token 自动续期");
+                break;
+            }
         }
 
-        var message = $"赔率采集完成：{done} 场（有赔率 {withOdds} / 无数据 {noData} / 失败 {failed}），写入 {rows} 行";
+        var verify = OddsHttp.StatVerify;
+        var message = $"赔率采集完成：{done} 场（有赔率 {withOdds} / 无数据 {noData} / 失败 {failed}），写入 {rows} 行"
+                      + (abortedByVerify
+                          ? $"；token 失效已提前中止（本轮拦截 {verify - verifyBefore} 次），等待自动续期"
+                          : verify > verifyBefore
+                              ? $"；验证拦截 {verify - verifyBefore} 次"
+                              : "");
         await _sync.WriteAsync("odds", source.Name, failed == done && done > 0 ? "FAILED" : "SUCCESS",
             rows, message, ct);
         log?.Report(message);
@@ -338,7 +357,9 @@ public sealed class CollectionService
         await _sync.WriteAsync("odds-sample", source.Name, "SUCCESS", done,
             $"轨迹采样 {done} 场，失败 {failed}", ct);
 
-        var msg = $"轨迹采样完成：{done} 场（失败 {failed}），赔率行 {points}";
+        var verify = OddsHttp.StatVerify;
+        var msg = $"轨迹采样完成：{done} 场（失败 {failed}），赔率行 {points}"
+                  + (verify > 0 ? $"；验证拦截 {verify} 次，需更换 500-cookie.txt 里的 token" : "");
         log?.Report(msg);
         return CollectionResult.Ok(done, msg);
     }
@@ -437,7 +458,9 @@ public sealed class CollectionService
         await _sync.WriteAsync("exchange", source.Name, "SUCCESS", withData,
             $"{done} 场，有必发 {withData}", ct);
 
-        var msg = $"必发采集完成：{done} 场（有数据 {withData} / 无盘口 {noData} / 失败 {failed}），大额明细 {bigTrades} 条";
+        var verify = OddsHttp.StatVerify;
+        var msg = $"必发采集完成：{done} 场（有数据 {withData} / 无盘口 {noData} / 失败 {failed}），大额明细 {bigTrades} 条"
+                  + (verify > 0 ? $"；验证拦截 {verify} 次，需更换 500-cookie.txt 里的 token" : "");
         log?.Report(msg);
         return CollectionResult.Ok(withData, msg);
     }

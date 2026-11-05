@@ -15,7 +15,6 @@ public static class RecommendationEngine
     private const decimal OddsRise = 0.05m;      // 主胜赔率上升门槛
     private const decimal OddsBigRise = 0.20m;   // 大升：近60日客胜约55%，不是大降的镜像
     private const decimal HotRatio = 60m;        // 必发偏热下限。68.8% 是混桶，不能当单独命中率
-    private const decimal ExtremeHot = 75m;      // 达到后视为极端大热，不再追热
     private const decimal MaxDrawOdds = 3.40m;   // 平局水位高于此视为长冷门，不推平
     private const decimal MinSideOddsForDraw = 2.00m; // 主客任一侧低于此=一边倒，不推平
     private const decimal MaxAbsHandicapForDraw = 0.5m; // 亚盘深于半球，方向感太强，不推平
@@ -25,6 +24,45 @@ public static class RecommendationEngine
     private const decimal DrawRatioLead = 25m;    // 必发平占比不低于此，且不低于主客，才算平局资金领先
     private const decimal LateReverse = 0.08m;   // 尾盘相对近点反抽超过此值视为反抽
     private const int FormVetoMaxPts = 0;        // 近 5 场 0 分才否决
+
+    /// <summary>上面那些绝对阈值的标定水位。回测样本的主胜赔率基本落在 2.0 附近。</summary>
+    private const decimal CalibrationOdds = 2.0m;
+
+    /// <summary>
+    /// 把绝对阈值按当前水位换算。
+    ///
+    /// 问题：原来 1.30 跌 0.05（−3.8%）和 3.50 跌 0.05（−1.4%）被当成同一个信号强度，
+    /// 低赔场次的异动被严重低估——而低赔场次往往就是强队场，正是资金最集中的地方。
+    ///
+    /// 改法取「绝对值」和「按水位等比换算值」中较小的那个，只在赔率低于 2.0 时更敏感：
+    /// 1.30 的「小降」从 0.05 收紧到 0.033，3.50 仍是 0.05。
+    ///
+    /// 为什么往高赔一侧不动：回测出来的 53% / 30% / 55% 是按绝对阈值统计的，
+    /// 收紧高赔侧会**删掉**一批原本触发的历史样本，那些命中率立刻失效；
+    /// 而放宽低赔侧只是**新增**样本，原有结论仍然成立（新样本是否站得住，交给否决台账和
+    /// 校准报表去验）。要收高赔侧必须先重跑回测，不是今晚该动的事。
+    /// </summary>
+    private static decimal AtOdds(decimal baseAbs, decimal? odds)
+    {
+        if (odds is not (> 1.05m and < 30m)) return baseAbs;
+        var scaled = baseAbs * odds.Value / CalibrationOdds;
+        return scaled < baseAbs ? scaled : baseAbs;
+    }
+
+    /// <summary>
+    /// 记下「规则否决前本来会打哪一边」。否决会把 RecResult 清成 null，
+    /// 不清就无法发布，清了方向就丢，事后没法统计这条规则挡得对不对。
+    /// 只写否决台账，不参与发布决策。
+    /// </summary>
+    private static void MarkVeto(MatchRecommendation rec, char? pick, string code)
+    {
+        rec.ProposedResult = pick;
+        rec.VetoCode = code;
+    }
+
+    /// <summary>赔率趋势指向的方向：主胜赔率降=钱压主，升=钱压客。持平时不给。</summary>
+    private static char? TrendPick(decimal? homeOddsDelta)
+        => homeOddsDelta is decimal d && d != 0 ? (d < 0 ? '3' : '0') : null;
 
     /// <summary>
     /// 对一场比赛计算推荐。
@@ -80,15 +118,16 @@ public static class RecommendationEngine
         }
         else
         {
-        var oddsDown = homeOddsDelta is not null && homeOddsDelta < OddsDrop;
-        var oddsBigDown = homeOddsDelta is not null && homeOddsDelta <= OddsBigDrop;
-        var oddsUp = homeOddsDelta is not null && homeOddsDelta > OddsRise;
-        var oddsBigUp = homeOddsDelta is not null && homeOddsDelta >= OddsBigRise;
+        // 阈值按主胜水位换算：低赔场次同样的幅度对应更小的绝对变化，信号不再被漏掉。
+        var oddsDown = homeOddsDelta is not null && homeOddsDelta < -AtOdds(-OddsDrop, spfHome);
+        var oddsBigDown = homeOddsDelta is not null && homeOddsDelta <= -AtOdds(-OddsBigDrop, spfHome);
+        var oddsUp = homeOddsDelta is not null && homeOddsDelta > AtOdds(OddsRise, spfHome);
+        var oddsBigUp = homeOddsDelta is not null && homeOddsDelta >= AtOdds(OddsBigRise, spfHome);
         // 60%~75% 才当作可跟随的偏热。≥75% 是极端大热，不追。
-        var homeHot = ratioHome is not null && ratioHome >= HotRatio && ratioHome < ExtremeHot;
-        var awayHot = ratioAway is not null && ratioAway >= HotRatio && ratioAway < ExtremeHot;
-        homeExtreme = ratioHome is not null && ratioHome >= ExtremeHot;
-        awayExtreme = ratioAway is not null && ratioAway >= ExtremeHot;
+        var homeHot = ratioHome is not null && ratioHome >= HotRatio && ratioHome < RecommendationScoring.ExtremeHotRatio;
+        var awayHot = ratioAway is not null && ratioAway >= HotRatio && ratioAway < RecommendationScoring.ExtremeHotRatio;
+        homeExtreme = ratioHome is not null && ratioHome >= RecommendationScoring.ExtremeHotRatio;
+        awayExtreme = ratioAway is not null && ratioAway >= RecommendationScoring.ExtremeHotRatio;
 
         // 优先级：双信号同向 > 冲突(观望) > 极端大热不追 > 单信号 > 深主让 > 平
         // 近60日：小降主胜~53% / 大降主胜~30% / 大升客胜~55% / 主让0.75+整体~70%（>1.50仅~56%）
@@ -98,6 +137,7 @@ public static class RecommendationEngine
             rec.RecResult = '3';
             rec.Confidence = 85.7m;
             rec.SignalLevel = 3;
+            rec.Tags |= SignalTag.OddsSmallDrop | SignalTag.ExchangeHot;
             rec.SignalDesc = $"赔率主胜小降({homeOddsDelta:F2}) + 必发主胜偏热({ratioHome}%)";
         }
         else if (oddsUp && awayHot)
@@ -106,6 +146,8 @@ public static class RecommendationEngine
             rec.RecResult = '0';
             rec.Confidence = oddsBigUp ? 78m : 71.4m;
             rec.SignalLevel = 3;
+            rec.Tags |= SignalTag.ExchangeHot;
+            if (oddsBigUp) rec.Tags |= SignalTag.OddsBigRise;
             rec.SignalDesc = oddsBigUp
                 ? $"赔率主胜大升({homeOddsDelta:F2}) + 必发客胜偏热({ratioAway}%)"
                 : $"赔率主胜小升({homeOddsDelta:F2}) + 必发客胜偏热({ratioAway}%)";
@@ -113,17 +155,21 @@ public static class RecommendationEngine
         else if (oddsBigDown && homeHot)
         {
             // 大降+偏热：典型诱盘，不推主（含胜负彩）
+            MarkVeto(rec, '3', "trap-bigdrop-hot");
             rec.RecResult = null;
             rec.Confidence = null;
             rec.SignalLevel = 0;
+            rec.Tags |= SignalTag.OddsBigDrop | SignalTag.ExchangeHot;
             rec.SignalDesc = $"赔率主胜大降({homeOddsDelta:F2}) + 必发主胜偏热({ratioHome}%)，诱盘观望";
         }
         else if (oddsDown && (awayHot || awayExtreme))
         {
             // 冲突：不做方向，避免胜负彩跟错边
+            MarkVeto(rec, '3', "conflict-drop-awayhot");
             rec.RecResult = null;
             rec.Confidence = null;
             rec.SignalLevel = 0;
+            rec.Tags |= SignalTag.ExchangeHot | SignalTag.NotFeatured;
             rec.SignalDesc = "信号冲突(赔率降但客胜偏热)，观望不进精选";
         }
         else if (oddsUp && (homeHot || homeExtreme))
@@ -131,6 +177,8 @@ public static class RecommendationEngine
             rec.RecResult = null;
             rec.Confidence = null;
             rec.SignalLevel = 0;
+            MarkVeto(rec, '0', "conflict-rise-homehot");
+            rec.Tags |= SignalTag.ExchangeHot | SignalTag.NotFeatured;
             rec.SignalDesc = "信号冲突(赔率升但主胜偏热)，观望不进精选";
         }
         else if (oddsDown && homeExtreme)
@@ -138,6 +186,8 @@ public static class RecommendationEngine
             rec.RecResult = null;
             rec.Confidence = null;
             rec.SignalLevel = 0;
+            MarkVeto(rec, '3', "heat-extreme");
+            rec.Tags |= SignalTag.ExchangeExtremeHot;
             rec.SignalDesc = $"赔率主胜下降({homeOddsDelta:F2})，但必发主胜 {ratioHome}% 极端大热，不追热";
         }
         else if (oddsUp && awayExtreme)
@@ -145,6 +195,8 @@ public static class RecommendationEngine
             rec.RecResult = null;
             rec.Confidence = null;
             rec.SignalLevel = 0;
+            MarkVeto(rec, '0', "heat-extreme");
+            rec.Tags |= SignalTag.ExchangeExtremeHot;
             rec.SignalDesc = $"赔率主胜上升({homeOddsDelta:F2})，但必发客胜 {ratioAway}% 极端大热，不追热";
         }
         else if (oddsDown && !oddsBigDown)
@@ -153,14 +205,17 @@ public static class RecommendationEngine
             rec.RecResult = '3';
             rec.Confidence = 61.3m;
             rec.SignalLevel = 2;
+            rec.Tags |= SignalTag.OddsSmallDrop;
             rec.SignalDesc = $"赔率主胜小降({homeOddsDelta:F2})";
         }
         else if (oddsBigDown)
         {
             // 大降单信号：诱盘，不推主
+            MarkVeto(rec, '3', "trap-bigdrop");
             rec.RecResult = null;
             rec.Confidence = null;
             rec.SignalLevel = 0;
+            rec.Tags |= SignalTag.OddsBigDrop | SignalTag.NotFeatured;
             rec.SignalDesc = $"赔率主胜大降({homeOddsDelta:F2})，诱盘观望不进精选";
         }
         else if (oddsBigUp)
@@ -169,6 +224,7 @@ public static class RecommendationEngine
             rec.RecResult = '0';
             rec.Confidence = 62m;
             rec.SignalLevel = 2;
+            rec.Tags |= SignalTag.OddsBigRise | SignalTag.AwayPick;
             rec.SignalDesc = $"赔率主胜大升({homeOddsDelta:F2})，看客胜";
         }
         else if (oddsUp)
@@ -184,6 +240,7 @@ public static class RecommendationEngine
             rec.RecResult = '3';
             rec.Confidence = 45m;
             rec.SignalLevel = 1;
+            rec.Tags |= SignalTag.ExchangeHot | SignalTag.NotFeatured;
             rec.SignalDesc = $"必发主胜偏热({ratioHome}%)，单信号偏弱不进精选";
         }
         else if (awayHot)
@@ -191,6 +248,7 @@ public static class RecommendationEngine
             rec.RecResult = '0';
             rec.Confidence = 55.6m;
             rec.SignalLevel = 1;
+            rec.Tags |= SignalTag.ExchangeHot;
             rec.SignalDesc = $"必发客胜偏热({ratioAway}%)，弱信号";
         }
         else if (asianClose is <= DeepHomeHandicap && !homeExtreme)
@@ -207,6 +265,7 @@ public static class RecommendationEngine
             {
                 rec.Confidence = 56m;
                 rec.SignalLevel = 1;
+                rec.Tags |= SignalTag.NotFeatured;
                 rec.SignalDesc = $"亚盘主让深({asianClose:0.##})，欧赔主胜高于 1.50，回测约 56%，不进精选";
             }
         }
@@ -218,6 +277,7 @@ public static class RecommendationEngine
             rec.RecResult = '1';
             rec.Confidence = drawConf;
             rec.SignalLevel = 1;
+            rec.Tags |= SignalTag.DrawEven | SignalTag.DrawLowBacktest | SignalTag.NotFeatured;
             rec.SignalDesc = drawDesc + "（平局回测偏低，不进精选）";
         }
         else
@@ -229,12 +289,18 @@ public static class RecommendationEngine
                 rec.SignalDesc = $"必发客胜占比 {ratioAway}% 极端大热，不追热";
             else
                 rec.SignalDesc = "无强信号，建议观望";
+            if (homeExtreme || awayExtreme) rec.Tags |= SignalTag.ExchangeExtremeHot;
+            // 这一支没有方向可给，但赔率趋势仍指了一边。记下来，
+            // 以后才能回答「纯观望的场次，按趋势打会怎样」。
+            MarkVeto(rec,
+                homeExtreme ? '3' : awayExtreme ? '0' : TrendPick(homeOddsDelta),
+                homeExtreme || awayExtreme ? "heat-extreme" : "no-signal");
             ApplyOddsFallback(rec, spfHome, spfDraw, spfAway);
         }
         }
 
         ApplyDeepHomeVsAwayGuard(rec, asianClose, spfHome);
-        ApplyAsianConflict(rec, homeOddsDelta, asianOpen, asianClose);
+        ApplyAsianConflict(rec, homeOddsDelta, asianOpen, asianClose, spfHome);
         ApplyLateReverse(rec, homeOddsDelta, lateHomeDelta);
         ApplyFormVeto(rec, homeFormPts, awayFormPts);
         ApplySmallDropWithoutExchangeLead(rec);
@@ -243,6 +309,21 @@ public static class RecommendationEngine
         ApplyALeagueCaution(rec);
         if (rec.RecResult is not null)
             PredictScoreAndGoals(rec, totalLine, handicap);
+
+        // 守卫只是降权（等级 3→2、2→1）时方向还在，就以最终方向为准；
+        // 被守卫清成 null 的，保留上面 MarkVeto 记下的意图。
+        if (rec.RecResult is not null) rec.ProposedResult = rec.RecResult;
+
+        // 被否决的场次没走命中率模型，水位是空的，否决台账就没法算「照打回报」。
+        // 按方向从欧赔补一个；已经算过的不动。
+        if (rec.PickOdds is null && rec.ProposedResult is char vetoPick)
+            rec.PickOdds = vetoPick switch
+            {
+                '3' => spfHome,
+                '1' => spfDraw,
+                '0' => spfAway,
+                _ => null
+            };
 
         return rec;
     }
@@ -259,9 +340,10 @@ public static class RecommendationEngine
         if (rec.IsOddsFallback) return;
 
         var strongAway = rec.SignalLevel >= 3
-                         || rec.SignalDesc.Contains("大升", StringComparison.Ordinal);
+                         || (rec.Tags & SignalTag.OddsBigRise) != 0;
         if (strongAway)
         {
+            MarkVeto(rec, '0', "conflict-deep-home");
             rec.SignalDesc += $"；终盘深主让({asianClose:0.##})与客向冲突，观望";
             rec.RecResult = null;
             rec.Confidence = null;
@@ -280,6 +362,7 @@ public static class RecommendationEngine
         {
             rec.Confidence = 56m;
             rec.SignalLevel = 1;
+            rec.Tags |= SignalTag.NotFeatured;
             rec.SignalDesc += "；欧赔主胜高于 1.50，不进精选";
         }
     }
@@ -291,20 +374,21 @@ public static class RecommendationEngine
     private static void ApplyLongPriceCaution(MatchRecommendation rec, decimal? spfHome, decimal? spfAway)
     {
         if (rec.RecResult is not ('3' or '0') || rec.SignalLevel != 2 || rec.IsOddsFallback) return;
-        if (rec.SignalDesc.Contains("不进精选", StringComparison.Ordinal)) return;
+        if ((rec.Tags & SignalTag.NotFeatured) != 0) return;
 
         var longHome = rec.RecResult == '3'
                        && spfHome is > 1.90m
-                       && rec.SignalDesc.Contains("主胜小降", StringComparison.Ordinal)
-                       && !rec.SignalDesc.Contains("偏热", StringComparison.Ordinal);
+                       && (rec.Tags & SignalTag.OddsSmallDrop) != 0
+                       && (rec.Tags & SignalTag.ExchangeHot) == 0;
         var longAway = rec.RecResult == '0'
                        && spfAway is > 1.90m
-                       && rec.SignalDesc.Contains("看客胜", StringComparison.Ordinal)
-                       && !rec.SignalDesc.Contains("偏热", StringComparison.Ordinal);
+                       && (rec.Tags & SignalTag.AwayPick) != 0
+                       && (rec.Tags & SignalTag.ExchangeHot) == 0;
         if (!longHome && !longAway) return;
 
         rec.SignalLevel = 1;
         rec.Confidence = Math.Min(rec.Confidence ?? 40m, longHome ? 41m : 34m);
+        rec.Tags |= SignalTag.NotFeatured;
         rec.SignalDesc += longHome
             ? "；水位高于 1.90，近60日主胜约40%，不进精选"
             : "；客胜水位高于 1.90，近60日客胜约33%，不进精选";
@@ -315,8 +399,9 @@ public static class RecommendationEngine
     {
         if (rec.RecResult is not '0' || rec.IsOddsFallback) return;
         if (!IsALeague(rec.LeagueName)) return;
-        if (rec.SignalDesc.Contains("澳超客胜不进精选", StringComparison.Ordinal)) return;
+        if ((rec.Tags & SignalTag.ALeagueAwayNotFeatured) != 0) return;
 
+        rec.Tags |= SignalTag.ALeagueAwayNotFeatured | SignalTag.NotFeatured;
         rec.SignalDesc += "；澳超客胜不进精选";
         rec.SignalLevel = 1;
         if (rec.Confidence is null || rec.Confidence >= RecommendationScoring.PublishConfidence)
@@ -337,7 +422,8 @@ public static class RecommendationEngine
     /// 仅当终盘已离开深主让、且往反方向明显移动时才降权。
     /// </summary>
     private static void ApplyAsianConflict(
-        MatchRecommendation rec, decimal? homeOddsDelta, decimal? asianOpen, decimal? asianClose)
+        MatchRecommendation rec, decimal? homeOddsDelta, decimal? asianOpen, decimal? asianClose,
+        decimal? spfHome)
     {
         if (rec.RecResult is not '3' and not '0') return;
         if (asianOpen is null || asianClose is null) return;
@@ -357,8 +443,8 @@ public static class RecommendationEngine
         // 无欧赔升降时，只处理「推客但终盘深主让」——已由 ApplyDeepHomeVsAwayGuard 处理
         if (homeOddsDelta is null) return;
 
-        var oddsDown = homeOddsDelta < OddsDrop;
-        var oddsUp = homeOddsDelta > OddsRise;
+        var oddsDown = homeOddsDelta < -AtOdds(-OddsDrop, spfHome);
+        var oddsUp = homeOddsDelta > AtOdds(OddsRise, spfHome);
         var conflict = (rec.RecResult == '3' && oddsDown && asianToAway >= 0.20m)
                        || (rec.RecResult == '0' && oddsUp && asianToAway <= -0.20m);
         if (!conflict) return;
@@ -422,6 +508,8 @@ public static class RecommendationEngine
         var heatBlocked = (rec.RecResult == '3' && homeExtreme) || (rec.RecResult == '0' && awayExtreme);
         if (heatBlocked)
         {
+            MarkVeto(rec, rec.RecResult, "heat-extreme");
+            rec.Tags |= SignalTag.ExchangeExtremeHot;
             rec.SignalDesc += "；该方向必发极端大热，不推荐";
             rec.RecResult = null;
             rec.Confidence = null;
@@ -437,6 +525,7 @@ public static class RecommendationEngine
         // 弱信号或兜底：低水不抬进精选（这是此前「无强信号却照发」的根因）
         if (rec.IsOddsFallback || rec.SignalLevel < 2)
         {
+            rec.Tags |= SignalTag.NotFeatured;
             rec.SignalDesc += $"；{side}水位 {pickOdds:F2}，仅参考，不进精选";
             return;
         }
@@ -471,7 +560,7 @@ public static class RecommendationEngine
         var drawTop = devig is not null
                       && devig.Value.Draw >= devig.Value.Home
                       && devig.Value.Draw >= devig.Value.Away;
-        var drawPressed = drawOddsDelta is <= DrawOddsPress;
+        var drawPressed = drawOddsDelta is not null && drawOddsDelta <= -AtOdds(-DrawOddsPress, d);
         var drawFundLead = ratioDraw is >= DrawRatioLead
                            && ratioDraw >= (ratioHome ?? 0m)
                            && ratioDraw >= (ratioAway ?? 0m);
@@ -548,6 +637,7 @@ public static class RecommendationEngine
         if (!veto) return;
 
         var pts = rec.RecResult == '3' ? homeFormPts : awayFormPts;
+        rec.Tags |= SignalTag.NotFeatured;
         rec.SignalDesc += $"；近况极差(近5场{pts}分)，降权不进精选";
         if (rec.SignalLevel >= 2)
         {
@@ -569,7 +659,7 @@ public static class RecommendationEngine
         var a = spfAway.Value;
 
         var prior = rec.SignalDesc;
-        var keepPrior = prior.Contains("极端大热", StringComparison.Ordinal);
+        var keepPrior = (rec.Tags & SignalTag.ExchangeExtremeHot) != 0;
         string desc;
         if (h <= d && h <= a)
         {
@@ -593,6 +683,10 @@ public static class RecommendationEngine
             desc = $"赔率兜底：平局赔率最低({d:F2})，无强信号";
         }
         rec.IsOddsFallback = true;
+        // 走兜底就说明否决原因变成了「只有赔率、没信号」，
+        // 除非原先是因为极端大热被撤（那种情况确实不该跟）。
+        if (!keepPrior) rec.VetoCode = null;
+        rec.Tags |= SignalTag.OddsFallback;
         rec.SignalDesc = keepPrior ? prior + "；" + desc : desc;
     }
 
@@ -758,8 +852,11 @@ public static class RecommendationEngine
                 highGoals.Add(highGoals[0] + 1);
             if (highGoals.Count >= 2)
                 goals = highGoals;
-            if (!rec.SignalDesc.Contains("意甲偏大球", StringComparison.Ordinal))
+            if ((rec.Tags & SignalTag.SerieABigGoals) == 0)
+            {
+                rec.Tags |= SignalTag.SerieABigGoals;
                 rec.SignalDesc += "；意甲偏大球，比分/进球抬档";
+            }
         }
 
         rec.GoalCandidates = goals.Take(2).ToList();
@@ -773,11 +870,12 @@ public static class RecommendationEngine
     private static void ApplySmallDropWithoutExchangeLead(MatchRecommendation rec)
     {
         if (rec.RecResult is not '3' || rec.SignalLevel != 2 || rec.IsOddsFallback) return;
-        if (!rec.SignalDesc.Contains("主胜小降", StringComparison.Ordinal)) return;
-        if (rec.SignalDesc.Contains("偏热", StringComparison.Ordinal)) return;
+        if ((rec.Tags & SignalTag.OddsSmallDrop) == 0) return;
+        if ((rec.Tags & SignalTag.ExchangeHot) != 0) return;
         if (rec.RatioHome is not decimal home || rec.RatioAway is not decimal away) return;
         if (home - away >= 10m) return;
 
+        MarkVeto(rec, '3', "small-drop-no-lead");
         rec.SignalDesc += $"；必发主胜 {home:0.#}% 对客胜 {away:0.#}%，没有高出 10 个点，小降不发布";
         rec.RecResult = null;
         rec.Confidence = null;
@@ -799,16 +897,19 @@ public static class RecommendationEngine
         decimal? spfDraw,
         decimal? spfAway)
     {
-        var homeExtreme = rec.RatioHome >= ExtremeHot;
-        var awayExtreme = rec.RatioAway >= ExtremeHot;
+        var homeExtreme = rec.RatioHome >= RecommendationScoring.ExtremeHotRatio;
+        var awayExtreme = rec.RatioAway >= RecommendationScoring.ExtremeHotRatio;
         ApplyDeepHomeVsAwayGuard(rec, asianClose, spfHome);
-        ApplyAsianConflict(rec, homeOddsDelta, asianOpen, asianClose);
+        ApplyAsianConflict(rec, homeOddsDelta, asianOpen, asianClose, spfHome);
         ApplyLateReverse(rec, homeOddsDelta, lateHomeDelta);
         ApplyFormVeto(rec, homeFormPts, awayFormPts);
         ApplySmallDropWithoutExchangeLead(rec);
         ApplyMarketPolicy(rec, spfHome, spfDraw, spfAway, homeExtreme, awayExtreme);
         ApplyLongPriceCaution(rec, spfHome, spfAway);
         ApplyALeagueCaution(rec);
+        // 重跑守卫时方向可能被改（深主让覆盖弱客向）或被清空，
+        // 保持「意图」与最终方向同步，清空时保留原始意图。
+        if (rec.RecResult is not null) rec.ProposedResult = rec.RecResult;
     }
 
     public const decimal BigWinFavouriteOdds = 1.35m;
@@ -842,8 +943,11 @@ public static class RecommendationEngine
             line = Math.Max(line ?? 3.0m, 3.0m);
 
         var margin = BigWinMargin(rec.RecResult, spfHome, spfAway, rec.TotalLine);
-        if (margin > 1 && !rec.SignalDesc.Contains("强热门大球", StringComparison.Ordinal))
+        if (margin > 1 && (rec.Tags & SignalTag.StrongFavouriteBigGoals) == 0)
+        {
+            rec.Tags |= SignalTag.StrongFavouriteBigGoals;
             rec.SignalDesc += $"；强热门大球（大小球 {rec.TotalLine:0.##}），比分看净胜 2 球以上";
+        }
 
         if (model is { Ready: true })
         {

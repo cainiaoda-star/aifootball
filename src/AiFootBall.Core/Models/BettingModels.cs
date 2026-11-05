@@ -28,6 +28,48 @@ public sealed class BettingCardRecord
     public DateTime CapturedAt { get; set; }
 }
 
+/// <summary>
+/// 推荐信号的机器可读标记。<see cref="MatchRecommendation.SignalDesc"/> 是给人看的文案，
+/// 少写一个词、换个说法，靠 <c>Contains</c> 的判定就会静默失效；判定一律看这里的位。
+/// 约定：每一位都在写 SignalDesc 的同一处一起置位，文案怎么改都不影响结论。
+/// </summary>
+[Flags]
+public enum SignalTag
+{
+    None = 0,
+    /// <summary>主胜赔率小降（双信号或单信号）。</summary>
+    OddsSmallDrop = 1 << 0,
+    /// <summary>主胜赔率大降。回测是诱盘形态，不推主。</summary>
+    OddsBigDrop = 1 << 1,
+    /// <summary>主胜赔率大升。</summary>
+    OddsBigRise = 1 << 2,
+    /// <summary>
+    /// 单信号看好客胜（文案里会出现「看客胜」）。两个来源：大升单信号、
+    /// 命中率模型把方向改成客胜。长水降权要按它判，所以两边都要置位。
+    /// </summary>
+    AwayPick = 1 << 3,
+    /// <summary>必发一侧 60%–75%，可跟随的偏热。</summary>
+    ExchangeHot = 1 << 4,
+    /// <summary>必发一侧 ≥75%，极端大热，不追。</summary>
+    ExchangeExtremeHot = 1 << 5,
+    /// <summary>欧赔兜底：没有升降/必发信号，按最低赔率给方向。</summary>
+    OddsFallback = 1 << 6,
+    /// <summary>均势看平：平赔被压或必发平领先。</summary>
+    DrawEven = 1 << 7,
+    /// <summary>命中率模型把方向改成了平。</summary>
+    DrawByModel = 1 << 8,
+    /// <summary>平局形态回测偏低，只发参考。</summary>
+    DrawLowBacktest = 1 << 9,
+    /// <summary>已经明确「不进精选」。后置降权规则看到这一位就不再重复处理。</summary>
+    NotFeatured = 1 << 10,
+    /// <summary>澳超客胜：页面和让球票都剔掉。</summary>
+    ALeagueAwayNotFeatured = 1 << 11,
+    /// <summary>意甲比分/进球抬档，文案只补一次。</summary>
+    SerieABigGoals = 1 << 12,
+    /// <summary>强热门大球，比分看净胜 2 球以上，文案只补一次。</summary>
+    StrongFavouriteBigGoals = 1 << 13,
+}
+
 /// <summary>单场推荐（引擎输出）</summary>
 public sealed class MatchRecommendation
 {
@@ -46,6 +88,12 @@ public sealed class MatchRecommendation
     public decimal? Confidence { get; set; }
     public string SignalDesc { get; set; } = "";
     public int SignalLevel { get; set; }   // 3=双信号强命中 2=单信号 1=弱信号 0=无信号
+
+    /// <summary>
+    /// SignalDesc 的结构化版本。所有规则判定都看这一组位，不看文案。
+    /// 只活在内存里：每次 Recommend() 都会重新置位，不落库、不从库里恢复。
+    /// </summary>
+    public SignalTag Tags { get; set; } = SignalTag.None;
 
     /// <summary>赔率初盘→终盘主胜变化</summary>
     public decimal? HomeOddsDelta { get; set; }
@@ -86,10 +134,35 @@ public sealed class MatchRecommendation
     /// <summary>预计命中率用了哪套算法。</summary>
     public string? HitProbabilityNote { get; set; }
 
+    /// <summary>推荐方向当时的水位。校准和期望回报都要用它，缺了就只能凭感觉谈收益。</summary>
+    public decimal? PickOdds { get; set; }
+
+    /// <summary>市场去水后对该方向的隐含概率（0-100）。模型必须打得过这条线才有价值。</summary>
+    public decimal? MarketProb { get; set; }
+
+    /// <summary>产生命中率预测的模型标识（devig / logistic + 训练样本数）。</summary>
+    public string? ModelTag { get; set; }
+
+    /// <summary>这条预测所依据的盘口采集时间。事后可判断当时盘是否新鲜。</summary>
+    public DateTime? DataAt { get; set; }
+
     /// <summary>北单要买的让球选项（RecHandicap）打出的概率，0 到 100。北单只卖让球胜平负，精选按它筛。</summary>
     public decimal? HandicapProbability { get; set; }
     /// <summary>北单该让球选项的 SP（开奖前会变）。</summary>
     public decimal? HandicapOdds { get; set; }
+
+    /// <summary>
+    /// 让球方向概率的模型值（欧赔去水 → 泊松 → 折成让球数三项）。
+    /// 和 HandicapMarketProbability 一起留，才能回答「模型和盘口谁更准」。
+    /// </summary>
+    public decimal? HandicapModelProbability { get; set; }
+    /// <summary>
+    /// 让球方向概率的盘口值（竞彩让球固定奖金三项直接去水）。
+    /// 这是对这一注本身的定价，优先于模型值——出票和精选门槛都用它。
+    /// </summary>
+    public decimal? HandicapMarketProbability { get; set; }
+    /// <summary>该场的 HandicapProbability 取自哪里：market（让球盘去水）/ model（欧赔反推）。</summary>
+    public string? HandicapSource { get; set; }
 
     /// <summary>主胜小降、必发 60%–75%、水位 1.50–1.90。页面单独标「警惕爆冷」，不进投注。</summary>
     public bool UpsetWatch { get; set; }
@@ -102,6 +175,14 @@ public sealed class MatchRecommendation
     /// <summary>大热一侧的必发占比。</summary>
     public decimal? HotRatio { get; set; }
     public string? HotNote { get; set; }
+
+    /// <summary>
+    /// 规则否决前本来会打的方向。否决会把 RecResult 清成 null，方向就永久丢失，
+    /// 事后无法回答「这条规则挡掉的场次表现如何」。留一份意图，只用于否决台账。
+    /// </summary>
+    public char? ProposedResult { get; set; }
+    /// <summary>否决原因代码（heat-extreme / conflict / trap ...）。机器可读，便于按规则统计。</summary>
+    public string? VetoCode { get; set; }
 
     /// <summary>大小球参考：大或小。不进精选，不进投注。</summary>
     public string? OuSide { get; set; }
@@ -230,6 +311,16 @@ public sealed class RecommendationRecord
     public int? ActualGoals { get; set; }   // 实际总进球
     public char? ActualResult { get; set; }
     public bool? Hit { get; set; }
+    /// <summary>推荐时模型给出的预计命中率（原始值，未被 60/55/45 这些展示下限改写）。</summary>
+    public decimal? HitProbability { get; set; }
+    public string? HitProbNote { get; set; }
+    /// <summary>推荐方向当时的水位。校准与期望回报都靠它。</summary>
+    public decimal? PickOdds { get; set; }
+    /// <summary>市场去水后的隐含概率（0-100），模型校准的基准线。</summary>
+    public decimal? MarketProb { get; set; }
+    public string? ModelTag { get; set; }
+    /// <summary>该场盘口数据的最新采集时间。</summary>
+    public DateTime? DataAt { get; set; }
     public DateTime RecDate { get; set; }   // 推荐日期
     public DateTime CreatedAt { get; set; }
     public string? LeagueName { get; set; } // 比赛类型（JOIN FbMatch 填充，不落库）

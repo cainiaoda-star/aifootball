@@ -11,19 +11,29 @@ public sealed class LotteryRepository
 
     public LotteryRepository(SqlConnectionFactory factory) => _factory = factory;
 
-    public async Task<List<LotteryTypeInfo>> GetLotteryTypesAsync(CancellationToken ct = default)
+    /// <summary>
+    /// 彩种字典。默认只返回 IsActive=1 的，即「对外可见的彩种」。
+    /// 开奖采集必须显式传 includeInactive:true —— 七乐彩/七星彩不提供选号，
+    /// 但历史开奖仍要继续采，停采会让已入库的 3000 期变成孤岛。
+    /// </summary>
+    public async Task<List<LotteryTypeInfo>> GetLotteryTypesAsync(bool includeInactive = false,
+        CancellationToken ct = default)
     {
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<LotteryTypeInfo>(
             @"SELECT LotteryId, Code, Name, Category, RedCount, RedMax, BlueCount, BlueMax,
                      DrawWeekdays, SourceUrl, IsActive
-              FROM dbo.LotteryType ORDER BY LotteryId");
+              FROM dbo.LotteryType
+              WHERE @IncludeInactive = 1 OR IsActive = 1
+              ORDER BY LotteryId",
+            new { IncludeInactive = includeInactive });
         return rows.ToList();
     }
 
+    /// <summary>按 code 精确查。不受 IsActive 影响：停用的彩种也要能查到，否则采集按 code 会扑空。</summary>
     public async Task<LotteryTypeInfo?> GetLotteryTypeAsync(string code, CancellationToken ct = default)
     {
-        var all = await GetLotteryTypesAsync(ct);
+        var all = await GetLotteryTypesAsync(includeInactive: true, ct);
         return all.FirstOrDefault(x => string.Equals(x.Code, code, StringComparison.OrdinalIgnoreCase));
     }
 
@@ -175,7 +185,7 @@ WHEN NOT MATCHED THEN INSERT (LotteryId, Issue, PrizeLevel, BetCount, PrizeAmoun
     {
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync(@"
-SELECT t.Code, t.Name, t.Category,
+SELECT t.Code, t.Name, t.Category, t.IsActive,
        COUNT(d.DrawId)                       AS DrawCount,
        CONVERT(varchar(10), MIN(d.DrawDate), 23) AS FirstDate,
        CONVERT(varchar(10), MAX(d.DrawDate), 23) AS LastDate,
@@ -183,7 +193,7 @@ SELECT t.Code, t.Name, t.Category,
        MAX(d.UpdatedAt)                      AS LastSync
 FROM dbo.LotteryType t
 LEFT JOIN dbo.LotteryDraw d ON d.LotteryId = t.LotteryId
-GROUP BY t.Code, t.Name, t.Category, t.LotteryId
+GROUP BY t.Code, t.Name, t.Category, t.LotteryId, t.IsActive
 ORDER BY t.LotteryId");
         return rows.ToList();
     }

@@ -29,7 +29,8 @@ internal static class Program
         var cardSource = new BettingCardSource(http);
         var jcOddsRepo = new JcOddsRepository(factory);
         var milkScan = new MilkScanService(new MilkRepository(factory), bettingRepo);
-        var recService = new RecommendationService(cardSource, bettingRepo, jcOddsRepo, milk: milkScan);
+        var recService = new RecommendationService(cardSource, bettingRepo, jcOddsRepo, milk: milkScan,
+            hit: new HitProbabilityService(bettingRepo));
         var progress = new Progress<string>(Console.WriteLine);
 
         try
@@ -50,7 +51,9 @@ internal static class Program
 
                 case "football":
                     // --future N 同时采集未来 N 天赛程（赛前赔率/必发采样依赖场次记录）
-                    await service.CollectFootballAsync(BuildDates(opts, collectorOptions.FootballBackfillDays), progress);
+                    // --results-only 只抓完场页，历史回填专用（竞彩页对旧日期只剩十几行残页）
+                    await service.CollectFootballAsync(BuildDates(opts, collectorOptions.FootballBackfillDays), progress,
+                        ct: default, resultsOnly: opts.ContainsKey("results-only"));
                     return 0;
 
                 case "odds":
@@ -72,6 +75,16 @@ internal static class Program
                     var recheck = (int)Num(opts, "recheck", 25);
                     var limit = (int)Num(opts, "limit", 0);
                     await service.SampleOddsAsync(hours, behind, recheck, limit, progress);
+                    return 0;
+                }
+
+                case "jcsample":
+                {
+                    // 竞彩固定奖金采样，与后台 jc-odds-sample 走同一条路径。
+                    // 加这个命令是为了能手动验证变盘监控：采样一次 → FbOddsMove 该有新行。
+                    // 后台 cron 是 */2，但重启后第一次触发不一定立刻来，没有手动入口就只能干等。
+                    var r = await recService.SampleJcOddsAsync();
+                    ((IProgress<string>)progress).Report($"竞彩采样完成 {r}（变盘检测随快照同事务执行）");
                     return 0;
                 }
 
@@ -236,6 +249,17 @@ internal static class Program
                             Console.WriteLine($"  [{r.MatchNo}] {r.HomeTeam} vs {r.AwayTeam} → {res}(置信{r.Confidence}% L{r.SignalLevel}) 比分[{score}] 进球[{goals}] {r.SignalDesc}");
                         }
                     }
+
+                    // 大奶自检：把引擎输出的榜原样打出来。
+                    // collector 不注入台账仓库，写不了 FbMilkPick，但能验证规则是否按预期收敛
+                    // （同场是否只剩一个剧本、赔率闸有没有生效）。日常排查靠这段。
+                    var milk = await recService.RecommendMilkAsync();
+                    Console.WriteLine($"\n===== 大奶（{milk.Count} 注）=====");
+                    foreach (var p in milk
+                        .OrderBy(x => x.MatchNo, StringComparer.Ordinal)
+                        .ThenBy(x => x.PlayType, StringComparer.Ordinal)
+                        .ThenByDescending(x => x.Ev))
+                        Console.WriteLine($"  [{p.MatchNo}] {p.PlayType} {p.OptionCode} @{p.Odds} 概率{p.ModelProbability}% EV{p.Ev}  ({p.HomeTeam} vs {p.AwayTeam})");
                     return 0;
                 }
 
@@ -339,6 +363,18 @@ internal static class Program
         if (args.TryGetValue("date", out var dateText) && DateOnly.TryParse(dateText, out var single))
             return new List<DateOnly> { single };
 
+        // --from/--to 闭区间（历史回填用）：分段跑、断了从断点续，不重复抓已采过的日子
+        if (args.TryGetValue("from", out var fromText) && DateOnly.TryParse(fromText, out var from))
+        {
+            var to = args.TryGetValue("to", out var toText) && DateOnly.TryParse(toText, out var toDate)
+                ? toDate
+                : DateOnly.FromDateTime(DateTime.Today);
+            if (to < from) (from, to) = (to, from);
+            var range = new List<DateOnly>();
+            for (var day = from; day <= to; day = day.AddDays(1)) range.Add(day);
+            return range;
+        }
+
         var days = args.TryGetValue("days", out var d) && int.TryParse(d, out var n) ? n : defaultDays;
         var future = args.TryGetValue("future", out var f) && int.TryParse(f, out var fn) ? fn : futureDays;
         var today = DateOnly.FromDateTime(DateTime.Today);
@@ -440,6 +476,9 @@ internal static class Program
               initdb                                初始化数据库（建库、建表、写彩种字典）
               lotto [--code dlt] [--no-backfill]    采集彩票开奖（pinble 为主 + 500 全量回补）
               football [--days 7]                   采集最近 N 天足球赛事
+              football [--from 2024-01-01 --to 2024-12-31] [--results-only]
+                                                    按闭区间回填历史赛事（可分段续跑，已入库的按 fid 覆盖）
+                                                    --results-only 只抓完场页，回填快一倍
               football [--date 2026-10-27]          采集指定日期赛事
               odds [--days 7] [--missing] [--limit 200]
                                                     采集赔率（欧赔/亚盘/大小球，初盘+终盘）

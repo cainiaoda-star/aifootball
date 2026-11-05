@@ -11,8 +11,8 @@ public static class OddsHttp
     /// <summary>全站共享节流器（进程内所有 odds.500.com 请求排队通过）</summary>
     public static readonly RequestThrottle Throttle = new(baseIntervalMs: 900, maxIntervalMs: 4000);
 
-    /// <summary>运行期计数器：成功 / 428 / 429 / 挑战页</summary>
-    public static long StatOk, Stat428, Stat429, StatChallenge;
+    /// <summary>运行期计数器：成功 / 428 / 429 / 挑战页 / 人机验证拦截</summary>
+    public static long StatOk, Stat428, Stat429, StatChallenge, StatVerify;
 
     public static int ThrottleIntervalMs => Throttle.CurrentIntervalMs;
 
@@ -22,6 +22,7 @@ public static class OddsHttp
         Interlocked.Exchange(ref Stat428, 0);
         Interlocked.Exchange(ref Stat429, 0);
         Interlocked.Exchange(ref StatChallenge, 0);
+        Interlocked.Exchange(ref StatVerify, 0);
     }
 
     /// <summary>抓取一个 GBK 页面，自动处理限流与 JS 挑战页。</summary>
@@ -33,6 +34,9 @@ public static class OddsHttp
         {
             try
             {
+                // token 文件被替换后自动生效（站点会在访问量上来后打发 token，需人工续期）
+                BotGuard.RefreshIfChanged();
+
                 await Throttle.WaitTurnAsync(ct);
 
                 using var req = new HttpRequestMessage(HttpMethod.Get, url);
@@ -88,6 +92,16 @@ public static class OddsHttp
                     continue;
                 }
 
+                // 二级人机验证页：token 缺失或过期。重试没有意义，直接给出可辨识的原因。
+                // 冷却 10 秒（不是 30）：冷却过长会让"连续 6 次拦截即中止"要等 3 分钟才触发，
+                // 期间全站节流器被占着，续期完成前什么都干不了。
+                if (BotGuard.IsVerificationPage(html))
+                {
+                    Interlocked.Increment(ref StatVerify);
+                    Throttle.Cooldown(10);
+                    return (null, "verify-required");
+                }
+
                 if (bytes.Length < 1000)
                 {
                     reason = $"empty{bytes.Length}";
@@ -132,7 +146,8 @@ public static class OddsHttp
             Timeout = TimeSpan.FromSeconds(30)
         };
         http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            BotGuard.UserAgent
+            ?? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
         http.DefaultRequestHeaders.TryAddWithoutValidation("Accept",
             "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
         return http;

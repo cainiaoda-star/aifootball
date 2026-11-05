@@ -8,7 +8,8 @@ namespace AiFootBall.Sources;
 /// </summary>
 public static class HotWatch
 {
-    public const decimal Line = 75m;
+    /// <summary>和引擎、模型护栏共用的那一条线，改数值请改 RecommendationScoring.ExtremeHotRatio。</summary>
+    public const decimal Line = RecommendationScoring.ExtremeHotRatio;
 
     public static void Mark(MatchRecommendation rec)
     {

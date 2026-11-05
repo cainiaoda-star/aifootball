@@ -1,5 +1,7 @@
 namespace AiFootBall.Core.Models;
 
+using System.Text;
+
 /// <summary>购买方案自动结算：单场命中判定 + 过关奖金计算（竞彩 2 元单注）。</summary>
 public static class PurchaseSettleMath
 {
@@ -80,11 +82,27 @@ public static class PurchaseSettleMath
 
         return inferred switch
         {
-            "全场比分" => ScoreEquals(opt, score),
+            "全场比分" => ScoreEquals(opt, score) || OtherScoreEquals(opt, score),
             "总进球" => GoalsEquals(opt, score.Goals),
             "半全场" => HalfFullEquals(opt, score.HalfFull),
             "让球胜平负" => SpfEquals(opt, score.HandicapSpf(line.Handicap), handicap: true),
             _ => SpfEquals(opt, score.Spf, handicap: false)
+        };
+    }
+
+    /// <summary>
+    /// 「胜其它/平其它/负其它」：方向对上、且比分不在官方 28 个具体档里（4:3、5:4 这类）。
+    /// 2026-11-04 前这里没有分支，选项被当普通比分字符串比对，永远不中。
+    /// </summary>
+    private static bool OtherScoreEquals(string opt, MatchScore score)
+    {
+        if (opt.Length < 3 || !opt.EndsWith("其它", StringComparison.Ordinal)) return false;
+        return opt[0] switch
+        {
+            '胜' => score.Home > score.Away && !MilkPickMath.IsListedScore(score.Home, score.Away),
+            '平' => score.Home == score.Away && !MilkPickMath.IsListedScore(score.Home, score.Away),
+            '负' => score.Home < score.Away && !MilkPickMath.IsListedScore(score.Home, score.Away),
+            _ => false
         };
     }
 
@@ -98,6 +116,9 @@ public static class PurchaseSettleMath
             return "让球胜平负";
         if (IsScoreToken(opt) || opt is "平其它" or "胜其它" or "负其它")
             return "全场比分";
+        // 两字胜平负组合（胜胜/负负/胜负…）必是半全场，混玩法票不能只靠票面玩法名
+        if (opt.Length == 2 && "胜平负".IndexOf(opt[0]) >= 0 && "胜平负".IndexOf(opt[1]) >= 0)
+            return "半全场";
         if (opt.Contains('/')) return "半全场";
         if (IsGoalsToken(opt)) return "总进球";
         if (opt is "胜" or "平" or "负" or "3" or "1" or "0")
@@ -135,7 +156,10 @@ public static class PurchaseSettleMath
     {
         if (opt is "7+" or "7球以上") return goals >= 7;
         var m = System.Text.RegularExpressions.Regex.Match(opt, @"^(\d)");
-        return m.Success && int.Parse(m.Groups[1].Value) == goals;
+        if (!m.Success) return false;
+        var n = int.Parse(m.Groups[1].Value);
+        // 竞彩总进球只有 0~6 和 7+ 档：单写「7」也是 7 球及以上（8、9 球都算中）
+        return n >= 7 ? goals >= 7 : goals == n;
     }
 
     private static bool HalfFullEquals(string opt, string? actual)
@@ -143,11 +167,21 @@ public static class PurchaseSettleMath
         if (actual is null) return false;
         var a = NormalizeHalfFull(opt);
         var b = NormalizeHalfFull(actual);
-        return a == b;
+        return a.Length == 2 && a == b;
     }
 
-    private static string NormalizeHalfFull(string s) =>
-        s.Replace("主胜", "胜").Replace("客胜", "负").Replace(" ", "");
+    /// <summary>
+    /// 半全场归一化：只保留胜/平/负字。
+    /// 2026-11-04 前只删空格不去斜杠——用户手输「负负」对上 MatchScore 算出的「负/负」
+    /// 永远不相等，半全场票命中也判不中。
+    /// </summary>
+    private static string NormalizeHalfFull(string s)
+    {
+        var b = new StringBuilder();
+        foreach (var c in s)
+            if (c is '胜' or '平' or '负') b.Append(c);
+        return b.Length == 2 ? b.ToString() : s.Replace("/", "").Trim();
+    }
 
     private static bool SpfEquals(string opt, char? actual, bool handicap)
     {
@@ -216,7 +250,9 @@ public static class PurchaseSettleMath
         var sizes = new List<int>();
         if (string.IsNullOrWhiteSpace(passType))
         {
-            if (matchCount == 1) sizes.Add(1);
+            // 前端契约：过关留空 = 每行一注单关。多行票按各腿单关分别结算，
+            // 2026-11-04 前这里只对单行返回 [1]，多行返回空 → CalculatePrize 直接算 0。
+            sizes.Add(1);
             return sizes;
         }
 

@@ -39,18 +39,7 @@ public static class RecommendationEvidence
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
-    public static string EvidenceRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "AiFootBall.sln")))
-                return Path.Combine(dir.FullName, "evidence", "recommendations");
-            dir = dir.Parent;
-        }
-
-        throw new DirectoryNotFoundException("找不到 AiFootBall.sln，证据不能写到代码目录外。");
-    }
+    public static string EvidenceRoot() => DeployPaths.Under("evidence", "recommendations");
 
     public static async Task<string> CaptureAsync(
         RecommendationService svc, BettingRepository repo, CancellationToken ct = default)
@@ -160,7 +149,7 @@ public static class RecommendationEvidence
         {
             capturedAt = now.ToString("yyyy-MM-dd HH:mm:ss"),
             count = rows.Count,
-            note = "凌晨 12 点前同时带上前一天已保存的行。推荐只在 08:40、11:40、16:40、20:40 落库。",
+            note = "凌晨 12 点前同时带上前一天已保存的行。推荐在 08:40、11:40、16:40、20:40 落库，终版在停售前 8 分钟（工作日 21:50、周末 22:50）。",
             rows
         }, Json));
         Draw(Path.Combine(dir, "slate.png"), now, boards);

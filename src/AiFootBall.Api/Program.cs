@@ -31,6 +31,7 @@ var connectionString = builder.Configuration.GetConnectionString("AiFootBall")
 builder.Services.AddSingleton(new SqlConnectionFactory(connectionString));
 builder.Services.AddSingleton<LotteryRepository>();
 builder.Services.AddSingleton<LottoRecommendationRepository>();
+builder.Services.AddSingleton<LottoUserTicketRepository>();
 builder.Services.AddSingleton<LottoRecommendationService>();
 builder.Services.AddSingleton<FootballRepository>();
 builder.Services.AddSingleton<OddsRepository>();
@@ -55,14 +56,20 @@ builder.Services.AddSingleton(sp => new RecommendationService(
     sp.GetRequiredService<BettingRepository>(),
     sp.GetRequiredService<JcOddsRepository>(),
     sp.GetRequiredService<HitProbabilityService>(),
-    sp.GetRequiredService<MilkScanService>()));
+    sp.GetRequiredService<MilkScanService>(),
+    sp.GetRequiredService<TicketRepository>(),
+    sp.GetRequiredService<MilkPickRepository>()));
 builder.Services.AddSingleton<UserRepository>();
 builder.Services.AddSingleton<BettingRepository>();
 builder.Services.AddSingleton<AnalysisRepository>();
 builder.Services.AddSingleton<PurchaseRepository>();
+builder.Services.AddSingleton<TicketRepository>();
 builder.Services.AddSingleton<JcOddsRepository>();
+builder.Services.AddSingleton<OddsMoveRepository>();
+builder.Services.AddSingleton<OddsCaptureRepository>();
 builder.Services.AddSingleton<SummaryRepository>();
 builder.Services.AddSingleton<MilkRepository>();
+builder.Services.AddSingleton<MilkPickRepository>();
 builder.Services.AddSingleton<MilkScanService>();
 builder.Services.AddSingleton<AuthService>();
 builder.Services.AddSingleton<PurchaseSettlementService>();
@@ -75,9 +82,62 @@ builder.Services.AddSingleton(sp => new JobScheduler(
     message => sp.GetRequiredService<ILoggerFactory>().CreateLogger("Scheduler").LogInformation("{Message}", message),
     sp.GetRequiredService<LottoRecommendationService>()));
 builder.Services.AddHostedService<SchedulerHostedService>();
+// token 健康守护：连续被人机验证拦截时自动用本机浏览器续期，避免回补空转
+builder.Services.AddHostedService<TokenHealthService>();
 
 var app = builder.Build();
+
+// 装载 500.com 人机验证 token（环境变量优先，其次在内容目录及其上级找 secrets/500-cookie.txt）
+{
+    static string? ResolveCookieFile(string contentRoot)
+    {
+        var env = Environment.GetEnvironmentVariable("AIFOOTBALL_500_COOKIE");
+        if (!string.IsNullOrWhiteSpace(env)) return env;
+
+        var dir = new DirectoryInfo(contentRoot);
+        for (var i = 0; i < 5 && dir is not null; i++, dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, "secrets", "500-cookie.txt");
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    var cookiePath = ResolveCookieFile(app.Environment.ContentRootPath);
+    var n = BotGuard.LoadPersisted(cookiePath);
+    app.Logger.LogInformation(n > 0
+        ? "500.com 验证 Cookie 已装载 {Count} 项（{Path}），UA={Ua}"
+        : "500.com 验证 Cookie 未装载（未找到 secrets/500-cookie.txt），盘口采集预计会被拦截（{Path} / UA={Ua}）",
+        n, cookiePath ?? "(none)", BotGuard.UserAgent ?? "(默认)");
+
+    // 自动续期器与 token 文件绑定；找不到 harvest.mjs 时 Enabled=false，只记日志不报错
+    TokenRefresher.Configure(cookiePath);
+    if (TokenRefresher.Enabled)
+        app.Logger.LogInformation("token 自动续期已就绪，脚本 {Script}", TokenRefresher.ScriptPath);
+    else
+        app.Logger.LogWarning("token 自动续期未启用（找不到 _probe/harvest.mjs），被拦截时需人工执行");
+}
+
 await RecommendationSchema.EnsureAsync(app.Services.GetRequiredService<SqlConnectionFactory>());
+
+// 模型预热（2026-11-05）：训练样本涨到 25 万场后，HitProbabilityService 首次拟合要 30~40 秒。
+// 以前这笔时间由「第一个打开页面的请求」承担，表现就是点开大奶榜干等半分钟，还以为页面挂了。
+// 这里在后台先跑一遍，用户来的时候直接命中缓存。失败不影响启动，首个请求会自己重试。
+_ = Task.Run(async () =>
+{
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    try
+    {
+        var snapshot = await app.Services.GetRequiredService<HitProbabilityService>().GetSnapshotAsync();
+        app.Logger.LogInformation(
+            "模型预热完成，耗时 {Ms}ms：命中率模型样本 {Rows} 场，比分模型 Ready={Ready}",
+            sw.ElapsedMilliseconds, snapshot.Model.TrainCount, snapshot.Scores.Ready);
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex, "模型预热失败（{Ms}ms），首个请求会重试", sw.ElapsedMilliseconds);
+    }
+});
 app.UseCors();
 app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
@@ -104,14 +164,14 @@ app.MapGet("/api/lotto/recommend", async (LottoRecommendationService svc, Cancel
 app.MapGet("/api/lotto/recommend/{code}", async (string code, LottoRecommendationService svc, CancellationToken ct) =>
 {
     if (!LottoCodes.All.Contains(code, StringComparer.OrdinalIgnoreCase))
-        return Results.BadRequest(new { message = "code 应为 ssq/dlt/fc3d/kl8/pl3/pl5" });
+        return Results.BadRequest(new { message = UnsupportedLottoMessage() });
     return Results.Ok(await svc.GetByCodeAsync(code, ct));
 });
 
 app.MapGet("/api/lotto/review/{code}", async (string code, LottoRecommendationService svc, CancellationToken ct) =>
 {
     if (!LottoCodes.All.Contains(code, StringComparer.OrdinalIgnoreCase))
-        return Results.BadRequest(new { message = "code 应为 ssq/dlt/fc3d/kl8/pl3/pl5" });
+        return Results.BadRequest(new { message = UnsupportedLottoMessage() });
     return Results.Ok(await svc.ReviewAsync(code, ct));
 });
 
@@ -123,6 +183,32 @@ app.MapPost("/api/lotto/recommend/save", async (LottoRecommendationService svc, 
         saved = all.Sum(x => x.Picks.Count),
         boards = all.Select(x => new { x.LotteryCode, x.TargetIssue, picks = x.Picks.Count, x.Summary })
     });
+});
+
+// 用户选号票（避热门号选号器 / 手工录入）
+app.MapPost("/api/lotto/tickets", async (HttpRequest req, LottoRecommendationService svc, CancellationToken ct) =>
+{
+    var body = await req.ReadFromJsonAsync<LottoUserTicketSaveRequest>();
+    if (body is null || string.IsNullOrWhiteSpace(body.Code))
+        return Results.BadRequest(new { message = "code 不能为空" });
+    if (body.Tickets is not { Count: > 0 })
+        return Results.BadRequest(new { message = "tickets 不能为空" });
+    try
+    {
+        var result = await svc.SaveUserTicketsAsync(body.Code.ToLowerInvariant(), body.Tickets, body.TargetIssue, ct);
+        return Results.Ok(result);
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { message = ex.Message });
+    }
+});
+
+app.MapGet("/api/lotto/tickets", async (string? code, int? days, LottoRecommendationService svc, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(code) || !LottoCodes.All.Contains(code, StringComparer.OrdinalIgnoreCase))
+        return Results.BadRequest(new { message = "code 应为 " + string.Join('/', LottoCodes.All) });
+    return Results.Ok(await svc.GetUserTicketsAsync(code.ToLowerInvariant(), days ?? 30, ct));
 });
 
 // 彩种列表
@@ -281,6 +367,255 @@ app.MapGet("/api/football/jc-water/{matchNo}",
             : Results.Ok(data);
     });
 
+// 变盘监控：几点、哪一档、从多少到多少、距开赛多久。只记事实，不给方向、不拦注。
+// 起因：11-04 朗斯场 16:02 就把方向定死了，六个半小时后我出注，一次都没比较过前后值。
+app.MapGet("/api/odds/moves",
+    async (OddsMoveRepository repo, string? date, long? matchId, int? take, CancellationToken ct) =>
+    {
+        if (matchId is > 0)
+            return Results.Ok(new
+            {
+                scope = "match",
+                matchId,
+                lastScan = await repo.GetLastScanAsync(ct),
+                threshold = JcOddsRepository.MoveThreshold,
+                rows = await repo.GetByMatchAsync(matchId.Value, ct)
+            });
+
+        var day = DateOnly.TryParse(date, out var d) ? d : DateOnly.FromDateTime(DateTime.Today);
+        // 竞彩档期与自然日错位：周四档的欧战多在次日凌晨开赛（MatchTime 落在明天），
+        // 只按 MatchTime=今天取会漏掉一整批在售场次。所以「今天在售」默认取 [今天, 后天) 两天窗口，
+        // 前端已按 MatchStatus 把完赛的折叠、只突出未开赛的。
+        // 显式传了 date 才精确到单日（复盘某一期时用）。
+        if (string.IsNullOrWhiteSpace(date))
+        {
+            var from = day.ToDateTime(TimeOnly.MinValue);
+            var to = from.AddDays(2);
+            return Results.Ok(new
+            {
+                scope = "sale-window",
+                date = day.ToString("yyyy-MM-dd"),
+                window = new { from = from.ToString("yyyy-MM-dd"), to = to.ToString("yyyy-MM-dd") },
+                lastScan = await repo.GetLastScanAsync(ct),
+                threshold = JcOddsRepository.MoveThreshold,
+                rows = await repo.GetByMatchRangeAsync(from, to, take ?? 500, ct)
+            });
+        }
+
+        return Results.Ok(new
+        {
+            scope = "day",
+            date = day.ToString("yyyy-MM-dd"),
+            lastScan = await repo.GetLastScanAsync(ct),
+            threshold = JcOddsRepository.MoveThreshold,
+            rows = await repo.GetByMatchDayAsync(day, take ?? 500, ct)
+        });
+    });
+
+// 近 N 天的变盘密度（按开赛日 + 玩法）。条数突然翻倍通常意味着临场有资金进场。
+app.MapGet("/api/odds/moves/daily",
+    async (OddsMoveRepository repo, int? days, CancellationToken ct) =>
+        Results.Ok(new
+        {
+            threshold = JcOddsRepository.MoveThreshold,
+            lastScan = await repo.GetLastScanAsync(ct),
+            rows = await repo.GetDailyAsync(days ?? 14, ct)
+        }));
+
+/* ---------- 逐场采集台账 + 走向（2026-11-05） ----------
+   台账回答「采了没」：今天几轮、每轮几场、哪两轮之间断了多久。
+   走向回答「往哪走」：每场每玩法的首末热门档、去水概率迁移、变盘时间分布。
+
+   这两件事以前都没有。11-05 上午 11:09 → 11:15 → 11:37 空了 22 分钟，
+   在明细表里和「市场很平静」完全一样；11-04 朗斯场 13:29 比分盘整批指向科莫，
+   也没有任何一行数据把「整批」这件事说出来。 */
+
+// 采集台账 + 断档
+app.MapGet("/api/odds/scan-log",
+    async (OddsCaptureRepository repo, string? date, string? source, CancellationToken ct) =>
+    {
+        var day = DateOnly.TryParse(date, out var d) ? d : DateOnly.FromDateTime(DateTime.Today);
+        var res = await repo.GetScanLogAsync(day, string.IsNullOrWhiteSpace(source) ? "jc" : source, ct);
+        return Results.Ok(res);
+    });
+
+// 走向标签分布：如果 95% 都是「无明显迁移」，说明这个指标没区分度，要换掉而不是继续展示
+app.MapGet("/api/odds/trend/tags",
+    async (OddsCaptureRepository repo, int? days, CancellationToken ct) =>
+        Results.Ok(new
+        {
+            days = days ?? 30,
+            rows = await repo.GetTagDistributionAsync(days ?? 30, ct)
+        }));
+
+// 当日逐场走向：按场分组，每场带 SPF 三线迁移 + 各玩法首末档。
+// status=open（默认）只出未开赛；status=all 连完场一起出（历史复盘用，靠 date 切日期）。
+// 不传 date 时用「销售窗口」[今天, 后天)：竞彩周四档欧战多在次日凌晨开赛，单看开赛日=今天会漏掉整批在售场次。
+app.MapGet("/api/odds/trend",
+    async (OddsCaptureRepository repo, OddsMoveRepository moveRepo, string? date, string? play,
+        string? status, int? take, CancellationToken ct) =>
+    {
+        var day = DateOnly.TryParse(date, out var d) ? d : DateOnly.FromDateTime(DateTime.Today);
+        var openOnly = !string.Equals(status, "all", StringComparison.OrdinalIgnoreCase);
+        var saleWindow = string.IsNullOrWhiteSpace(date);
+        var from = day.ToDateTime(TimeOnly.MinValue);
+        var to = from.AddDays(2);
+        var rows = saleWindow
+            ? await repo.GetTrendByRangeAsync(from, to, play, take ?? 600, openOnly, ct)
+            : await repo.GetTrendByDayAsync(day, play, take ?? 600, openOnly, ct);
+
+        // SPF 的三线去水概率迁移（百分点）。市场定价往哪边挪，看这个比看赔率数字直观。
+        static decimal? Prob(decimal? o) => o is > 1 ? 1m / o.Value : null;
+        static decimal? ShiftPp(decimal? open, decimal? curr, decimal? openSum, decimal? currSum)
+        {
+            if (open is null || curr is null || openSum is null or <= 0 || currSum is null or <= 0) return null;
+            return decimal.Round((curr.Value / currSum.Value - open.Value / openSum.Value) * 100m, 2);
+        }
+
+        var matches = rows
+            .GroupBy(r => r.MatchId)
+            .Select(g =>
+            {
+                var head = g.First();
+                var spf = g.FirstOrDefault(r => r.PlayType == "SPF");
+                var openSum = spf is null ? null : Prob(spf.OpenWin) + Prob(spf.OpenDraw) + Prob(spf.OpenLoss);
+                var currSum = spf is null ? null : Prob(spf.CurrWin) + Prob(spf.CurrDraw) + Prob(spf.CurrLoss);
+
+                return new
+                {
+                    matchId = g.Key,
+                    matchNo = head.MatchNo,
+                    leagueName = head.LeagueName,
+                    homeTeam = head.HomeTeamName,
+                    awayTeam = head.AwayTeamName,
+                    matchTime = head.MatchTime,
+                    minutesToKick = head.MinutesToKick,
+                    // 赛果：没有它，页面只能写「已开赛」，标签永远无法验收——看起来就像没更新。
+                    homeScore = head.HomeScore,
+                    awayScore = head.AwayScore,
+                    matchStatus = head.MatchStatus,
+                    resultSpf = head.ResultSpf,
+                    finished = head.MatchStatus == 3,
+                    tagHit = spf?.TagHit,
+                    // 亚盘让球线：正 = 客让、负 = 主让（500 约定）。竞彩让球数不在库里，让球看这里。
+                    ahOpen = head.AhOpen,
+                    ahLast = head.AhLast,
+                    // 每场的「总活跃度」：所有玩法加起来变了几次，临场变了几次
+                    rounds = g.Max(r => r.Rounds),
+                    moves = g.Sum(r => r.Moves),
+                    bigMoves = g.Sum(r => r.BigMoves),
+                    lateMoves = g.Sum(r => r.LateMoves),
+                    firstMoveAt = g.Where(r => r.FirstMoveAt != null).Min(r => r.FirstMoveAt),
+                    lastMoveAt = g.Where(r => r.LastMoveAt != null).Max(r => r.LastMoveAt),
+                    trendTag = spf?.TrendTag,
+                    spf = spf is null ? null : new
+                    {
+                        openWin = spf.OpenWin, openDraw = spf.OpenDraw, openLoss = spf.OpenLoss,
+                        currWin = spf.CurrWin, currDraw = spf.CurrDraw, currLoss = spf.CurrLoss,
+                        shiftWinPp = ShiftPp(Prob(spf.OpenWin), Prob(spf.CurrWin), openSum, currSum),
+                        shiftDrawPp = ShiftPp(Prob(spf.OpenDraw), Prob(spf.CurrDraw), openSum, currSum),
+                        shiftLossPp = ShiftPp(Prob(spf.OpenLoss), Prob(spf.CurrLoss), openSum, currSum)
+                    },
+                    plays = g.OrderBy(r => PlayOrder(r.PlayType)).Select(r => new
+                    {
+                        playType = r.PlayType,
+                        playName = JcPlayName(r.PlayType),
+                        rounds = r.Rounds,
+                        options = r.Options,
+                        moves = r.Moves,
+                        bigMoves = r.BigMoves,
+                        up = r.UpCount,
+                        down = r.DownCount,
+                        firstTopName = r.FirstTopName,
+                        firstTopOdds = r.FirstTopOdds,
+                        lastTopName = r.LastTopName,
+                        lastTopOdds = r.LastTopOdds,
+                        topShiftPct = r.TopShift is null ? (decimal?)null : decimal.Round(r.TopShift.Value * 100m, 2),
+                        topChanged = r.FirstTopCode != r.LastTopCode,
+                        lateMoves = r.LateMoves,
+                        trendTag = r.TrendTag,
+                        tagHit = r.TagHit
+                    })
+                };
+            })
+            .OrderBy(m => m.matchTime)
+            .ToList();
+
+        return Results.Ok(new
+        {
+            scope = saleWindow ? "sale-window" : "day",
+            date = day.ToString("yyyy-MM-dd"),
+            window = saleWindow ? new { from = from.ToString("yyyy-MM-dd"), to = to.ToString("yyyy-MM-dd") } : null,
+            lastScan = await moveRepo.GetLastScanAsync(ct),
+            threshold = JcOddsRepository.MoveThreshold,
+            matches = matches
+        });
+    });
+
+// 单场走向：每玩法一行 + 完整变盘序列（时间正序）
+app.MapGet("/api/odds/trend/{matchId:long}",
+    async (long matchId, OddsCaptureRepository repo, CancellationToken ct) =>
+    {
+        var data = await repo.GetTrendByMatchAsync(matchId, ct);
+        return data is null
+            ? Results.NotFound(new { message = $"赛事 {matchId} 暂无走向记录（需至少一轮采样）" })
+            : Results.Ok(data);
+    });
+
+// 净胜球诊断：市场把这场比赛的比分定成了什么分布。
+// 这是描述不是预测——MAE 1.32 球，整球全对 24.7%，别拿它当比分推荐。
+// status=open（默认）只出未开赛，与逐场走向一致；status=all 连完场一起出（历史复盘）。
+// 不传 date 时同样用「销售窗口」[今天, 后天)，否则周四档欧战会被自然日错位漏掉。
+app.MapGet("/api/odds/score-diag",
+    async (OddsCaptureRepository repo, string? date, string? status, CancellationToken ct) =>
+    {
+        var day = DateOnly.TryParse(date, out var d) ? d : DateOnly.FromDateTime(DateTime.Now);
+        var openOnly = !string.Equals(status, "all", StringComparison.OrdinalIgnoreCase);
+        var saleWindow = string.IsNullOrWhiteSpace(date);
+        var from = day.ToDateTime(TimeOnly.MinValue);
+        var to = from.AddDays(2);
+        var rows = saleWindow
+            ? await repo.GetScoreDiagByRangeAsync(from, to, openOnly: openOnly, ct: ct)
+            : await repo.GetScoreDiagByDayAsync(day, openOnly: openOnly, ct: ct);
+        return Results.Ok(new
+        {
+            scope = saleWindow ? "sale-window" : "day",
+            date = day,
+            window = saleWindow ? new { from = from.ToString("yyyy-MM-dd"), to = to.ToString("yyyy-MM-dd") } : null,
+            matches = rows.Count,
+            rows
+        });
+    });
+
+// 标签自检：按尾部标签分组看真实大比分率。没有区分度就该下线，不能只展示不验证。
+app.MapGet("/api/odds/score-diag/stats",
+    async (OddsCaptureRepository repo, int? days, CancellationToken ct) =>
+        Results.Ok(new
+        {
+            days = days ?? 90,
+            rows = await repo.GetScoreDiagStatsAsync(days ?? 90, ct)
+        }));
+
+app.MapGet("/api/odds/score-diag/{matchId:long}",
+    async (long matchId, OddsCaptureRepository repo, CancellationToken ct) =>
+    {
+        var data = await repo.GetScoreDiagAsync(matchId, ct);
+        return data is null
+            ? Results.NotFound(new { message = $"赛事 {matchId} 无比分盘快照，无法还原净胜球分布" })
+            : Results.Ok(data);
+    });
+
+static int PlayOrder(string playType) => playType switch
+{
+    "SPF" => 0, "NSPF" => 1, "JQ" => 2, "BQ" => 3, "BF" => 4, _ => 9
+};
+
+static string JcPlayName(string playType) => playType switch
+{
+    "SPF" => "胜平负", "NSPF" => "让球", "BF" => "比分", "JQ" => "总进球", "BQ" => "半全场", _ => playType
+};
+
+
 // 单场赔率：欧赔 / 亚盘 / 大小球（各含初盘与终盘）
 app.MapGet("/api/football/odds/{matchId:long}", async (long matchId, OddsRepository oddsRepo, FootballRepository fbRepo) =>
 {
@@ -348,6 +683,73 @@ app.MapGet("/api/jobs/logs", async (int? take, SyncLogRepository repo) =>
     Results.Ok(await repo.GetRecentAsync(take ?? 50)));
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", time = DateTime.Now }));
+
+/* ---------------- 命中率校准 ---------------- */
+
+// 校准报表：预测值 vs 实际命中率，附带与市场基准的 Brier 对比和平注回报率。
+// 没有这张表，所有阈值（55/60/70）都只能靠单场手感调整。
+app.MapGet("/api/calibration", async (int? days, BettingRepository repo, CancellationToken ct) =>
+    Results.Ok(await CalibrationService.BuildAsync(repo, days ?? 60, ct)));
+
+/* ---------------- 票面 KPI ---------------- */
+
+// 按票型统计中奖率 / 回本率 / 实际回报。回答的是「哪种买法真的回本」，
+// 与单场命中率（/api/calibration）是两回事：串关经常中奖却回不了本。
+app.MapGet("/api/ticket/kpi", async (int? days, TicketRepository repo, CancellationToken ct) =>
+    Results.Ok(await repo.GetKpiAsync(days ?? 90, ct)));
+
+/* ---------------- 否决台账 ---------------- */
+
+// 被规则挡下的场次，赛后回填「照打会不会中」。
+// 「必发 ≥75% 不追」这类阈值一直没被赛前样本检验过，有了这张表才能检验。
+app.MapGet("/api/reject", async (int? days, string? board, RecommendationService svc, CancellationToken ct) =>
+    Results.Ok(await svc.GetVetoReportAsync(Math.Clamp(days ?? 30, 1, 365), ct, board)));
+
+// 最近发的票（含未结算），看今天实际发的是什么结构。
+app.MapGet("/api/ticket", async (int? take, TicketRepository repo, CancellationToken ct) =>
+{
+    var pending = await repo.GetPendingAsync(null, ct);
+    var list = pending
+        .OrderByDescending(t => t.PlanDate)
+        .Take(Math.Clamp(take ?? 20, 1, 100))
+        .Select(t => new
+        {
+            t.TicketId,
+            planDate = t.PlanDate.ToString("yyyy-MM-dd"),
+            t.Board,
+            t.PassType,
+            t.LegCount,
+            t.BetCount,
+            t.BetAmount,
+            t.HitProbability,
+            t.BackProbability,
+            t.ExpectedReturn,
+            t.Status,
+            lines = t.Legs.Select(l => new
+            {
+                l.Seq, l.MatchNo, l.HomeTeam, l.AwayTeam,
+                option = l.PickOption, l.Odds,
+                // 票面用的是「模型 / 盘口较低值」；另两个数并排给出，好判断这条腿当时有多悬。
+                legProbability = l.LegProbability,
+                modelProbability = l.ModelProbability,
+                marketProbability = l.MarketProbability,
+                l.LineHit
+            })
+        });
+    return Results.Ok(list);
+});
+
+/* ---------------- token 续期 ---------------- */
+
+// 续期状态：是否启用、上次成功时间、最近日志。排障时先看这里。
+app.MapGet("/api/token/status", () => Results.Ok(TokenRefresher.Snapshot()));
+
+// 手动续期：token 被拦后不想等守护进程，可以主动触发一次
+app.MapPost("/api/token/refresh", async () =>
+{
+    var (ok, message) = await TokenRefresher.TryRefreshAsync("manual", null, CancellationToken.None, force: true);
+    return ok ? Results.Ok(new { ok, message }) : Results.BadRequest(new { ok, message });
+});
 
 /* ---------------- 登录 / 推荐 ---------------- */
 
@@ -594,7 +996,8 @@ app.MapPost("/api/purchase/ocr", async (HttpRequest request, BettingRepository b
     if (layout is not ("physical" or "app")) layout = null;
 
     var ocrUrl = Environment.GetEnvironmentVariable("AIFOOTBALL_OCR_URL") ?? "http://127.0.0.1:5089";
-    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+    // 2026-11-04：OCR 服务改三遍识别（PSM 4/6/11）做表格重建，单张要 30~60 秒
+    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(150) };
     try
     {
         var resp = await client.PostAsJsonAsync($"{ocrUrl}/ocr", new { image, kind, layout }, ct);
@@ -658,6 +1061,7 @@ app.MapPost("/api/purchase/ocr", async (HttpRequest request, BettingRepository b
             expectedWin = parsed.ExpectedWin,
             ticketKind = parsed.TicketKind ?? kind,
             ticketPreset = parsed.TicketPreset ?? kind,
+            teamsOnly = parsed.TeamsOnly,
             rawText = ocrResult?.Text,
             matches
         });
@@ -753,6 +1157,10 @@ app.MapDelete("/api/purchase/{id:long}", async (long id, PurchaseRepository repo
     return Results.Ok(new { ok = true });
 });
 
+// 不提供选号的彩种：文案从白名单生成，免得以后加彩种忘了改提示
+static string UnsupportedLottoMessage() =>
+    $"code 应为 {string.Join('/', LottoCodes.All)}；七乐彩/七星彩只采开奖，不提供选号";
+
 // 购买方案投影
 static string? PlainSpfOption(string? opt)
 {
@@ -776,277 +1184,67 @@ static object PurchaseView(PurchaseRecord p) => new
 };
 
 // 今日推荐（按板块）
-app.MapGet("/api/recommend/{board}", async (string board, RecommendationService svc, JcOddsRepository jcOdds, HttpRequest request, AuthService auth, CancellationToken ct) =>
+app.MapGet("/api/recommend/{board}", async (string board, RecommendationService svc, HttpRequest request, AuthService auth, CancellationToken ct) =>
 {
     var token = request.Headers.Authorization.ToString().Replace("Bearer ", "");
     if (!auth.TryGet(token, out _, out _)) return Results.Unauthorized();
 
-    if (board is not (Boards.Jc or Boards.Bd or Boards.Sfc))
-        return Results.BadRequest(new { message = "board 应为 jc/bd/sfc" });
+    // 2026-11-04 改向：胜负彩、北单推荐下线（采集保留），只发竞彩大奶。
+    if (board is not Boards.Jc)
+        return Results.BadRequest(new { message = "北单/胜负彩推荐已下线（2026-11-04），只保留采集。请用 /api/recommend 看竞彩大奶。" });
 
     var recs = await svc.RecommendAsync(board, null, ct);
-    var hcpRows = board == Boards.Jc
-        ? RecommendationSelection.ForJcHandicap(recs)
-        : new List<MatchRecommendation>();
-    var handicap = board == Boards.Jc ? hcpRows.Select(ToJcHandicapItem).ToList() : null;
-    var draws = board == Boards.Jc
-        ? RecommendationSelection.ForJcDraw(recs).Select(ToJcDrawItem).ToList()
-        : null;
-    var stakePlan = board == Boards.Jc ? await JcStakePlanAsync(jcOdds, hcpRows, ct) : null;
-    var strong = RecommendationSelection.ForDisplay(board, recs);
-    var pageItems = board == Boards.Jc
-        ? RecommendationSelection.ForJcCalculated(recs)
-        : board == Boards.Bd
-            ? RecommendationSelection.ForBdCalculated(recs)
-            : strong;
-    var plain = board == Boards.Bd
-        ? RecommendationSelection.ForBdPlain(recs).Select(ToBdPlainItem).ToList()
-        : null;
+    var build = await svc.RecommendMilkWithGateAsync(recs, ct);
+    var milkPicks = build.Picks;
+    var ticket = MilkPickEngine.BuildTicket(milkPicks, DateTime.Today);
 
     return Results.Ok(new
     {
         board,
         total = recs.Count,
-        recommended = strong.Count,
-        passTip = RecommendationSelection.PassTip(board, strong.Count),
-        passType = RecommendationSelection.PassTypeValue(board, strong.Count),
-        saleNote = board == Boards.Jc ? RecommendationSelection.JcSaleHours.Note(RecommendationSelection.JcSaleHours.Now()) : null,
-        stakePlan,
-        handicapItems = handicap,
-        drawItems = draws,
-        plainItems = plain,
-        items = pageItems.Select(ToItem)
+        saleNote = RecommendationSelection.JcSaleHours.Note(RecommendationSelection.JcSaleHours.Now()),
+        milkPicks = milkPicks.Select(ToMilkItem),
+        milkTicket = ticket is null ? null : ToMilkTicket(ticket),
+        milkGate = ToMilkGate(build),
+        showRows = build.ShowRows.Select(ToMilkShowRow),
+        note = "每日只推荐竞彩大奶：比分、半全场（胜负/负胜/胜平/负平，赔率 ≥4.0）、总进球。EV=概率×赔率，列出只为排序，长期仍期望为负。"
     });
 });
 
-// 全板块推荐概览（首页）
-app.MapGet("/api/recommend", async (RecommendationService svc, JcOddsRepository jcOdds, HttpRequest request, AuthService auth, CancellationToken ct) =>
+// 推荐概览（首页）。2026-11-04 改向：只出竞彩大奶。
+app.MapGet("/api/recommend", async (RecommendationService svc, HttpRequest request, AuthService auth, CancellationToken ct) =>
 {
     var token = request.Headers.Authorization.ToString().Replace("Bearer ", "");
     if (!auth.TryGet(token, out _, out _)) return Results.Unauthorized();
 
-    var boards = new List<object>();
-    var upset = new List<MatchRecommendation>();
-    var hot = new List<MatchRecommendation>();
-    var totals = new List<MatchRecommendation>();
-    foreach (var board in new[] { Boards.Jc, Boards.Bd, Boards.Sfc })
-    {
-        var recs = await svc.RecommendAsync(board, null, ct);
-        var hcpRows = board == Boards.Jc
-            ? RecommendationSelection.ForJcHandicap(recs)
-            : new List<MatchRecommendation>();
-        var handicap = board == Boards.Jc ? hcpRows.Select(ToJcHandicapItem).ToList() : null;
-        var draws = board == Boards.Jc
-            ? RecommendationSelection.ForJcDraw(recs).Select(ToJcDrawItem).ToList()
-            : null;
-        var stakePlan = board == Boards.Jc ? await JcStakePlanAsync(jcOdds, hcpRows, ct) : null;
-        var strong = RecommendationSelection.ForDisplay(board, recs);
-        var pageItems = board == Boards.Jc
-            ? RecommendationSelection.ForJcCalculated(recs)
-            : board == Boards.Bd
-                ? RecommendationSelection.ForBdCalculated(recs)
-                : strong;
-        var plain = board == Boards.Bd
-            ? RecommendationSelection.ForBdPlain(recs).Select(ToBdPlainItem).ToList()
-            : null;
-        hot.AddRange(recs.Where(r => r.HotWatch));
-        if (board is Boards.Jc or Boards.Bd)
-        {
-            upset.AddRange(recs.Where(r => r.UpsetWatch));
-            totals.AddRange(recs.Where(r => r.OuSide is not null));
-        }
-
-        boards.Add(new
-        {
-            board,
-            name = board == Boards.Jc ? "竞彩" : board == Boards.Bd ? "北单" : "胜负彩",
-            total = recs.Count,
-            recommended = strong.Count,
-            level3 = strong.Count(r => r.SignalLevel == 3),
-            slateHit = board == Boards.Sfc ? SlateHit(strong) : null,
-            passTip = RecommendationSelection.PassTip(board, strong.Count),
-            passType = RecommendationSelection.PassTypeValue(board, strong.Count),
-            saleNote = board == Boards.Jc ? RecommendationSelection.JcSaleHours.Note(RecommendationSelection.JcSaleHours.Now()) : null,
-            stakePlan,
-            handicapItems = handicap,
-            drawItems = draws,
-            plainItems = plain,
-            items = pageItems.Select(ToItem)
-        });
-    }
+    var recs = await svc.RecommendAsync(Boards.Jc, null, ct);
+    var build = await svc.RecommendMilkWithGateAsync(recs, ct);
+    var milkPicks = build.Picks;
+    var ticket = MilkPickEngine.BuildTicket(milkPicks, DateTime.Today);
 
     return Results.Ok(new
     {
         date = DateTime.Now.ToString("yyyy-MM-dd"),
-        boards,
-        upsetWatch = DedupeUpset(upset).Select(ToItem),
-        hotWatch = DedupeHot(hot).Select(ToHotItem),
-        totals = DedupeWithinBoard(totals.Where(r => r.Board == Boards.Jc))
-            .Concat(DedupeWithinBoard(totals.Where(r => r.Board == Boards.Bd)))
-            .Select(ToItem)
+        boards = new[]
+        {
+            new
+            {
+                board = Boards.Jc,
+                name = "竞彩大奶",
+                total = recs.Count,
+                saleNote = RecommendationSelection.JcSaleHours.Note(RecommendationSelection.JcSaleHours.Now()),
+                milkPicks = milkPicks.Select(ToMilkItem).ToList(),
+                milkTicket = ticket is null ? null : ToMilkTicket(ticket),
+                milkGate = ToMilkGate(build),
+                showRows = build.ShowRows.Select(ToMilkShowRow).ToList()
+            }
+        },
+        // 2026-11-04 起胜平负/让球/大小球全部停止发布（用户拍板：「发出来还是错的，浪费」）。
+        // 后台仍在算、仍落 Recommendation 表——模型校准和否决台账只能靠这批数据，
+        // 但对外一个方向都不给，页面/接口只留大奶，免得又被当成可下注的建议。
+        note = "只发竞彩大奶（比分 / 半全场 / 总进球）。胜平负、让球、大小球已停止发布，后台只留作校准。"
     });
 });
-
-static List<MatchRecommendation> DedupeWithinBoard(IEnumerable<MatchRecommendation> rows)
-{
-    var seen = new HashSet<long>();
-    var kept = new List<MatchRecommendation>();
-    foreach (var r in rows
-        .OrderByDescending(r => r.OuProbability ?? 0)
-        .ThenBy(r => RecommendationSelection.OfficialMatchOrder(r.MatchNo)))
-    {
-        if (r.MatchId is long id && !seen.Add(id)) continue;
-        kept.Add(r);
-    }
-    return kept;
-}
-
-static List<MatchRecommendation> DedupeHot(List<MatchRecommendation> rows)
-{
-    var seen = new HashSet<string>(StringComparer.Ordinal);
-    var kept = new List<MatchRecommendation>();
-    foreach (var r in rows)
-    {
-        var key = (r.Board ?? "") + "|" + (r.MatchId?.ToString() ?? r.MatchNo ?? "");
-        if (!seen.Add(key)) continue;
-        kept.Add(r);
-    }
-    return kept;
-}
-
-static List<MatchRecommendation> DedupeUpset(List<MatchRecommendation> rows)
-{
-    var seen = new HashSet<long>();
-    var kept = new List<MatchRecommendation>();
-    foreach (var r in rows
-        .OrderBy(r => r.Board == Boards.Jc ? 0 : 1)
-        .ThenBy(r => RecommendationSelection.OfficialMatchOrder(r.MatchNo)))
-    {
-        if (r.MatchId is long id && !seen.Add(id)) continue;
-        kept.Add(r);
-    }
-    return kept;
-}
-
-// 推荐项投影（含比分、进球数预测）
-static async Task<object> JcStakePlanAsync(
-    JcOddsRepository jcOdds, IReadOnlyList<MatchRecommendation> picks, CancellationToken ct)
-{
-    var ids = picks.Where(r => r.MatchId is > 0).Select(r => r.MatchId!.Value).Distinct().ToList();
-    var prices = ids.Count == 0
-        ? new Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>()
-        : await jcOdds.GetLatestNspfAsync(ids, ct);
-
-    var legs = new List<(MatchRecommendation Rec, decimal Odds, string Option, decimal? LegP)>();
-    foreach (var r in picks)
-    {
-        if (r.RecHandicap is not ('3' or '1' or '0') || r.MatchId is not long id) continue;
-        if (!prices.TryGetValue(id, out var price)) continue;
-        if (r.SignalDesc?.Contains("澳超客胜不进精选", StringComparison.Ordinal) == true) continue;
-        var leg = RecommendationSelection.JcCoverTicket.TryHandicapLeg(
-            r.RecHandicap, r.HandicapProbability, price.Win, price.Draw, price.Loss);
-        if (leg is null) continue;
-        var legP = RecommendationSelection.JcCoverTicket.LegProbability(leg.Value.Side, price.Win, price.Draw, price.Loss);
-        legs.Add((r, leg.Value.Odds, leg.Value.Option, legP));
-    }
-
-    var picked = RecommendationSelection.JcCoverTicket.Pick(legs, x => x.Odds, x => x.LegP * 100m);
-    if (picked.Count == 0)
-        return new { ready = false, have = 0 };
-
-    var n = picked.Count;
-    var oddsList = picked.Select(x => x.Odds).ToList();
-    var miss = RecommendationSelection.JcCoverTicket.OneMiss(oddsList);
-    var miss2 = RecommendationSelection.JcCoverTicket.TwoMiss(oddsList);
-    var chances = picked.All(x => x.LegP is not null)
-        ? RecommendationSelection.JcCoverTicket.Chances(picked.Select(x => (x.Odds, x.LegP!.Value)).ToList())
-        : ((decimal AnyPrize, decimal BackStake, decimal AllHit)?)null;
-    return new
-    {
-        ready = true,
-        legCount = n,
-        chanceAnyPrize = chances is null ? (decimal?)null : Math.Round(chances.Value.AnyPrize * 100m, 1),
-        chanceBackStake = chances is null ? (decimal?)null : Math.Round(chances.Value.BackStake * 100m, 1),
-        chanceAllHit = chances is null ? (decimal?)null : Math.Round(chances.Value.AllHit * 100m, 1),
-        betCount = RecommendationSelection.JcCoverTicket.BetCountFor(n),
-        passType = RecommendationSelection.JcCoverTicket.PassFor(n),
-        multiple = RecommendationSelection.JcCoverTicket.Multiple,
-        stake = RecommendationSelection.JcCoverTicket.StakeFor(n),
-        allHit = RecommendationSelection.JcCoverTicket.AllHit(oddsList),
-        missLow = miss.Low,
-        missHigh = miss.High,
-        miss2Low = miss2.Low,
-        miss2High = miss2.High,
-        lines = picked.Select(x => new
-        {
-            x.Rec.MatchNo,
-            x.Rec.HomeTeam,
-            x.Rec.AwayTeam,
-            x.Rec.Handicap,
-            option = x.Option,
-            odds = x.Odds,
-            hitProbability = x.LegP is null ? (decimal?)null : Math.Round(x.LegP.Value * 100m, 1)
-        })
-    };
-}
-
-static object ToJcDrawItem(MatchRecommendation r)
-{
-    var desc = r.SignalDesc ?? "";
-    desc = desc.Replace("（平局回测偏低，不进精选）", "（平局这种形态近 60 日大约 37%，按算出来的数发）", StringComparison.Ordinal);
-    desc = desc.Replace("；模型看平，不进精选", "；模型看平", StringComparison.Ordinal);
-    return new
-    {
-        r.MatchNo, r.MatchId, r.LeagueName, r.HomeTeam, r.AwayTeam, r.MatchTime, r.Handicap,
-        result = "1",
-        resultText = "平局",
-        hitProbability = r.HitProbability ?? r.Confidence,
-        hitProbabilityNote = r.HitProbabilityNote,
-        r.SignalLevel,
-        signalDesc = desc,
-        isDraw = true
-    };
-}
-
-static object ToJcHandicapItem(MatchRecommendation r)
-{
-    var hcp = r.Handicap is decimal h ? (h > 0 ? $"+{h:0.##}" : $"{h:0.##}") : "";
-    var name = r.RecHandicap is char side ? RecommendationSelection.HandicapOptionName(side) : "";
-    var price = r.HandicapOdds is decimal o ? $"，让球价 {o:0.00}" : "";
-    var plain = r.RecResult == '3' ? "主胜" : r.RecResult == '0' ? "客胜" : r.RecResult == '1' ? "平局" : null;
-    var plainText = plain is null ? "" : $"不让球参考：{plain}。";
-    var settle = r.RecHandicap == '1' ? "刚好走在盘口上才算中。" : "要打过这个盘口。";
-    var gate = r.HandicapProbability >= RecommendationScoring.MinFeaturedHitProbability
-        ? ""
-        : "不到 55%，不标精选。";
-    return new
-    {
-        r.MatchNo, r.MatchId, r.LeagueName, r.HomeTeam, r.AwayTeam, r.MatchTime, r.Handicap,
-        result = r.RecHandicap?.ToString(),
-        resultText = name,
-        hitProbability = r.HandicapProbability,
-        hitProbabilityNote = "欧赔去水 + 大小球盘折算到竞彩让球数",
-        handicapOdds = r.HandicapOdds,
-        signalDesc = $"让{hcp} {name} 约 {r.HandicapProbability:0.0}%{price}。{settle}{plainText}{gate}",
-        isHandicap = true
-    };
-}
-
-static object ToBdPlainItem(MatchRecommendation r)
-{
-    var side = r.RecResult == '3' ? "主胜" : r.RecResult == '0' ? "客胜" : r.RecResult == '1' ? "平局" : "";
-    return new
-    {
-        r.MatchNo, r.MatchId, r.LeagueName, r.HomeTeam, r.AwayTeam, r.MatchTime,
-        result = r.RecResult?.ToString(),
-        resultText = side,
-        hitProbability = r.HitProbability ?? r.Confidence,
-        hitProbabilityNote = r.HitProbabilityNote,
-        r.SignalLevel,
-        signalDesc = (r.SignalDesc ?? "") + "不让球参考，北单不卖。",
-        isPlain = true
-    };
-}
 
 static object ToHotItem(MatchRecommendation r)
 {
@@ -1062,6 +1260,118 @@ static object ToHotItem(MatchRecommendation r)
         isFeatured = false
     };
 }
+
+// 大奶推荐行投影（页面榜）
+static object ToMilkItem(MilkPick p) => new
+{
+    p.MatchNo, p.MatchId, p.LeagueName, p.HomeTeam, p.AwayTeam, p.MatchTime,
+    playType = p.PlayType,
+    playName = p.PlayName,
+    optionCode = p.OptionCode,
+    option = MilkPickMath.ShortName(p.PlayType, p.OptionCode),
+    display = p.OptionName,
+    odds = p.Odds,
+    modelProbability = p.ModelProbability,
+    ev = p.Ev,
+    // 逆市场标记（2026-11-05 加）：前端据此打红标。市场方向过半的注已经在引擎里撤掉了，
+    // 能带着这个标记出来的都是弱背离（市场方向 <45%），留给人自己判断。
+    divergedFromMarket = p.DivergedFromMarket,
+    marketDirection = p.MarketDirection?.ToString(),
+    marketDirectionName = p.MarketDirectionName,
+    marketDirectionPct = p.MarketDirectionPct,
+    // 纯模型标记（2026-11-05 加）：该玩法快照档数不全，概率没掺盘口，EV 会偏高。
+    marketPriced = p.MarketPriced
+};
+
+// 大奶票投影（与票面台账同源的一张票）
+static object ToMilkTicket(TicketDraft t) => new
+{
+    t.PassType, t.LegCount, t.BetCount, t.Multiple, t.BetAmount,
+    chanceAnyPrize = t.HitProbability,
+    chanceBackStake = t.BackProbability,
+    expectedReturn = t.ExpectedReturn,
+    note = "单关：取全榜命中率最高的那一注（≥8%）。串关的命中率是相乘的，两条 20% 的腿串起来只剩 3.9%，和「提高中奖率」直接相反。概率是模型近似，大奶命中率天然低。",
+    lines = t.Legs.Select(l => new
+    {
+        l.Seq, l.MatchNo, l.HomeTeam, l.AwayTeam,
+        playType = l.PlayType,
+        option = l.PickOption,
+        l.Odds,
+        probability = l.LegProbability
+    })
+};
+
+// 方向闸摘要。只把「有话说」的场次发给前端：被拦下的、有诱盘告警的。
+// 全部 pass 的场次对页面没用，几十行反而把关键那几行淹掉。
+static object ToMilkGate(MilkBuildResult build) => new
+{
+    diverged = build.DivergedMatches,
+    blocked = build.BlockedPicks,
+    scanned = build.Gates.Count,
+    rows = build.Gates
+        .Where(g => g.Verdict == MilkGateVerdicts.Diverge || !string.IsNullOrEmpty(g.AlertCode))
+        .OrderBy(g => g.Verdict == MilkGateVerdicts.Diverge ? 0 : 1)
+        .Select(g => new
+        {
+            matchNo = g.MatchNo,
+            homeTeam = g.HomeTeam,
+            awayTeam = g.AwayTeam,
+            matchTime = g.MatchTime?.ToString("yyyy-MM-dd HH:mm"),
+            modelDirection = g.ModelDirection?.ToString(),
+            pickDirection = g.PickDirection?.ToString(),
+            marketDirection = g.MarketDirection?.ToString(),
+            marketSource = g.MarketSource,
+            marketHomePct = g.MarketHomePct,
+            marketDrawPct = g.MarketDrawPct,
+            marketAwayPct = g.MarketAwayPct,
+            verdict = g.Verdict,
+            alertCode = g.AlertCode,
+            alertNote = g.AlertNote,
+            blockedPicks = g.BlockedPicks,
+            blockedBest = g.BlockedBest
+        })
+        .ToList(),
+    // 构建漏斗：空榜时前端直接写明卡在哪一层，不用再让人对着「0 注」猜。
+    funnel = new
+    {
+        recs = build.Funnel.Recs,
+        withOdds = build.Funnel.WithOdds,
+        named = build.Funnel.Named,
+        known = build.Funnel.Known,
+        thinSample = build.Funnel.ThinSample,
+        distributed = build.Funnel.Distributed,
+        candidates = build.Funnel.Candidates,
+        blockedByGate = build.Funnel.BlockedByGate,
+        afterGate = build.Funnel.AfterGate,
+        afterEv = build.Funnel.AfterEv,
+        // 逆市场撤注数（2026-11-05 加）：没这个数，用户只会看到「昨天 6 注今天 5 注」，
+        // 以为又是随机波动，看不出是规则撤掉的。
+        divergentDropped = build.Funnel.DivergentDropped,
+        final = build.Funnel.Final,
+        scoresReady = build.Funnel.ScoresReady,
+        scoresNote = build.Funnel.ScoresNote,
+        skipped = build.Funnel.Skipped
+    }
+};
+
+// 「模型 vs 市场」对照行投影（方案 2，只展示不出注）。
+static object ToMilkShowRow(MilkShowRow s) => new
+{
+    s.MatchNo, s.MatchId, s.LeagueName, s.HomeTeam, s.AwayTeam,
+    matchTime = s.MatchTime?.ToString("yyyy-MM-dd HH:mm"),
+    modelHomePct = s.ModelHomePct,
+    modelDrawPct = s.ModelDrawPct,
+    modelAwayPct = s.ModelAwayPct,
+    marketHomePct = s.MarketHomePct,
+    marketDrawPct = s.MarketDrawPct,
+    marketAwayPct = s.MarketAwayPct,
+    marketSource = s.MarketSource,
+    status = s.Status,
+    homeGames = s.HomeGames,
+    awayGames = s.AwayGames,
+    modelDirection = s.ModelDirection?.ToString(),
+    marketDirection = s.MarketDirection?.ToString()
+};
 
 static object ToItem(MatchRecommendation r)
 {
@@ -1108,16 +1418,6 @@ static object WithInterval(int hit, int total)
     return new { total, hit, hitRate = rate.hitRate, hitLow = rate.hitLow, hitHigh = rate.hitHigh };
 }
 
-static double? SlateHit(IReadOnlyList<MatchRecommendation> recs)
-{
-    var directional = recs.Where(r => r.RecResult is '3' or '1' or '0').ToList();
-    if (directional.Count == 0 || directional.Any(r => r.HitProbability is null)) return null;
-    var product = HitRateMath.Parlay(directional.Select(r => r.HitProbability!.Value / 100m));
-    if (product is null) return null;
-    var pct = (double)product.Value * 100;
-    return pct >= 1 ? Math.Round(pct, 2) : Math.Round(pct, 4);
-}
-
 // 每日完场规律分析
 app.MapGet("/api/analysis/today", async (AnalysisRepository repo, string? date, CancellationToken ct) =>
 {
@@ -1137,6 +1437,76 @@ app.MapGet("/api/milk/stats", async (MilkScanService milk, string? scope, string
 // 大奶：今日受注场观察候选（尾部事件，非主推）
 app.MapGet("/api/milk/today", async (MilkScanService milk, CancellationToken ct) =>
     Results.Ok(await milk.GetTodayAsync(ct)));
+
+// 大奶推荐台账：某天落库的大奶榜（含赛果与命中），复盘用
+app.MapGet("/api/milk/picks", async (MilkPickRepository repo, string? date, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+    return Results.Ok(await repo.GetDayAsync(d, ct));
+});
+
+// 大奶台账 KPI：近 N 天按玩法分组的命中率、平注 ROI、模型高估幅度、热门选项
+app.MapGet("/api/milk/pick-stats", async (MilkPickRepository repo, int? days, CancellationToken ct) =>
+    Results.Ok(await repo.GetReportAsync(days ?? 30, ct)));
+
+// 方向闸回测：用某天的历史盘口重算「这道闸会拦下什么」，不落库、不出票。
+// 11-04 三场反掉之后的验证入口，也是以后调阈值时唯一不必等开奖的办法。
+// save=1 时把诊断补档进 FbMilkGate——只给「闸上线之前那些天」补历史用，
+// 当天的台账由出票作业自己写，不要用这个参数覆盖。
+app.MapGet("/api/milk/gate/backtest", async (
+    RecommendationService svc, MilkPickRepository repo, string? date, int? save, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today.AddDays(-1);
+    var build = await svc.BacktestMilkAsync(d, ct);
+
+    var archived = 0;
+    if (save == 1 && build.Gates.Count > 0)
+        archived = await repo.SaveGateAsync(d, build.Gates, ct);
+
+    return Results.Ok(new
+    {
+        date = d.ToString("yyyy-MM-dd"),
+        picks = build.Picks.Count,
+        diverged = build.DivergedMatches,
+        blocked = build.BlockedPicks,
+        archived,
+        gates = build.Gates,
+        board = build.Picks.Select(ToMilkItem)
+    });
+});
+
+// 方向闸台账（2026-11-05）：某天每场「模型指哪、市场指哪、亚盘/必发有没有背离、挡了几注」。
+// 这是「今天为什么没出票」的唯一解释入口；fresh=1 时现场重算一遍（不落库），用于核对已有的榜。
+app.MapGet("/api/milk/gate", async (MilkPickRepository repo, RecommendationService svc, string? date, int? fresh, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+
+    if (fresh == 1 && d == DateTime.Today)
+    {
+        var build = await svc.RecommendMilkWithGateAsync(null, ct);
+        return Results.Ok(new
+        {
+            date = d.ToString("yyyy-MM-dd"),
+            source = "live",
+            diverged = build.DivergedMatches,
+            blocked = build.BlockedPicks,
+            picks = build.Picks.Count,
+            gates = build.Gates
+        });
+    }
+
+    var rows = await repo.GetGateAsync(d, ct);
+    return Results.Ok(new
+    {
+        date = d.ToString("yyyy-MM-dd"),
+        source = "db",
+        diverged = rows.Count(r => r.Verdict == MilkGateVerdicts.Diverge),
+        blocked = rows.Sum(r => r.BlockedPicks),
+        picks = (int?)null,
+        gates = rows
+    });
+});
+
 
 app.MapGet("/api/summary/finished", async (SummaryRepository repo, JcOddsRepository jcOdds, BettingCardSource cards, string? date, CancellationToken ct) =>
 {
@@ -1272,6 +1642,8 @@ internal sealed class OcrParsed
     public decimal? ExpectedWin { get; set; }
     public string? TicketKind { get; set; }
     public string? TicketPreset { get; set; }
+    /// <summary>表头没认全、只兜底带出了场次+对阵（选项留给用户手填）</summary>
+    public bool TeamsOnly { get; set; }
     public List<OcrMatch> Matches { get; set; } = new();
 }
 

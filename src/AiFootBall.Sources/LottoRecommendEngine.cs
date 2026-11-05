@@ -43,6 +43,7 @@ public static class LottoRecommendEngine
             set.Picks = RecommendCombo(lt, drawsDesc);
 
         var danTuo = LottoCodes.IsDlt(lt.Code) ? DltFourDanFullTuo(lt, drawsDesc) : null;
+        var singles = set.Picks.Count;
         if (danTuo is not null)
         {
             danTuo.RankNo = set.Picks.Count + 1;
@@ -54,7 +55,7 @@ public static class LottoRecommendEngine
         else if (LottoCodes.IsKl8(lt.Code))
             set.Summary = $"基于第 {based} 期，为第 {target} 期生成 {set.Picks.Count} 注选十（主推 {set.Picks.Count(p => p.IsPrimary)} 注）。每天开奖，只供参考";
         else if (danTuo is not null)
-            set.Summary = $"基于第 {based} 期，为第 {target} 期生成单式 {set.Picks.Count(p => p.PlayType != "四胆全拖")} 注（主推 {set.Picks.Count(p => p.IsPrimary)} 注），另附四胆全拖 {danTuo.BetCount} 注";
+            set.Summary = $"基于第 {based} 期，为第 {target} 期生成单式 {singles} 注（主推 {set.Picks.Count(p => p.IsPrimary)} 注），另附{danTuo.PlayType} {danTuo.BetCount} 注";
         else
             set.Summary = $"基于第 {based} 期，为第 {target} 期生成 {set.Picks.Count} 注参考选号（主推 {set.Picks.Count(p => p.IsPrimary)} 注）";
         return set;

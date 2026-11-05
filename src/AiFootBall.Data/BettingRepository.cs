@@ -70,6 +70,39 @@ public sealed class BettingRepository
             new { b = board, e = expect }, cancellationToken: ct))).ToList();
     }
 
+    /// <summary>
+    /// 大奶回测用的历史受注场次：当天开赛、或当天受注过的场次。
+    ///
+    /// 不复用 <see cref="GetCardsByKickoffAsync"/>（2026-11-05 实测踩到）：BettingCard 按
+    /// (Board, Expect, MatchNo) 做 MERGE，而「周X00N」每周都会重号，旧一天的卡片会被新一天的覆盖。
+    /// 拿它回测 11-04，六场欧冠只剩一场，另外五场连影子都没有。赔率历史表反而是全的。
+    ///
+    /// 口径为什么不是纯「开赛日」：欧冠是北京时间凌晨开赛，受注和出票都在前一天。
+    /// 11-04 那三场反掉的比赛开赛时间是 11-05 04:00，只按开赛日筛会把它们全漏掉——
+    /// 而它们正是这道闸要复盘的对象。所以受注日也要算进来。
+    /// </summary>
+    public async Task<List<BettingCardRecord>> GetMilkBacktestCardsAsync(
+        DateTime day, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<BettingCardRecord>(new CommandDefinition(
+            @"WITH ids AS (
+                  SELECT j.MatchId, MAX(j.MatchNo) AS MatchNo
+                  FROM dbo.FbJcOddsHistory j
+                  WHERE j.MatchId IS NOT NULL AND j.PlayType = 'SPF' AND j.Odds > 1
+                  GROUP BY j.MatchId
+              )
+              SELECT i.MatchId, i.MatchNo, m.LeagueName,
+                     m.HomeTeamName AS HomeTeam, m.AwayTeamName AS AwayTeam, m.MatchTime
+              FROM ids i
+              JOIN dbo.FbMatch m ON m.MatchId = i.MatchId
+              WHERE CONVERT(date, m.MatchTime) = @d
+                 OR EXISTS (SELECT 1 FROM dbo.FbMilkPick p
+                            WHERE p.MatchId = m.MatchId AND p.PickDate = @d)
+              ORDER BY m.MatchTime",
+            new { d = day.Date }, cancellationToken: ct))).ToList();
+    }
+
     /// <summary>某一天开赛的受注卡。同一场保留最后一次采集，不限「最新一整批」。</summary>
     public async Task<List<BettingCardRecord>> GetCardsByKickoffAsync(
         string board, DateTime day, CancellationToken ct = default)
@@ -105,9 +138,17 @@ public sealed class BettingRepository
         return all.ToDictionary(kv => kv.Key, kv => kv.Value.Home);
     }
 
+    /// <summary>
+    /// 采样新鲜度过滤。盘口表都是「一张表存多次采集」，查询只取最新一行并不能保证它够新：
+    /// 一场三天没采到的比赛，最新一行就是三天前的，拿它算「升/降」等于把旧盘当现盘。
+    /// 传 null 或 0 表示不加限制（复盘、历史回看要用全部数据）。
+    /// </summary>
+    private static string FreshFilter(double? hours, string column = "CapturedAt")
+        => hours is > 0 ? $" AND {column} >= DATEADD(MINUTE, -{(int)(hours.Value * 60)}, SYSDATETIME())" : "";
+
     /// <summary>按 fid 批量取欧赔主胜/平局 初盘→终盘变化（平均值 CompanyId=0）</summary>
     public async Task<Dictionary<long, (decimal? Home, decimal? Draw)>> GetEuOddsDeltaAsync(
-        IEnumerable<long> matchIds, CancellationToken ct = default)
+        IEnumerable<long> matchIds, CancellationToken ct = default, double? freshHours = null)
     {
         var ids = matchIds.Distinct().ToArray();
         if (ids.Length == 0) return new();
@@ -117,13 +158,13 @@ public sealed class BettingRepository
         foreach (var chunk in Chunk(ids))
         {
             var rows = await conn.QueryAsync<EuDeltaRow>(new CommandDefinition(
-                @"SELECT MatchId,
+                $@"SELECT MatchId,
                          MAX(CASE WHEN IsOpening = 0 THEN HomeWin END)
                        - MAX(CASE WHEN IsOpening = 1 THEN HomeWin END) AS HomeDelta,
                          MAX(CASE WHEN IsOpening = 0 THEN Draw END)
                        - MAX(CASE WHEN IsOpening = 1 THEN Draw END) AS DrawDelta
                   FROM dbo.FbOdds
-                  WHERE MatchId IN @ids AND OddsType = 'EU' AND CompanyId = 0
+                  WHERE MatchId IN @ids AND OddsType = 'EU' AND CompanyId = 0{FreshFilter(freshHours)}
                   GROUP BY MatchId",
                 new { ids = chunk }, cancellationToken: ct));
             foreach (var row in rows)
@@ -133,7 +174,8 @@ public sealed class BettingRepository
     }
 
     /// <summary>按 fid 批量取欧赔终盘主/平/客（平均值 CompanyId=0），受注场次没有 SP 时用来判断冷热。</summary>
-    public async Task<Dictionary<long, (decimal? Home, decimal? Draw, decimal? Away)>> GetClosingEuAsync(IEnumerable<long> matchIds, CancellationToken ct = default)
+    public async Task<Dictionary<long, (decimal? Home, decimal? Draw, decimal? Away)>> GetClosingEuAsync(
+        IEnumerable<long> matchIds, CancellationToken ct = default, double? freshHours = null)
     {
         var ids = matchIds.Distinct().ToArray();
         if (ids.Length == 0) return new();
@@ -143,12 +185,12 @@ public sealed class BettingRepository
         foreach (var chunk in Chunk(ids))
         {
             var rows = await conn.QueryAsync<ClosingEuRow>(new CommandDefinition(
-                @"SELECT MatchId,
+                $@"SELECT MatchId,
                          MAX(CASE WHEN IsOpening = 0 THEN HomeWin END) AS HomeWin,
                          MAX(CASE WHEN IsOpening = 0 THEN Draw END) AS Draw,
                          MAX(CASE WHEN IsOpening = 0 THEN AwayWin END) AS AwayWin
                   FROM dbo.FbOdds
-                  WHERE MatchId IN @ids AND OddsType = 'EU' AND CompanyId = 0
+                  WHERE MatchId IN @ids AND OddsType = 'EU' AND CompanyId = 0{FreshFilter(freshHours)}
                   GROUP BY MatchId",
                 new { ids = chunk }, cancellationToken: ct));
             foreach (var row in rows)
@@ -157,8 +199,38 @@ public sealed class BettingRepository
         return result;
     }
 
+    /// <summary>
+    /// 按 fid 取该场盘口（欧赔 + 必发）的最新采集时间。写进推荐记录后，
+    /// 事后能判断「这条推荐当时用的是不是新鲜盘」，不需要猜。
+    /// </summary>
+    public async Task<Dictionary<long, DateTime>> GetMarketFreshnessAsync(
+        IEnumerable<long> matchIds, CancellationToken ct = default)
+    {
+        var ids = matchIds.Distinct().ToArray();
+        if (ids.Length == 0) return new();
+
+        await using var conn = await _factory.OpenAsync(ct);
+        var result = new Dictionary<long, DateTime>();
+        foreach (var chunk in Chunk(ids))
+        {
+            var rows = await conn.QueryAsync<(long MatchId, DateTime At)>(new CommandDefinition(
+                @"SELECT MatchId, MAX(CapturedAt) AS At
+                  FROM (
+                      SELECT MatchId, MAX(CapturedAt) AS CapturedAt FROM dbo.FbOdds WHERE MatchId IN @ids GROUP BY MatchId
+                      UNION ALL
+                      SELECT MatchId, MAX(CapturedAt) AS CapturedAt FROM dbo.FbExchange WHERE MatchId IN @ids GROUP BY MatchId
+                  ) t
+                  GROUP BY MatchId",
+                new { ids = chunk }, cancellationToken: ct));
+            foreach (var row in rows)
+                result[row.MatchId] = row.At;
+        }
+        return result;
+    }
+
     /// <summary>亚盘初盘和终盘。终盘比初盘更小表示更看好主队。</summary>
-    public async Task<Dictionary<long, (decimal? Open, decimal? Close)>> GetAsianMoveAsync(IEnumerable<long> matchIds, CancellationToken ct = default)
+    public async Task<Dictionary<long, (decimal? Open, decimal? Close)>> GetAsianMoveAsync(
+        IEnumerable<long> matchIds, CancellationToken ct = default, double? freshHours = null)
     {
         var ids = matchIds.Distinct().ToArray();
         if (ids.Length == 0) return new();
@@ -168,11 +240,11 @@ public sealed class BettingRepository
         foreach (var chunk in Chunk(ids))
         {
             var rows = await conn.QueryAsync<AsianMoveRow>(new CommandDefinition(
-                @"SELECT MatchId,
+                $@"SELECT MatchId,
                          MAX(CASE WHEN IsOpening = 1 THEN Handicap END) AS OpenHcp,
                          MAX(CASE WHEN IsOpening = 0 THEN Handicap END) AS CloseHcp
                   FROM dbo.FbOdds
-                  WHERE MatchId IN @ids AND OddsType = 'AH' AND CompanyId = 0
+                  WHERE MatchId IN @ids AND OddsType = 'AH' AND CompanyId = 0{FreshFilter(freshHours)}
                   GROUP BY MatchId",
                 new { ids = chunk }, cancellationToken: ct));
             foreach (var row in rows)
@@ -226,8 +298,16 @@ public sealed class BettingRepository
         return rows.ToList();
     }
 
-    /// <summary>近 18 个月完场比分，供球队攻防估计。</summary>
-    public async Task<List<ScoreSample>> GetScoreSamplesAsync(CancellationToken ct = default)
+    /// <summary>
+    /// 近 18 个月完场比分，供球队攻防估计。
+    ///
+    /// <paramref name="before"/> 是回测用的时间闸：只取该时刻之前开赛的样本。
+    /// 不传就是全量——线上正常用。回测历史必须传，否则模型已经见过当天的赛果，
+    /// 「模型当时怎么想」这个问题就永远答不出来（2026-11-05 实测：按全量重训去回测 11-04 的朗斯，
+    /// 模型竟然给出「客胜」，因为它已经知道科莫打了 9 个球）。
+    /// </summary>
+    public async Task<List<ScoreSample>> GetScoreSamplesAsync(
+        CancellationToken ct = default, DateTime? before = null)
     {
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<ScoreSample>(new CommandDefinition(
@@ -236,8 +316,9 @@ public sealed class BettingRepository
               FROM dbo.FbMatch f
               WHERE f.Status = 3
                 AND f.HomeScore IS NOT NULL AND f.AwayScore IS NOT NULL
-                AND f.MatchTime >= DATEADD(month, -18, GETDATE())",
-            cancellationToken: ct));
+                AND f.MatchTime >= DATEADD(month, -18, GETDATE())
+                AND (@before IS NULL OR f.MatchTime < @before)",
+            new { before }, cancellationToken: ct));
         return rows.ToList();
     }
 
@@ -246,7 +327,7 @@ public sealed class BettingRepository
     /// 正值=尾盘抬高主胜赔（看淡主）；负值=尾盘继续压主。
     /// </summary>
     public async Task<Dictionary<long, decimal?>> GetLateHomeSteamAsync(
-        IEnumerable<long> matchIds, CancellationToken ct = default)
+        IEnumerable<long> matchIds, CancellationToken ct = default, double? freshHours = null)
     {
         var ids = matchIds.Distinct().ToArray();
         if (ids.Length == 0) return new();
@@ -256,7 +337,7 @@ public sealed class BettingRepository
         foreach (var chunk in Chunk(ids))
         {
             var rows = await conn.QueryAsync<(long MatchId, decimal? LateDelta)>(new CommandDefinition(
-                @"WITH pts AS (
+                $@"WITH pts AS (
                       SELECT MatchId, HomeWin, CapturedAt,
                              ROW_NUMBER() OVER (PARTITION BY MatchId ORDER BY CapturedAt DESC) AS rd,
                              COUNT(*) OVER (PARTITION BY MatchId) AS cnt
@@ -275,7 +356,8 @@ public sealed class BettingRepository
                   SELECT l.MatchId,
                          l.HomeWin - e.HomeWin AS LateDelta
                   FROM latest l
-                  INNER JOIN earlier e ON e.MatchId = l.MatchId AND e.rn = 1",
+                  INNER JOIN earlier e ON e.MatchId = l.MatchId AND e.rn = 1
+                  WHERE 1 = 1{FreshFilter(freshHours, "l.CapturedAt")}",
                 new { ids = chunk }, cancellationToken: ct));
             foreach (var row in rows)
                 result[row.MatchId] = row.LateDelta;
@@ -294,39 +376,41 @@ public sealed class BettingRepository
         var result = new Dictionary<long, (int?, int?)>();
         foreach (var chunk in Chunk(ids))
         {
+            // 2026-11-05 性能修复：原实现是相关子查询——外层每场对 FbMatch（40 万行）扫两次
+            // （HomeTeamId OR AwayTeamId，OR 走不了索引），数据回填后从毫秒退化到 13 秒，
+            // 拖死整个 /api/recommend。改成窗口函数：一次扫 FbMatch，按球队取最近 5 场求分，
+            // 物化成 form 再 JOIN，O(27×40万) 降到 O(40万)。
+            //
+            // 口径差异：原来「截至 m.MatchTime 之前的最近 5 场」，现在「截至当前最近 5 场」。
+            // 实时推荐里 m.MatchTime 都在未来，两者完全等价；复盘里 m 是历史场次会有轻微偏差，
+            // 但这个字段只喂方向推荐（已 2026-11-04 停发、仅落库校准台账），不影响对外发布的大奶榜。
             var rows = await conn.QueryAsync<(long MatchId, int? HomePts, int? AwayPts)>(new CommandDefinition(
-                @"SELECT m.MatchId,
-                         (
-                             SELECT SUM(pts) FROM (
-                                 SELECT TOP 5 CASE
-                                     WHEN x.HomeTeamId = m.HomeTeamId AND x.ResultSpf = '3' THEN 3
-                                     WHEN x.AwayTeamId = m.HomeTeamId AND x.ResultSpf = '0' THEN 3
-                                     WHEN x.ResultSpf = '1' THEN 1
-                                     ELSE 0 END AS pts
-                                 FROM dbo.FbMatch x
-                                 WHERE x.Status = 3 AND x.ResultSpf IN ('3','1','0')
-                                   AND x.MatchTime < m.MatchTime
-                                   AND (x.HomeTeamId = m.HomeTeamId OR x.AwayTeamId = m.HomeTeamId)
-                                   AND m.HomeTeamId IS NOT NULL
-                                 ORDER BY x.MatchTime DESC
-                             ) t
-                         ) AS HomePts,
-                         (
-                             SELECT SUM(pts) FROM (
-                                 SELECT TOP 5 CASE
-                                     WHEN x.HomeTeamId = m.AwayTeamId AND x.ResultSpf = '3' THEN 3
-                                     WHEN x.AwayTeamId = m.AwayTeamId AND x.ResultSpf = '0' THEN 3
-                                     WHEN x.ResultSpf = '1' THEN 1
-                                     ELSE 0 END AS pts
-                                 FROM dbo.FbMatch x
-                                 WHERE x.Status = 3 AND x.ResultSpf IN ('3','1','0')
-                                   AND x.MatchTime < m.MatchTime
-                                   AND (x.HomeTeamId = m.AwayTeamId OR x.AwayTeamId = m.AwayTeamId)
-                                   AND m.AwayTeamId IS NOT NULL
-                                 ORDER BY x.MatchTime DESC
-                             ) t
-                         ) AS AwayPts
+                @"WITH ranked AS (
+                      SELECT TeamId, MatchTime, Pts,
+                             ROW_NUMBER() OVER (PARTITION BY TeamId ORDER BY MatchTime DESC) AS rn
+                      FROM (
+                          SELECT HomeTeamId AS TeamId, MatchTime,
+                                 CASE WHEN ResultSpf = '3' THEN 3
+                                      WHEN ResultSpf = '1' THEN 1 ELSE 0 END AS Pts
+                          FROM dbo.FbMatch
+                          WHERE Status = 3 AND ResultSpf IN ('3','1','0') AND HomeTeamId IS NOT NULL
+                          UNION ALL
+                          SELECT AwayTeamId AS TeamId, MatchTime,
+                                 CASE WHEN ResultSpf = '0' THEN 3
+                                      WHEN ResultSpf = '1' THEN 1 ELSE 0 END AS Pts
+                          FROM dbo.FbMatch
+                          WHERE Status = 3 AND ResultSpf IN ('3','1','0') AND AwayTeamId IS NOT NULL
+                      ) u
+                  ),
+                  form AS (
+                      SELECT TeamId, SUM(Pts) AS Pts5
+                      FROM ranked WHERE rn <= 5
+                      GROUP BY TeamId
+                  )
+                  SELECT m.MatchId, fh.Pts5 AS HomePts, fa.Pts5 AS AwayPts
                   FROM dbo.FbMatch m
+                  LEFT JOIN form fh ON fh.TeamId = m.HomeTeamId
+                  LEFT JOIN form fa ON fa.TeamId = m.AwayTeamId
                   WHERE m.MatchId IN @ids",
                 new { ids = chunk }, cancellationToken: ct));
             foreach (var row in rows)
@@ -410,9 +494,17 @@ public sealed class BettingRepository
         public decimal? DrawDelta { get; set; }
     }
 
-    /// <summary>按 fid 批量取必发主/平/客投注占比（最新快照）</summary>
+    /// <summary>
+    /// 按 fid 批量取必发主/平/客投注占比（最新快照）。
+    ///
+    /// <paramref name="asOfKickoff"/> 只给复盘用：必发会一直记到赛中甚至赛后
+    /// （1722 场完场比赛里 1697 条采集晚于开赛），拿最后一条去重算等于把赛中资金
+    /// ——也就是比分已经发生之后的信息——喂进信号。复盘要还原「当时会怎么判」，
+    /// 必须卡在开赛时刻。
+    /// </summary>
     public async Task<Dictionary<long, (decimal? Home, decimal? Draw, decimal? Away)>> GetExchangeRatioAsync(
-        IEnumerable<long> matchIds, CancellationToken ct = default)
+        IEnumerable<long> matchIds, CancellationToken ct = default, double? freshHours = null,
+        bool asOfKickoff = false)
     {
         var ids = matchIds.Distinct().ToArray();
         if (ids.Length == 0) return new();
@@ -422,12 +514,16 @@ public sealed class BettingRepository
         foreach (var chunk in Chunk(ids))
         {
             var rows = await conn.QueryAsync<ExchangeRatio>(new CommandDefinition(
-                @"SELECT MatchId, RatioHome, RatioDraw, RatioAway
+                $@"SELECT MatchId, RatioHome, RatioDraw, RatioAway
                   FROM (
                       SELECT MatchId, RatioHome, RatioDraw, RatioAway,
                              ROW_NUMBER() OVER (PARTITION BY MatchId ORDER BY CapturedAt DESC) AS rn
-                      FROM dbo.FbExchange
-                      WHERE MatchId IN @ids
+                      FROM {(asOfKickoff
+                          ? @"(SELECT e.* FROM dbo.FbExchange e
+                               JOIN dbo.FbMatch m ON m.MatchId = e.MatchId
+                              WHERE e.MatchId IN @ids AND e.CapturedAt <= m.MatchTime)"
+                          : "dbo.FbExchange")} x
+                      WHERE {(asOfKickoff ? "1 = 1" : $"MatchId IN @ids{FreshFilter(freshHours)}")}
                   ) t
                   WHERE rn = 1",
                 new { ids = chunk }, cancellationToken: ct));
@@ -526,8 +622,12 @@ public sealed class BettingRepository
     public async Task DeleteRecommendationsByBoardDateAsync(string board, DateTime recDate, CancellationToken ct = default)
     {
         await using var conn = await _factory.OpenAsync(ct);
+        // 只清还没结算的。已回填赛果的行删了就永久丢失命中记录，
+        // 而重算本身会越来越频繁（T−60min 那一轮每 10 分钟一次），
+        // 一天里晚场重算会把早场的赛果反复抹掉。
         await conn.ExecuteAsync(new CommandDefinition(
-            @"DELETE FROM dbo.Recommendation WHERE Board = @b AND RecDate = @rd",
+            @"DELETE FROM dbo.Recommendation
+              WHERE Board = @b AND RecDate = @rd AND ActualResult IS NULL",
             new { b = board, rd = recDate.Date }, cancellationToken: ct));
     }
 
@@ -547,7 +647,7 @@ public sealed class BettingRepository
                     Expect=@e, MatchId=@mid, HomeTeam=@h, AwayTeam=@a, MatchTime=@mt,
                     RecResult=@r, Confidence=@c, SignalLevel=@lv, IsCoverAll=@cover, SignalDesc=@desc,
                     Score1=@s1, Score2=@s2, Goals1=@g1, Goals2=@g2, RecHandicap=@rh, RecHalfFull=@hf,
-                    Handicap=@hcp,
+                    Handicap=@hcp, HitProbability=@hp, HitProbNote=@hpn, PickOdds=@po, MarketProb=@mp, ModelTag=@mtag, DataAt=@dat,
                     ActualScore = CASE WHEN t.MatchId = @mid THEN t.ActualScore END,
                     ActualGoals = CASE WHEN t.MatchId = @mid THEN t.ActualGoals END,
                     ActualResult = CASE WHEN t.MatchId = @mid THEN t.ActualResult END,
@@ -556,17 +656,123 @@ public sealed class BettingRepository
                         WHEN t.ActualResult = @r THEN 1 ELSE 0 END,
                     HandicapHit = NULL
                   WHEN NOT MATCHED THEN INSERT
-                    (Board, Expect, MatchId, MatchNo, HomeTeam, AwayTeam, MatchTime, RecResult, Confidence, SignalLevel, IsCoverAll, SignalDesc, Score1, Score2, Goals1, Goals2, RecHandicap, RecHalfFull, Handicap, RecDate)
-                    VALUES (@b, @e, @mid, @no, @h, @a, @mt, @r, @c, @lv, @cover, @desc, @s1, @s2, @g1, @g2, @rh, @hf, @hcp, @rd);",
+                    (Board, Expect, MatchId, MatchNo, HomeTeam, AwayTeam, MatchTime, RecResult, Confidence, SignalLevel, IsCoverAll, SignalDesc, Score1, Score2, Goals1, Goals2, RecHandicap, RecHalfFull, Handicap, RecDate, HitProbability, HitProbNote, PickOdds, MarketProb, ModelTag, DataAt)
+                    VALUES (@b, @e, @mid, @no, @h, @a, @mt, @r, @c, @lv, @cover, @desc, @s1, @s2, @g1, @g2, @rh, @hf, @hcp, @rd, @hp, @hpn, @po, @mp, @mtag, @dat);",
                 new
                 {
                     b = r.Board, e = r.Expect, mid = r.MatchId, no = r.MatchNo,
                     h = r.HomeTeam, a = r.AwayTeam, mt = r.MatchTime, r = r.RecResult,
                     c = r.Confidence, lv = r.SignalLevel, cover = r.IsCoverAll, desc = r.SignalDesc,
                     s1 = r.Score1, s2 = r.Score2, g1 = r.Goals1, g2 = r.Goals2,
-                    rh = r.RecHandicap, hf = r.RecHalfFull, hcp = r.Handicap, rd = r.RecDate
+                    rh = r.RecHandicap, hf = r.RecHalfFull, hcp = r.Handicap, rd = r.RecDate,
+                    hp = r.HitProbability, hpn = r.HitProbNote, po = r.PickOdds, mp = r.MarketProb,
+                    mtag = r.ModelTag, dat = r.DataAt
                 }, cancellationToken: ct));
         }
+    }
+
+    /* ---------------- 否决台账 ---------------- */
+
+    /// <summary>
+    /// 写入当天被规则挡下的场次。同一板块同一天按场次号覆盖，
+    /// 已回填的赛果只在 MatchId 未变时保留——重跑作业不该把结算结果弄丢。
+    /// </summary>
+    public async Task SaveVetoesAsync(IEnumerable<VetoRecord> rows, CancellationToken ct = default)
+    {
+        var list = rows.ToList();
+        if (list.Count == 0) return;
+
+        await using var conn = await _factory.OpenAsync(ct);
+        foreach (var r in list)
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                @"MERGE dbo.RecommendationVeto AS t
+                  USING (SELECT @b AS Board, @rd AS RecDate, @no AS MatchNo) AS s
+                  ON t.Board = s.Board AND t.RecDate = s.RecDate AND t.MatchNo = s.MatchNo
+                  WHEN MATCHED THEN UPDATE SET
+                    MatchId=@mid, HomeTeam=@h, AwayTeam=@a, MatchTime=@mt,
+                    Pick=@pick, HcpPick=@hcpPick, Handicap=@hcp, ReasonCode=@code, Reason=@reason,
+                    SignalLevel=@lv, HitProbability=@hp, HcpProbability=@hhp, PickOdds=@po,
+                    MarketProb=@mp, RatioHome=@rh, RatioAway=@ra, OddsDelta=@od,
+                    ActualResult = CASE WHEN t.MatchId = @mid THEN t.ActualResult END,
+                    ActualScore  = CASE WHEN t.MatchId = @mid THEN t.ActualScore END,
+                    Hit          = CASE WHEN t.MatchId = @mid THEN t.Hit END,
+                    HcpHit       = CASE WHEN t.MatchId = @mid THEN t.HcpHit END
+                  WHEN NOT MATCHED THEN INSERT
+                    (Board, RecDate, MatchId, MatchNo, HomeTeam, AwayTeam, MatchTime, Pick, HcpPick,
+                     Handicap, ReasonCode, Reason, SignalLevel, HitProbability, HcpProbability,
+                     PickOdds, MarketProb, RatioHome, RatioAway, OddsDelta)
+                    VALUES (@b, @rd, @mid, @no, @h, @a, @mt, @pick, @hcpPick, @hcp, @code, @reason,
+                            @lv, @hp, @hhp, @po, @mp, @rh, @ra, @od);",
+                new
+                {
+                    b = r.Board, rd = r.RecDate.Date, mid = r.MatchId, no = r.MatchNo,
+                    h = r.HomeTeam, a = r.AwayTeam, mt = r.MatchTime,
+                    pick = r.Pick, hcpPick = r.HcpPick, hcp = r.Handicap,
+                    code = r.ReasonCode, reason = r.Reason, lv = r.SignalLevel,
+                    hp = r.HitProbability, hhp = r.HcpProbability, po = r.PickOdds,
+                    mp = r.MarketProb, rh = r.RatioHome, ra = r.RatioAway, od = r.OddsDelta
+                }, cancellationToken: ct));
+        }
+    }
+
+    /// <summary>删除某板块某天的否决记录（重跑当天作业时先清，避免残留旧场次）。</summary>
+    public async Task DeleteVetoesByBoardDateAsync(string board, DateTime recDate, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"DELETE FROM dbo.RecommendationVeto WHERE Board = @b AND RecDate = @rd",
+            new { b = board, rd = recDate.Date }, cancellationToken: ct));
+    }
+
+    /// <summary>取还没判定的否决记录。</summary>
+    public async Task<List<VetoRecord>> GetUnsettledVetoesAsync(CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<VetoRecord>(new CommandDefinition(
+            // 只回看近 7 天：更早还没判定的场次基本是永远不会有赛果的，
+            // 留在结果集里每轮都要白扫一遍。
+            // 取消场次（Status=2）永远等不到赛果，直接排除出待判队列（Hit 保持 NULL、不进统计分母）。
+            @"SELECT * FROM dbo.RecommendationVeto
+              WHERE Hit IS NULL AND MatchId IS NOT NULL
+                AND RecDate >= DATEADD(DAY, -7, CAST(GETDATE() AS DATE))
+                AND NOT EXISTS (SELECT 1 FROM dbo.FbMatch x
+                                WHERE x.MatchId = RecommendationVeto.MatchId AND x.Status = 2)",
+            cancellationToken: ct))).ToList();
+    }
+
+    /// <summary>回填否决记录的实际结果。</summary>
+    public async Task BackfillVetoResultAsync(long vetoId, string actualScore, char actualResult,
+        bool? hit, bool? hcpHit, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"UPDATE dbo.RecommendationVeto
+              SET ActualScore=@s, ActualResult=@r, Hit=@h, HcpHit=@hh
+              WHERE VetoId=@id",
+            new { id = vetoId, s = actualScore, r = actualResult, h = hit, hh = hcpHit },
+            cancellationToken: ct));
+    }
+
+    /// <summary>按否决原因聚合：挡了多少场、照打会中多少、回报如何。</summary>
+    public async Task<List<VetoStatRow>> GetVetoStatsAsync(int days, CancellationToken ct = default, string? board = null)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<VetoStatRow>(new CommandDefinition(
+            @"SELECT ReasonCode,
+                     COUNT(*) AS Total,
+                     SUM(CASE WHEN Hit IS NOT NULL THEN 1 ELSE 0 END) AS Settled,
+                     SUM(CASE WHEN Hit = 1 THEN 1 ELSE 0 END) AS Hits,
+                     CAST(100.0 * SUM(CASE WHEN Hit = 1 THEN 1 ELSE 0 END)
+                          / NULLIF(SUM(CASE WHEN Hit IS NOT NULL THEN 1 ELSE 0 END), 0) AS DECIMAL(5,1)) AS HitRate,
+                     CAST(AVG(CASE WHEN Hit IS NOT NULL THEN PickOdds END) AS DECIMAL(8,2)) AS AvgOdds,
+                     CAST(SUM(CASE WHEN Hit = 1 THEN PickOdds ELSE 0 END)
+                          / NULLIF(SUM(CASE WHEN Hit IS NOT NULL THEN 1 ELSE 0 END), 0) AS DECIMAL(6,3)) AS Roi
+              FROM dbo.RecommendationVeto
+              WHERE RecDate >= @from AND (@board IS NULL OR Board = @board)
+              GROUP BY ReasonCode
+              ORDER BY COUNT(*) DESC",
+            new { from = DateTime.Today.AddDays(-Math.Abs(days)), board }, cancellationToken: ct))).ToList();
     }
 
     /// <summary>按 fid 批量取比赛时间（胜负彩等板块 MatchTime 缺失时补时间用）。</summary>
@@ -624,6 +830,27 @@ public sealed class BettingRepository
         return result;
     }
 
+    /// <summary>
+    /// 校准用样本：已出赛果、有预测值、有方向的推荐行。全包与无方向的场次不计入——
+    /// 它们本来就不参与命中率，放进来只会稀释结论。
+    /// </summary>
+    public async Task<List<CalibrationRow>> GetCalibrationRowsAsync(
+        DateTime from, DateTime to, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.QueryAsync<CalibrationRow>(new CommandDefinition(
+            @"SELECT RecId, Board, RecDate, MatchTime, HitProbability, MarketProb, PickOdds,
+                     CAST(CASE WHEN Hit = 1 THEN 1 ELSE 0 END AS BIT) AS Hit,
+                     ModelTag, DataAt, SignalLevel, RecResult, ActualResult
+              FROM dbo.Recommendation
+              WHERE RecDate >= @from AND RecDate <= @to
+                AND HitProbability IS NOT NULL
+                AND Hit IS NOT NULL
+                AND RecResult IS NOT NULL",
+            new { from = from.Date, to = to.Date }, cancellationToken: ct));
+        return rows.ToList();
+    }
+
     private static IEnumerable<long[]> Chunk(long[] ids, int size = 500)
     {
         for (var i = 0; i < ids.Length; i += size)
@@ -641,6 +868,31 @@ public sealed class BettingRepository
         public int? HomeScore { get; set; }
         public int? AwayScore { get; set; }
         public char? ResultSpf { get; set; }
+    }
+
+    /// <summary>
+    /// 统计「马上要开赛、但上次算推荐用的盘还不算临场盘」的场次数量。
+    ///
+    /// 用途是 T−60min 重算：现在只有 08:40 / 11:40 / 16:40 / 20:40 四个保存时点，
+    /// 16:40 存下的票到 20:00 开赛前发生的变化不会重算，于是「终盘规则」实际是在拿早盘价解释。
+    /// 越临近开赛的盘越值钱，所以这里找出那些最后一版数据早于「开赛前 60 分钟」的场次。
+    ///
+    /// DataAt 是那次预测所依据的盘口采集时间，重算后会被刷成当前时刻，
+    /// 因此同一场不会反复触发。
+    /// </summary>
+    public async Task<int> CountNearKickoffStaleAsync(
+        int fromMinutes = 55, int toMinutes = 85, int freshMinutes = 60, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+            @"SELECT COUNT(*)
+              FROM dbo.Recommendation r
+              WHERE r.MatchTime IS NOT NULL
+                AND r.ActualResult IS NULL
+                AND r.MatchTime BETWEEN DATEADD(minute, @from, SYSDATETIME())
+                                    AND DATEADD(minute, @to, SYSDATETIME())
+                AND (r.DataAt IS NULL OR r.DataAt < DATEADD(minute, -@fresh, r.MatchTime))",
+            new { from = fromMinutes, to = toMinutes, fresh = freshMinutes }, cancellationToken: ct));
     }
 
     /// <summary>回填一条推荐的实际赛果与命中</summary>
@@ -672,6 +924,8 @@ public sealed class BettingRepository
             @"SELECT r.* FROM dbo.Recommendation r
               LEFT JOIN dbo.FbMatch f ON f.MatchId = r.MatchId AND f.Status = 3
               WHERE r.MatchId IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM dbo.FbMatch x
+                                WHERE x.MatchId = r.MatchId AND x.Status = 2) -- 取消场永远无赛果，不进待结队列
                 AND (r.ActualResult IS NULL
                      OR (r.RecHandicap IS NOT NULL AND r.Handicap IS NOT NULL AND r.HandicapHit IS NULL)
                      OR (f.MatchId IS NOT NULL AND (

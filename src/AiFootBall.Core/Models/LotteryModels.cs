@@ -17,6 +17,12 @@ public sealed class LotteryTypeInfo
     public string? SourceUrl { get; set; }
     public bool IsActive { get; set; } = true;
 
+    /// <summary>
+    /// 本项目是否提供选号。七乐彩/七星彩只有开奖数据、没有选号引擎，这里为 false。
+    /// 前端渲染彩种入口时按这个字段过滤，不要再自己维护一份白名单。
+    /// </summary>
+    public bool SupportsRecommend => LottoCodes.All.Contains(Code, StringComparer.OrdinalIgnoreCase);
+
     /// <summary>数字型彩票（3D/排列三/七星彩等），号码为有序个位号</summary>
     public bool IsDigitGame => RedMax <= 9 && BlueCount == 0;
 }

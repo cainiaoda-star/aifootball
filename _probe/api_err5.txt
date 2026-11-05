@@ -1,6 +1,0 @@
-Unhandled exception. System.IO.FileLoadException: Could not load file or assembly 'C:\Users\Administrator\AppData\Local\AiFootBall\run\AiFootBall.Sources.dll'. 应用程序控制策略已阻止此文件。 (0x800711C7)
-File name: 'C:\Users\Administrator\AppData\Local\AiFootBall\run\AiFootBall.Sources.dll'
-   at Program.<Main>$(String[] args)
-   at System.Runtime.CompilerServices.AsyncMethodBuilderCore.Start[TStateMachine](TStateMachine& stateMachine)
-   at Program.<Main>$(String[] args)
-   at Program.<Main>(String[] args)

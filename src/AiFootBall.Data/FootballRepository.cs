@@ -160,6 +160,26 @@ WHEN NOT MATCHED THEN INSERT
         return map;
     }
 
+    /// <summary>哪些场次已取消（FbMatch.Status=2）。购票结算按官方规则把取消腿按赔率 1 计，退本金。</summary>
+    public async Task<HashSet<long>> GetCancelledByIdsAsync(IEnumerable<long> matchIds, CancellationToken ct = default)
+    {
+        var ids = matchIds.Where(x => x > 0).Distinct().ToArray();
+        var set = new HashSet<long>();
+        if (ids.Length == 0) return set;
+
+        await using var conn = await _factory.OpenAsync(ct);
+        for (var i = 0; i < ids.Length; i += 500)
+        {
+            var chunk = ids.Skip(i).Take(500).ToArray();
+            var rows = await conn.QueryAsync<long>(new CommandDefinition(
+                @"SELECT MatchId FROM dbo.FbMatch
+                  WHERE Status = 2 AND MatchId IN @ids",
+                new { ids = chunk }, cancellationToken: ct));
+            foreach (var id in rows) set.Add(id);
+        }
+        return set;
+    }
+
     /// <summary>北单这场开出的让球数（最近一张北单受注卡）。</summary>
     public async Task<decimal?> GetBdHandicapAsync(long matchId, CancellationToken ct = default)
     {

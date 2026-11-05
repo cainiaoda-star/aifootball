@@ -178,14 +178,15 @@ public class BdHandicapTests
         RecommendationSelection.ApplyJcHandicap(aleague, 6.0m, 4.2m, 1.40m, 2.5m, 5.5m, 3.8m, 1.45m);
         Assert.Null(aleague.RecHandicap);
 
+        // 客胜水位 1.90：≥1.80 才进让球表（低赔不推，2026-11-04）
         var epl = new MatchRecommendation
         {
             Board = Boards.Jc, MatchNo = "周日011", LeagueName = "英超", Handicap = 0m
         };
-        RecommendationSelection.ApplyJcHandicap(epl, 6.0m, 4.2m, 1.40m, 2.5m, 5.5m, 3.8m, 1.45m);
+        RecommendationSelection.ApplyJcHandicap(epl, 6.0m, 4.2m, 1.40m, 2.5m, 5.5m, 3.8m, 1.90m);
         Assert.Equal('0', epl.RecHandicap);
-        Assert.Equal(1.45m, epl.HandicapOdds);
-        Assert.True(epl.HandicapProbability >= 55m);
+        Assert.Equal(1.90m, epl.HandicapOdds);
+        Assert.True(epl.HandicapProbability >= 45m);
         Assert.Single(RecommendationSelection.ForJcHandicap(new[] { epl }));
     }
 
@@ -200,6 +201,8 @@ public class BdHandicapTests
             SignalLevel = 1,
             Confidence = 45m,
             HitProbability = 37.2m,
+            // 判定看 Tags，不看 SignalDesc：文案怎么写都不影响发不发
+            Tags = SignalTag.DrawEven | SignalTag.DrawLowBacktest | SignalTag.NotFeatured,
             SignalDesc = "均势看平：主客均≥2.20，平局 3.10（平局回测偏低，不进精选）"
         };
         var model = new MatchRecommendation
@@ -209,6 +212,7 @@ public class BdHandicapTests
             RecResult = '1',
             SignalLevel = 1,
             Confidence = 41m,
+            Tags = SignalTag.DrawByModel | SignalTag.NotFeatured,
             SignalDesc = "无强信号；模型看平，不进精选"
         };
         var fallback = new MatchRecommendation

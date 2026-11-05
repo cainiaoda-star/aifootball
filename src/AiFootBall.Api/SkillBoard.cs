@@ -15,18 +15,7 @@ public static class SkillBoard
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
-    public static string FilePath()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "AiFootBall.sln")))
-                return Path.Combine(dir.FullName, "skills", "board.json");
-            dir = dir.Parent;
-        }
-
-        throw new DirectoryNotFoundException("找不到 AiFootBall.sln，技能不能写到代码目录外。");
-    }
+    public static string FilePath() => AiFootBall.Sources.DeployPaths.Under("skills", "board.json");
 
     public static SkillFile Read()
     {
