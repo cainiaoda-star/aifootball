@@ -7,9 +7,10 @@ namespace AiFootBall.Sources;
 /// 竞彩大奶推荐引擎（2026-11-04 改向）。
 ///
 /// 用户指示：胜负彩、北单推荐下线，每日只推荐竞彩大奶——
-///   · 比分（BF）：官方固定奖金全部比分档，赔率 4.0~<see cref="MaxScoreOdds"/>；
 ///   · 半全场（BQ）：只发 胜胜 / 平平 / 负负（2026-11-04 晚实测逆转档净亏，见 <see cref="HalfFullCombos"/>）；
-///   · 总进球（JQ）：官方 0~7+ 档，5 球档不发。
+///   · 总进球（JQ）：官方 0~7+ 档，5 球档不发；
+///   · 比分（BF）：官方固定奖金全部比分档，赔率 4.0~<see cref="MaxScoreOdds"/>。
+/// 玩法侧重点（2026-11-06 定调）：主攻半全场 → 总进球为辅 → 其次比分，见 <see cref="PlayOrder"/>。
 ///
 /// 概率全部来自 Dixon-Coles 比分网格（<see cref="ScorelineModel"/>）：
 ///   · 比分 = 单格概率；
@@ -200,8 +201,8 @@ public static class MilkPickEngine
         return (1m - MarketWeight) * modelFraction + MarketWeight * marketFraction;
     }
 
-    /// <summary>全榜上限 = 三个玩法名额之和（比分 5 + 半全场 4 + 总进球 3）。</summary>
-    public const int MaxPicks = 12;
+    /// <summary>全榜上限 = 三个玩法名额之和（半全场 3 + 总进球 2 + 比分 1）。</summary>
+    public const int MaxPicks = 6;
 
     /// <summary>
     /// 各玩法的「单注概率下限」，也就是这条榜的门槛命中率。
@@ -221,6 +222,39 @@ public static class MilkPickEngine
     /// <inheritdoc cref="MinScoreProbability"/>
     public const decimal MinHalfFullProbability = 12.0m;
 
+    /// <summary>
+    /// 半全场「反转档」（半场方向 ≠ 全场方向，如 平负/负胜/胜平/胜负）的概率下限。
+    ///
+    /// 2026-11-06 用户定调放开反转档后加：反转档的概率天然远低于顺风档（胜胜/平平/负负），
+    /// 仍用 12% 会一刀切把它们全挡在门外。反转档赔率高（12~20+ 倍），模型联合分布里
+    /// 常见的反转档概率约 5%~10%，取 5% 作为下限——既放进反转档，又挡掉纯噪声。
+    /// 与比分同一条线（5%），因为两者都是「赔率高、命中率低」的长尾档。
+    /// </summary>
+    public const decimal MinHalfFullReverseProbability = 5.0m;
+
+    /// <summary>
+    /// 零封倾向阈值（0-1 概率，2026-11-06 加）。某队全场零封对手的模型概率达到此线，
+    /// 就把这场判为「零封型」，半全场选注时优先「胜胜/负负」方向一致档，而非硬套高赔反转档。
+    /// 泊松进球期望下，强队对弱队（λ差约 2.0）零封概率约 13%~18%，弱队零封强队通常 <5%；
+    /// 取 0.15 只认「明显强队零封弱队」的信号，避免误伤势均力敌的场次。
+    /// </summary>
+    public const decimal CleanSheetThreshold = 0.15m;
+
+    /// <summary>
+    /// 让胜极端低水阈值（2026-11-06 加）。主队让球盘的让胜(NSPF-3)水位被压到这个数以下，
+    /// 说明市场资金一致看好主队赢 2 球以上；但强队往往「只赢球、不赢盘」——净胜球卡在 1 球，
+    /// 让胜(需净胜≥2)走盘。铁证：2026-11-05 周四001 町田 2:1 上海申花（主让1球），让胜 2.00→1.66。
+    /// 用于 <see cref="MilkPick.HotHomeTrap"/> 的判定，驱动半全场选注转向「让平+胜胜+1球小胜」。
+    /// </summary>
+    public const decimal MinNspfHotOdds = 1.66m;
+
+    /// <summary>
+    /// 净胜球卡 1 球的概率阈值（2026-11-06 加）。主队净胜正好 1 球的模型概率达到此线，
+    /// 且让胜已到极端低水，就判「让胜陷阱」——主队大概率只赢 1 球、让球盘走盘。
+    /// 泊松强队对弱队(λ差约1.5~2.0)净胜1球概率常 15%~22%，取 15% 作为显著线。
+    /// </summary>
+    public const decimal NetOneGoalThreshold = 0.15m;
+
     /// <inheritdoc cref="MinScoreProbability"/>
     public const decimal MinGoalProbability = 10.0m;
 
@@ -232,6 +266,88 @@ public static class MilkPickEngine
         JcPlayTypes.Jq => MinGoalProbability,
         _ => 0m
     };
+
+    /// <summary>
+    /// 按「注」取门槛命中率。半全场反转档（半场≠全场）单独用更低的 <see cref="MinHalfFullReverseProbability"/>，
+    /// 其余走 <see cref="ProbabilityFloor(string)"/>。2026-11-06 放开反转档时引入。
+    /// </summary>
+    private static decimal ProbabilityFloorFor(MilkPick pick)
+        => pick.PlayType == JcPlayTypes.Bq && IsHalfFullReverse(pick)
+            ? MinHalfFullReverseProbability
+            : ProbabilityFloor(pick.PlayType);
+
+    /// <summary>半全场 OptionCode 形如 "X-Y"（X=半场方向，Y=全场方向，3胜/1平/0负），X != Y 即反转档。</summary>
+    private static bool IsHalfFullReverse(MilkPick pick)
+        => pick.PlayType == JcPlayTypes.Bq
+           && pick.OptionCode.Length == 3
+           && pick.OptionCode[1] == '-'
+           && pick.OptionCode[0] != pick.OptionCode[2];
+
+    /// <summary>
+    /// 这注是不是「该豁免强背离撤注」的反转档 / 零封方向一致档（2026-11-06 加）。
+    ///
+    /// 背景：强背离撤注（DivergentDropPct=45%）拿「这一注的方向」跟市场最强方向比，
+    /// 方向相反且市场占比过半就撤。这对「顺风档」合理——市场都说得那么明白了还反着买，
+    /// 大概率是模型跨联赛实力差误判。但对两类注是**结构性误杀**：
+    ///   1) 半全场反转档（平负/负胜/胜平/胜负/平胜/平负）——它们的价值恰恰在于「跟市场反着买」，
+    ///      市场指主胜、你押「负负/平负」本来就该方向相反，这不是误判、是这类注的本质；
+    ///   2) 零封方向一致档（胜胜/负负，且 CleanSheetDirection 命中本注方向）——零封型剧本
+    ///      天然逆市场（市场看好强队赢、模型判强队被零封），方向相反正是信号本身。
+    /// 这两类注若被强背离一刀砍掉，等于把「假热门反向」这条核心规律整个废掉——它们本该上榜。
+    /// 所以这里豁免：只保留红标（DivergedFromMarket），不撤注。
+    /// </summary>
+    private static bool IsReverseOrCleanSheet(MilkPick pick)
+    {
+        // 半全场反转档：半场方向 ≠ 全场方向，天然逆市场。
+        if (IsHalfFullReverse(pick)) return true;
+
+        // 零封方向一致档：胜胜(3-3)命中「主队零封对手」、负负(0-0)命中「客队零封主队」。
+        if (pick.CleanSheetDirection is char cd)
+        {
+            if (pick.OptionCode == "3-3" && cd == '3') return true; // 主队零封客队 → 胜胜
+            if (pick.OptionCode == "0-0" && cd == '0') return true; // 客队零封主队 → 负负
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 半全场档位优先级（越小越先选）。2026-11-06 用户定调「主攻半全场、主攻高赔反转大奶」，
+    /// 后又补齐零封/半场平转/让胜陷阱规律，统一成四层决策：
+    ///   0 = 高赔反转档（胜平/负平/负胜/胜负，12.5~16 倍起步）——翻盘大奶，最高优先；
+    ///   1 = 零封方向一致档（胜胜/负负）——仅当这场零封倾向显著时提到这里，否则按概率自然竞争；
+    ///   2 = 让胜陷阱的「胜胜」档（2026-11-06）——主队让胜被买成极端低水、净胜卡1球时，
+    ///       胜胜(3-3)是「只赢1球」的正确落点（半场领先、全场守住小胜），与零封档同级；
+    ///   3 = 其他半全场档（顺风档平平 + 低赔反转档 平胜/平负）。
+    ///
+    /// perMatch 逐场跟进选注时，先看有没有高赔反转档；没有再判断零封倾向——
+    /// 若这场大概率零封（CleanSheetDirection 命中本注方向），优先选方向一致的胜胜/负负；
+    /// 再看让胜陷阱——若命中则胜胜提级；最后退回平平/平胜/平负。
+    /// </summary>
+    private static int HalfFullTier(MilkPick pick)
+    {
+        if (pick.PlayType != JcPlayTypes.Bq) return int.MaxValue;
+
+        // 0：高赔反转档（翻盘大奶）。
+        if (HighOddsReverseCombos.Contains(pick.OptionCode, StringComparer.Ordinal))
+            return 0;
+
+        // 1：零封方向一致档。只有当这场零封倾向明确、且本注方向与零封方向一致时才提级。
+        //    胜胜 = 主队零封对手（CleanSheetDirection=='3'）；负负 = 客队零封主队（'0'）。
+        if (pick.CleanSheetDirection is char cd)
+        {
+            var isHomeCleanWin = pick.OptionCode == "3-3" && cd == '3'; // 主队零封客队 → 胜胜
+            var isAwayCleanWin = pick.OptionCode == "0-0" && cd == '0'; // 客队零封主队 → 负负
+            if (isHomeCleanWin || isAwayCleanWin) return 1;
+        }
+
+        // 2：让胜陷阱的「胜胜」档（2026-11-06）。主队让胜被买成极端低水、净胜卡1球，
+        //    此时「只赢1球」的正确半全场是胜胜(3-3)——半场领先、全场守住小胜不扩大比分。
+        if (pick.HotHomeTrap && pick.OptionCode == "3-3")
+            return 2;
+
+        return 3;
+    }
 
     /// <summary>
     /// 同一场、同一玩法最多留几注（2026-11-04 用户拍板加的上限）。
@@ -250,18 +366,33 @@ public static class MilkPickEngine
     public const double HalfGoalShare = 0.45;
 
     /// <summary>
-    /// 半全场只发 胜胜 / 平平 / 负负 三个顺风组合（半-全，3胜 1平 0负）。
+    /// 半全场发哪些组合（半-全，3胜 1平 0负）。
     ///
-    /// 2026-11-04 晚改：原先是「胜负/负胜/胜平/负平」四个逆转组合，实测必须废掉——
-    /// 竞彩 453 场完场样本、1812 个逆转选项只命中 41 次（2.26%），平均赔率 24.10，
-    /// 平注回报率 0.451，分项 0.38~0.53，赔率给得再高也填不平真实概率。
-    /// 相反胜胜/平平/负负 的回报率是 1.04~1.11（赔率 4.46/6.98/7.19，仍在大奶线上）：
-    /// 竞彩半全场的钱几乎全压在逆转冷门上，顺风档反而被低估。
+    /// 2026-11-06 用户定调「主攻半全场，反转档必须放开」：全部 9 个组合都发，不再只限顺风档。
+    /// 顺风档（胜胜/平平/负负）起步赔率仅 1.19~3.40，负期望；高赔反转档（胜平/负平/负胜/胜负）
+    /// 起步赔率 12.5~16 倍，才是大奶富矿。见 <see cref="HighOddsReverseCombos"/>。
     ///
-    /// 顺带解决用户指出的「比分 3:0 配半全场负胜」矛盾——负胜要求客队半场进过球，
-    /// 3:0 是零封，两个剧本压根不可能同场发生。换成顺风档后方向天然一致。
+    /// 历史注记（2026-11-04 晚曾改成只发顺风档，现按新规律推翻）：当时实测 453 场
+    /// 逆转档平注回报率 0.451、顺风档 1.04~1.11，结论是「顺风档被低估」。但那是
+    /// 全联赛混合样本；聚焦到「欧战低水热门」这个子集后，反转档才是真实价值洼地。
+    /// 半全场概率来自 <see cref="HalfFullJoint"/> 的完整 3×3 联合分布，9 档本来就都算得出来。
     /// </summary>
-    public static readonly string[] HalfFullCombos = { "3-3", "1-1", "0-0" };
+    public static readonly string[] HalfFullCombos =
+    {
+        "3-3", "3-1", "3-0",
+        "1-3", "1-1", "1-0",
+        "0-3", "0-1", "0-0"
+    };
+
+    /// <summary>
+    /// 高赔反转档（大奶）——半场与全场「方向翻转」的 4 个组合，起步赔率 12.5~16 倍。
+    ///   3-1 胜平（半场胜→全场平）、0-1 负平（半场负→全场平）、
+    ///   0-3 负胜（半场负→全场胜）、3-0 胜负（半场胜→全场负）。
+    ///
+    /// 区别于低赔反转档「平胜(1-3)」「平负(1-0)」——那两个起步才 3.1~3.2 倍，是
+    /// 「半场平→全场分出胜负」的常见剧本，不是大奶。2026-11-06 用户实测纠正后厘清。
+    /// </summary>
+    public static readonly string[] HighOddsReverseCombos = { "3-1", "0-1", "0-3", "3-0" };
 
     /// <summary>
     /// 生成当日大奶榜（只要榜，不要诊断）。保持旧签名，页面上那两条只读接口还在用。
@@ -451,13 +582,34 @@ public static class MilkPickEngine
             var joint = HalfFullJoint(scores, r.LeagueName, r.HomeTeam!, r.AwayTeam!, r.TotalLine);
             if (joint is not null)
             {
+                // 零封倾向（2026-11-06）：从全场进球分布算主队/客队零封对手的概率，
+                // 谁显著高就倾向谁——用于半全场选注时优先「负负/胜胜」而非高赔反转档。
+                var homeCleanSheet = grid.Where(c => c.Away == 0).Sum(c => c.P) / mass;
+                var awayCleanSheet = grid.Where(c => c.Home == 0).Sum(c => c.P) / mass;
+                var cleanDir = homeCleanSheet >= (double)CleanSheetThreshold && homeCleanSheet > awayCleanSheet
+                    ? '3'
+                    : awayCleanSheet >= (double)CleanSheetThreshold && awayCleanSheet > homeCleanSheet
+                        ? '0'
+                        : (char?)null;
+
+                // 让胜陷阱（2026-11-06）：主队让胜(NSPF-3)被买到极端低水 + 净胜1球概率显著
+                // → 主队「只赢球不赢盘」，让球盘走盘。驱动半全场选注转向「让平+胜胜+1球小胜」。
+                var nspfHome = points.FirstOrDefault(p => p.PlayType == JcPlayTypes.Nspf && p.OptionCode == "3");
+                var netOneGoal = grid.Where(c => c.Home - c.Away == 1).Sum(c => c.P) / mass;
+                var hotHomeTrap = nspfHome is not null
+                                  && nspfHome.Odds <= MinNspfHotOdds
+                                  && netOneGoal >= (double)NetOneGoalThreshold;
+
                 foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bq))
                 {
                     if (!HalfFullCombos.Contains(pt.OptionCode, StringComparer.Ordinal)) continue;
                     if (pt.Odds < MinHalfFullOdds) continue;
                     var p = joint[SideIndex(pt.OptionCode[0]), SideIndex(pt.OptionCode[2])];
                     if (p <= 0) continue;
-                    matchPicks.Add(WithProbability(Option(pt, r), Blend((decimal)p, pt.Odds, bqOver)));
+                    var bqPick = Option(pt, r);
+                    bqPick.CleanSheetDirection = cleanDir;
+                    bqPick.HotHomeTrap = hotHomeTrap;
+                    matchPicks.Add(WithProbability(bqPick, Blend((decimal)p, pt.Odds, bqOver)));
                 }
             }
 
@@ -557,9 +709,10 @@ public static class MilkPickEngine
             funnel.Skipped.Add("已进入全部场次，但没有一场生成候选注");
 
         // 1) 门槛过滤：EV 上限 + 各玩法的命中率下限。
+        //    半全场反转档（半场≠全场）用更低的 MinHalfFullReverseProbability，顺风档仍走 12%。
         var gated = result
             .Where(x => x.Ev <= MaxEv)
-            .Where(x => x.ModelProbability >= ProbabilityFloor(x.PlayType))
+            .Where(x => x.ModelProbability >= ProbabilityFloorFor(x))
             .ToList();
         funnel.AfterEv = gated.Count;
 
@@ -602,7 +755,9 @@ public static class MilkPickEngine
         // 先撤注、再分同场同玩法名额，被撤的名额留给同向的那注，而不是空着。
         var beforeDivergentDrop = coherent.Count;
         coherent = coherent
-            .Where(x => !(x.DivergedFromMarket && (x.MarketDirectionPct ?? 0m) >= DivergentDropPct))
+            .Where(x => !(x.DivergedFromMarket
+                         && (x.MarketDirectionPct ?? 0m) >= DivergentDropPct
+                         && !IsReverseOrCleanSheet(x)))
             .ToList();
         funnel.DivergentDropped = beforeDivergentDrop - coherent.Count;
 
@@ -638,16 +793,24 @@ public static class MilkPickEngine
             .ToList();
 
         // 3.5) 逐场跟进模式（2026-11-06 起）：每场只留概率最高的一注，不再全局砍单。
-        //      这是「每日复盘」新口径——竞彩每场都跟一个大奶（比分/半全场/总进球三选一），
-        //      赛后逐场写复盘。全局砍单（第 4 步）会把「没进榜的场次」整个丢掉，
-        //      复盘就缺了那些场。所以 perMatch 时每场取锚点方向里概率最高的那一注，
-        //      跳过按玩法取前 N 的全局压缩。
+        //      这是「每日复盘」新口径——竞彩每场都跟一个大奶，赛后逐场写复盘。
+        //      全局砍单（第 4 步）会把「没进榜的场次」整个丢掉，复盘就缺了那些场。
+        //
+        //      玩法侧重点（2026-11-06 用户定调）：主攻半全场 → 总进球为辅 → 其次比分。
+        //      所以每场选注时先按玩法优先级排，同一玩法内再比概率。
+        //      不再「纯按概率取第一」——那样半全场会被比分的高概率档挤掉。
+        //
+        //      半全场档位（2026-11-06 用户实测纠正）：主攻高赔反转大奶（胜平/负平/负胜/胜负，
+        //      12.5~16 倍起步）。所以半全场内部先按档位——高赔反转档优先，同档再比概率。
+        //      否则「按概率最高」会选出平胜(1-3)@3.1 这种低赔档，错过真正的大奶。
         if (perMatch)
         {
             var perMatchPicks = capped
                 .GroupBy(x => x.MatchId)
                 .Select(g => g
-                    .OrderByDescending(x => x.ModelProbability)
+                    .OrderBy(x => Array.IndexOf(PlayOrder, x.PlayType))
+                    .ThenBy(x => HalfFullTier(x))
+                    .ThenByDescending(x => x.ModelProbability)
                     .ThenByDescending(x => x.Ev)
                     .First())
                 .ToList();
@@ -726,8 +889,11 @@ public static class MilkPickEngine
         return row;
     }
 
-    /// <summary>榜单玩法的固定顺序：比分 → 半全场 → 总进球（用户点名的顺序）。</summary>
-    private static readonly string[] PlayOrder = { JcPlayTypes.Bf, JcPlayTypes.Bq, JcPlayTypes.Jq };
+    /// <summary>
+    /// 榜单玩法的固定顺序。2026-11-06 用户定调侧重点：主攻半全场 → 总进球为辅 → 其次比分。
+    /// 顺序即优先级，perMatch 逐场跟进按它选「每场一个大奶」，全局榜按它分玩法排序。
+    /// </summary>
+    private static readonly string[] PlayOrder = { JcPlayTypes.Bq, JcPlayTypes.Jq, JcPlayTypes.Bf };
 
     /// <summary>
     /// 市场方向占比达到这个数（%）就算「市场说得够明白」，此时与该方向相反的注直接撤（2026-11-05 加）。
@@ -745,12 +911,15 @@ public static class MilkPickEngine
             _ => null
         };
 
-    /// <summary>每个玩法最多几条。2026-11-04 晚从 5/4/3 收紧到 2/2/2。</summary>
+    /// <summary>
+    /// 每个玩法最多几条（全局榜）。2026-11-06 用户定调侧重点「主攻半全场 → 总进球为辅 → 其次比分」：
+    /// 半全场 3 条、总进球 2 条、比分 1 条，名额向半全场倾斜，比分降为点缀。
+    /// </summary>
     private static readonly Dictionary<string, int> MaxPerPlay = new()
     {
-        [JcPlayTypes.Bf] = 2,
-        [JcPlayTypes.Bq] = 2,
-        [JcPlayTypes.Jq] = 2
+        [JcPlayTypes.Bq] = 3,
+        [JcPlayTypes.Jq] = 2,
+        [JcPlayTypes.Bf] = 1
     };
 
     /* ---------------- 同一场的一致性 ---------------- */
@@ -831,6 +1000,41 @@ public static class MilkPickEngine
 
     private static bool IsOtherScoreCode(MilkPick pick)
         => pick.PlayType == JcPlayTypes.Bf && pick.OptionCode.EndsWith("其它", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 赛事类型分类（2026-11-06 加）。冷门是「赛事类型放大的」：杯赛主胜热门翻车率是联赛的 4 倍，
+    /// 国家队/欧国联看实力差是否真实。用于后续让「杯赛才押反转」的规律落到引擎选注。
+    /// 返回 "CUP"=杯赛 / "FRIENDLY"=友谊赛 / "LEAGUE"=联赛。
+    /// </summary>
+    private static string LeagueCategory(string? leagueName)
+    {
+        if (string.IsNullOrWhiteSpace(leagueName)) return "LEAGUE";
+        if (leagueName.Contains("友谊", StringComparison.Ordinal) || leagueName.Contains("热身", StringComparison.Ordinal))
+            return "FRIENDLY";
+        if (leagueName.Contains("杯", StringComparison.Ordinal)
+            || leagueName.Contains("欧冠", StringComparison.Ordinal)
+            || leagueName.Contains("欧罗巴", StringComparison.Ordinal)
+            || leagueName.Contains("欧会", StringComparison.Ordinal)
+            || leagueName.Contains("欧协", StringComparison.Ordinal)
+            || leagueName.Contains("亚冠", StringComparison.Ordinal)
+            || leagueName.Contains("欧国联", StringComparison.Ordinal)
+            || leagueName.Contains("世预", StringComparison.Ordinal)
+            || leagueName.Contains("世界杯", StringComparison.Ordinal)
+            || leagueName.Contains("欧洲杯", StringComparison.Ordinal)
+            || leagueName.Contains("美洲杯", StringComparison.Ordinal)
+            || leagueName.Contains("亚洲杯", StringComparison.Ordinal)
+            || leagueName.Contains("非洲杯", StringComparison.Ordinal)
+            || leagueName.Contains("超级杯", StringComparison.Ordinal)
+            || leagueName.Contains("联赛杯", StringComparison.Ordinal)
+            || leagueName.Contains("足总", StringComparison.Ordinal)
+            || leagueName.Contains("国王杯", StringComparison.Ordinal)
+            || leagueName.Contains("总统杯", StringComparison.Ordinal)
+            || leagueName.Contains("冠军", StringComparison.Ordinal)
+            || leagueName.Contains("资格", StringComparison.Ordinal)
+            || leagueName.Contains("附加", StringComparison.Ordinal))
+            return "CUP";
+        return "LEAGUE";
+    }
 
     /* ---------------- 票 ---------------- */
 

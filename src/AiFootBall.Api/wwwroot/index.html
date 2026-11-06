@@ -1743,9 +1743,9 @@ function milkRecordHtml(r){
   return html;
 }
 
-/* ---------- 竞彩大奶榜（2026-11-04 改向：比分/半全场/总进球） ---------- */
+/* ---------- 竞彩大奶榜（2026-11-04 改向：比分/半全场/总进球；2026-11-06 侧重点改为 半全场→总进球→比分） ---------- */
 
-const MILK_PLAY_ORDER = { BF: 0, BQ: 1, JQ: 2 };
+const MILK_PLAY_ORDER = { BQ: 0, JQ: 1, BF: 2 };
 const MILK_PLAY_NAME = { BF: '比分', BQ: '半全场', JQ: '总进球' };
 // 竞彩各玩法的固定返奖率 = 1/水位（2026-11-05 实测同批次 13 场，逐场水位一致到小数点后三位）。
 // 这是这条玩法「每投 100 元长期能收回多少」的天花板，也是 EV 的理论上限——EV 永远到不了 1。
@@ -1758,9 +1758,9 @@ const MILK_PAYOUT = { BF: 0.709, BQ: 0.797, JQ: 0.797, SPF: 0.878, NSPF: 0.878 }
 let _milkPickSet = new Set();     // key = matchId|playType|optionCode
 let _milkPickData = new Map();    // key → 完整注（含 odds/option/matchNo）
 let _milkFillRest = [];           // 竞彩一张票只能一个玩法，多玩法时剩下的组
-// 过关方式默认 2/3/4/5 串 1 全勾。场次不够的串法填单时自动忽略（2 场不会出现 4串1）。
-let _milkPass = new Set(['2串1', '3串1', '4串1', '5串1']);
-const MILK_PASS_ALL = ['2串1', '3串1', '4串1', '5串1'];
+// 过关方式默认 2~8 串 1 全勾（竞彩过关上限 8 场）。场次不够的串法填单时自动忽略（2 场不会出现 4串1）。
+let _milkPass = new Set(['2串1', '3串1', '4串1', '5串1', '6串1', '7串1', '8串1']);
+const MILK_PASS_ALL = ['2串1', '3串1', '4串1', '5串1', '6串1', '7串1', '8串1'];
 
 function milkPickKey(it){
   return `${it.matchId != null ? it.matchId : it.matchNo}|${it.playType}|${it.optionCode}`;
@@ -2575,7 +2575,7 @@ function renderMilkBoard(b, strongOnly){
   let html = `<div class="board" data-board="jc">
     <div class="board-head">
       <span class="badge badge-jc">竞彩大奶</span>
-      <span class="meta">共 <b>${b.total || 0}</b> 场受注 · 大奶 <b>${picks.length}</b> 注 / <b>${rows.length}</b> 场 · 按命中率排序（不按 EV，EV 最高的那注单独打角标）· 比分 4.0~40 倍且≥5% · 半全场只发 胜胜/平平/负负 且≥12% · 总进球≥10% 且不发 5 球档 · 概率 = 模型 40% + 盘口去水 60%${b.saleNote ? ' · ' + esc(b.saleNote) : ''}</span>
+      <span class="meta">共 <b>${b.total || 0}</b> 场受注 · 大奶 <b>${picks.length}</b> 注 / <b>${rows.length}</b> 场 · 主攻半全场 → 总进球为辅 → 其次比分 · 半全场只发 胜胜/平平/负负 且≥12% · 总进球≥10% 且不发 5 球档 · 比分 4.0~40 倍且≥5% · 概率 = 模型 70% + 盘口去水 30%${b.saleNote ? ' · ' + esc(b.saleNote) : ''}</span>
     </div>
     ${(b.showRows || []).some(r => /欧冠|欧罗巴|欧协联|亚冠/.test(r.leagueName || ''))
       ? '<div class="fn-warn">本日含欧战（欧冠/欧罗巴/欧协联/亚冠）场次：这类赛事球队本赛事样本少（门槛已放宽到 3 场），模型给的概率仍以「联赛均值+主场优势」为主，命中率无保证，仅供参考、谨慎下单。</div>'
@@ -2600,7 +2600,7 @@ function renderMilkBoard(b, strongOnly){
   html += `<div class="milk-record" id="milkRecord"><div class="dim">大奶战绩加载中…</div></div>`;
 
   if(!rows.length){
-    html += `<div class="empty">今天没有够格的大奶：比分要 4.0~40 倍且命中率≥5%，半全场只发 胜胜/平平/负负 且≥12%，总进球≥10%。门槛是按「能不能中」定的，宁缺毋滥。</div>`;
+    html += `<div class="empty">今天没有够格的大奶：半全场只发 胜胜/平平/负负 且≥12%，总进球≥10%（不发 5 球档），比分 4.0~40 倍且≥5%。门槛是按「能不能中」定的，宁缺毋滥。</div>`;
   } else {
     // 勾选按「注」算：同一场三列玩法各有各的选项和赔率，按场勾会混。
     // 每次重渲染都重建 data 表，勾选集合 _milkPickSet 保留，但要把本轮不存在的清理掉。
@@ -2651,7 +2651,7 @@ function renderMilkBoard(b, strongOnly){
 
     html += `<div class="board-scroll"><table class="tbl rec-tbl milk-merged"><thead><tr>
         <th>场次</th><th>对阵</th><th>开赛</th>
-        <th>${esc(MILK_PLAY_NAME.BF)}</th><th>${esc(MILK_PLAY_NAME.BQ)}</th><th>${esc(MILK_PLAY_NAME.JQ)}</th>
+        <th>${esc(MILK_PLAY_NAME.BQ)}</th><th>${esc(MILK_PLAY_NAME.JQ)}</th><th>${esc(MILK_PLAY_NAME.BF)}</th>
       </tr></thead><tbody>`;
     for(const g of rows){
       html += `<tr class="match-row">
@@ -2659,9 +2659,9 @@ function renderMilkBoard(b, strongOnly){
         <td class="teams-cell"><div class="teams">${esc(g.homeTeam || '')}<span class="vs">VS</span>${esc(g.awayTeam || '')}</div>
           <div class="league">${esc(g.leagueName || '')}</div></td>
         <td>${esc(tm(g.matchTime))}</td>
-        <td>${cell(g, 'BF')}</td>
         <td>${cell(g, 'BQ')}</td>
         <td>${cell(g, 'JQ')}</td>
+        <td>${cell(g, 'BF')}</td>
       </tr>`;
     }
     html += `</tbody></table></div>`;

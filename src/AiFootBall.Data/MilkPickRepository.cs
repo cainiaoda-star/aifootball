@@ -235,11 +235,18 @@ public sealed class MilkPickRepository
 
         // 取消场次（Status=2）永远等不到赛果：写死「取消」终态退出 pending。
         // Hit 保持 NULL 不进战绩分母，ActualScore='取消' 当标记。
+        //
+        // 2026-11-06 修 bug：数据源在比赛「未开赛」时会把 Status 短暂标成 2 又改回 0/1，
+        // 旧逻辑只要 Status=2 就写死「取消」，导致还没开赛的注被永久误杀、退出结算队列。
+        // 加两个前置条件：① 开赛时间已过（m.MatchTime < 当前时刻）；② 比分仍为 NULL。
+        // 只有「时间过了 + 比分仍空 + Status=2」才是真取消；未开赛的短暂波动绝不判取消。
         await conn.ExecuteAsync(new CommandDefinition(
             @"UPDATE p SET p.ActualScore = N'取消', p.SettledAt = SYSDATETIME()
               FROM dbo.FbMilkPick p
               JOIN dbo.FbMatch m ON m.MatchId = p.MatchId
-              WHERE p.Hit IS NULL AND p.SettledAt IS NULL AND m.Status = 2",
+              WHERE p.Hit IS NULL AND p.SettledAt IS NULL AND m.Status = 2
+                AND m.MatchTime < SYSDATETIME()
+                AND m.HomeScore IS NULL AND m.AwayScore IS NULL",
             new { }, cancellationToken: ct));
 
         return settled;

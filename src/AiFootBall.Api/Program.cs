@@ -741,6 +741,16 @@ app.MapPost("/api/daily-follow/skill", async (DailyFollowService svc, string? da
     return Results.Ok(new { day = d.ToString("yyyy-MM-dd"), result.Message });
 });
 
+// 手动补写某天技能（自动总结覆盖不到的跨联赛规律，可带证据）。
+app.MapPost("/api/daily-follow/skill/write", async (DailyFollowRepository repo, DailySkillWriteRequest req, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Title) || string.IsNullOrWhiteSpace(req.Body))
+        return Results.Problem("title 和 body 不能为空");
+    var d = DateTime.TryParse(req.Date, out var dv) ? dv.Date : DateTime.Today;
+    await repo.SaveSkillAsync(d, req.Title, req.Body, req.Evidence, ct);
+    return Results.Ok(new { day = d.ToString("yyyy-MM-dd"), title = req.Title });
+});
+
 app.MapGet("/api/jobs/logs", async (int? take, SyncLogRepository repo) =>
     Results.Ok(await repo.GetRecentAsync(take ?? 50)));
 
@@ -1693,6 +1703,7 @@ static bool OcrTeamLooksLike(string? ocr, string? db)
 
 internal sealed record LoginRequest(string UserName, string Password, string? NickName);
 internal sealed record SkillWriteRequest(string? Title, string? Body);
+internal sealed record DailySkillWriteRequest(string? Date, string? Title, string? Body, string? Evidence);
 internal sealed record PasswordChangeRequest(string? CurrentPassword, string? NewPassword, string? ConfirmPassword);
 
 // OCR 响应 DTO（与 Node 端 parse-ticket.js 输出对齐）

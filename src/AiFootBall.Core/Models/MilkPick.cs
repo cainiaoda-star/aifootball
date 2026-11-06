@@ -70,4 +70,19 @@ public sealed class MilkPick
         JcPlayTypes.Jq => "总进球",
         _ => PlayType
     };
+
+    /// <summary>
+    /// 零封倾向方向（2026-11-06 加，仅引擎内部传递、不落库）：'3'=主队零封对手（客队全场0球）、
+    /// '0'=客队零封主队（主队全场0球）、null=无显著零封倾向。
+    /// 用于半全场选注的统一决策：零封概率高时优先选「负负/胜胜」方向一致档，而非硬套高赔反转档。
+    /// </summary>
+    public char? CleanSheetDirection { get; set; }
+
+    /// <summary>
+    /// 「让胜陷阱」标记（2026-11-06 加，仅引擎内部传递、不落库）。
+    /// true = 这场主队让胜(NSPF-3)被资金买到极端低水（&lt;= <see cref="MilkPickEngine.MinNspfHotOdds"/>），
+    /// 且模型净胜球卡在 1 球（主队大概率「只赢球、不赢盘」）。此时该押「让平 + 胜胜 + 1球小胜」，
+    /// 而不是追让胜（让胜需净胜≥2，会走盘）。与「必发主胜大热反向」同源。
+    /// </summary>
+    public bool HotHomeTrap { get; set; }
 }
