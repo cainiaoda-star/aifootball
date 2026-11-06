@@ -559,6 +559,43 @@ public sealed class BettingRepository
         return result;
     }
 
+    /// <summary>
+    /// 必发盈亏指数（PnlIdx）最新一次采样：Home/Away。
+    /// 盈亏指数深负（如客胜 PnlIdxAway ≤ -60）是「钱往那一边跑」的铁证——
+    /// 欧战低水热门反向、主胜大热被客队爆冷（AC米兰/勒沃库森/桑德兰三场）都是这个信号先动。
+    /// 与 <see cref="GetExchangeRatioAsync"/> 分开，因为它返回的是另一组字段，调用点也只在风控路径。
+    /// </summary>
+    public async Task<Dictionary<long, (decimal? PnlIdxHome, decimal? PnlIdxAway)>> GetExchangePnlAsync(
+        IEnumerable<long> matchIds, CancellationToken ct = default, double? freshHours = null,
+        bool asOfKickoff = false)
+    {
+        var ids = matchIds.Distinct().ToArray();
+        if (ids.Length == 0) return new();
+
+        await using var conn = await _factory.OpenAsync(ct);
+        var result = new Dictionary<long, (decimal?, decimal?)>();
+        foreach (var chunk in Chunk(ids))
+        {
+            var rows = await conn.QueryAsync<ExchangePnlRow>(new CommandDefinition(
+                $@"SELECT MatchId, PnlIdxHome, PnlIdxAway
+                  FROM (
+                      SELECT MatchId, PnlIdxHome, PnlIdxAway,
+                             ROW_NUMBER() OVER (PARTITION BY MatchId ORDER BY CapturedAt DESC) AS rn
+                      FROM {(asOfKickoff
+                          ? @"(SELECT e.* FROM dbo.FbExchange e
+                               JOIN dbo.FbMatch m ON m.MatchId = e.MatchId
+                              WHERE e.MatchId IN @ids AND e.CapturedAt <= m.MatchTime)"
+                          : "dbo.FbExchange")} x
+                      WHERE {(asOfKickoff ? "1 = 1" : $"MatchId IN @ids{FreshFilter(freshHours)}")}
+                  ) t
+                  WHERE rn = 1",
+                new { ids = chunk }, cancellationToken: ct));
+            foreach (var row in rows)
+                result[row.MatchId] = (row.PnlIdxHome, row.PnlIdxAway);
+        }
+        return result;
+    }
+
     /// <summary>必发最后一次采样，以及主胜/客胜占比的最高一次。复盘用来看中途有没有摸到极端大热。</summary>
     public async Task<Dictionary<long, (decimal? LastHome, decimal? LastDraw, decimal? LastAway, decimal? MaxHome, decimal? MaxAway)>>
         GetExchangeSpanAsync(IEnumerable<long> matchIds, CancellationToken ct = default)
@@ -607,6 +644,13 @@ public sealed class BettingRepository
         public decimal? RatioHome { get; set; }
         public decimal? RatioDraw { get; set; }
         public decimal? RatioAway { get; set; }
+    }
+
+    private sealed class ExchangePnlRow
+    {
+        public long MatchId { get; set; }
+        public decimal? PnlIdxHome { get; set; }
+        public decimal? PnlIdxAway { get; set; }
     }
 
     /// <summary>按 fid 批量取大小球盘口线（OU 终盘，CompanyId=0）</summary>

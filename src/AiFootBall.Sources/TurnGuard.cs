@@ -30,17 +30,28 @@ public static class TurnGuard
     /// <summary>让胜赔率从出注时到临场的拉升幅度超过这个比例，才算「主队赢盘被抛弃」。</summary>
     public const decimal RangShengRisePct = 0.08m;
 
+    /// <summary>客胜盈亏指数（PnlIdx）深负阈值：钱在净流入客胜，主胜热门被客队爆冷的前兆。</summary>
+    public const decimal AwayPnlDeepNegative = -60m;
+
+    /// <summary>客胜必发占比异常走高阈值：低水热门场客胜占比通常 &lt;25%，超过即异常。</summary>
+    public const decimal AwayRatioAbnormal = 30m;
+
     /// <summary>
     /// 给一场已发出的注做转向诊断。返回要落库的告警，没有转向则返回 null。
     ///
     /// <paramref name="pickDir"/> 是这一注指向的胜负方向（3 主胜 / 1 平 / 0 客胜），
     /// 总进球没有方向，传 null（此时只看信号本身，不判「与注相反」）。
+    /// <paramref name="awayMoney"/> 是必发静态资金快照（客胜盈亏指数 PnlIdxAway、客胜占比 RatioAway）。
+    /// 前三个信号是「临场时间序列转向」，这个第四个是「静态资金异常」——
+    /// 主胜大热反向/客胜资金涌入这种信号没有时间漂移，净胜球诊断不会报，
+    /// 但它是欧战低水热门被爆冷（AC米兰/勒沃库森/桑德兰）最直接的铁证。
     /// </summary>
     public static TurnAlertRow? Judge(
         MilkPickRow pick,
         char? pickDir,
         ScoreDiagRow? diag,
-        (decimal OddsAtIssue, decimal OddsNow)? rangSheng)
+        (decimal OddsAtIssue, decimal OddsNow)? rangSheng,
+        (decimal? PnlIdxAway, decimal? RatioAway)? awayMoney = null)
     {
         if (diag is null) return null;
 
@@ -64,15 +75,26 @@ public static class TurnGuard
         if (rangShengUp)
             notes.Add($"让胜赔率 {rangSheng!.Value.OddsAtIssue:0.00}→{rangSheng.Value.OddsNow:0.00}（单边拉升）");
 
+        // 信号 4（静态资金异常）：钱往客胜跑，主胜热门被爆冷的前兆。
+        // 这个信号没有时间漂移——它是「主胜大热反向/客胜资金涌入」的静态铁证，
+        // 净胜球诊断（每 2 分钟刷新的时间序列）报不出来，必须单独看必发静态快照。
+        var awayPnlDeep = awayMoney is { } am && am.PnlIdxAway is <= AwayPnlDeepNegative;
+        var awayRatioHot = awayMoney is { } am2 && am2.RatioAway is >= AwayRatioAbnormal;
+        if (awayPnlDeep)
+            notes.Add($"客胜盈亏指数 {awayMoney!.Value.PnlIdxAway:0}（深负，钱净流入客胜）");
+        if (awayRatioHot)
+            notes.Add($"客胜必发占比 {awayMoney!.Value.RatioAway:0.#}%（异常走高）");
+
         if (notes.Count == 0) return null;
 
-        // 转向方向：下修期望净胜球 + 客队深档降价都指向「主队要走弱」→ 市场转向客队。
+        // 转向方向：下修期望净胜球 + 客队深档降价 + 客胜资金涌入都指向「主队要走弱」→ 市场转向客队。
         // 与注的方向相反时才值得报警；注没有方向（总进球）则只报告信号。
-        var turningAway = gdShrunk || deepDrop;   // 指向客队/主队走弱
+        var turningAway = gdShrunk || deepDrop || awayPnlDeep || awayRatioHot;   // 指向客队/主队走弱
         var againstPick = pickDir is char pd && turningAway && pd == '3';
         if (pickDir is not null && !againstPick && !rangShengUp) return null;
 
         if (gdShrunk && deepDrop) high = true;
+        if (awayPnlDeep && (gdShrunk || deepDrop)) high = true;
 
         var reason = string.Join("；", notes);
         if (againstPick)

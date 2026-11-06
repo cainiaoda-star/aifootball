@@ -83,7 +83,8 @@ public static class RecommendationEngine
         decimal? spfHome = null, decimal? spfDraw = null, decimal? spfAway = null,
         decimal? drawOddsDelta = null, decimal? ratioDraw = null,
         decimal? asianOpen = null, decimal? asianClose = null,
-        decimal? lateHomeDelta = null, int? homeFormPts = null, int? awayFormPts = null)
+        decimal? lateHomeDelta = null, int? homeFormPts = null, int? awayFormPts = null,
+        decimal? pnlIdxHome = null, decimal? pnlIdxAway = null)
     {
         var rec = new MatchRecommendation
         {
@@ -101,6 +102,8 @@ public static class RecommendationEngine
             RatioHome = ratioHome,
             RatioDraw = ratioDraw,
             RatioAway = ratioAway,
+            PnlIdxHome = pnlIdxHome,
+            PnlIdxAway = pnlIdxAway,
             TotalLine = totalLine
         };
 
@@ -307,6 +310,7 @@ public static class RecommendationEngine
         ApplyMarketPolicy(rec, spfHome, spfDraw, spfAway, homeExtreme, awayExtreme);
         ApplyLongPriceCaution(rec, spfHome, spfAway);
         ApplyALeagueCaution(rec);
+        ApplyLowPriceAwayMoneyVeto(rec, spfHome);
         if (rec.RecResult is not null)
             PredictScoreAndGoals(rec, totalLine, handicap);
 
@@ -414,6 +418,46 @@ public static class RecommendationEngine
         return league.Contains("澳超", StringComparison.Ordinal)
                || league.Contains("A-League", StringComparison.OrdinalIgnoreCase)
                || league.Contains("A League", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 欧战/杯赛主胜超级低水 + 钱往客胜跑 = 反向否决（2026-11-06 补）。
+    ///
+    /// 为什么 <see cref="RecommendationScoring.ExtremeHotRatio"/>（75%）拦不住欧战爆冷：
+    /// AC米兰（必发72%）、勒沃库森（72%）、桑德兰（66%）三场主胜超级低水（竞彩 1.26~1.33）
+    /// 却全部输球，必发占比都卡在 66~72% 之间，到不了 75% 的「极端大热」阈值，
+    /// 于是那套否决一条都没触发，主胜方向照发。
+    ///
+    /// 真正可靠的信号不是「主胜占比高」，而是「钱往客胜跑」：
+    ///   · PnlIdxAway 深负（≤ -60）：盈亏指数是资金净流向的代理，客胜盈亏深负说明钱在净流入客胜；
+    ///   · RatioAway 翻倍：客胜占比相对开盘显著抬升。
+    /// 当竞彩主胜超级低水（≤ 1.35，市场过度定价主队）+ 上述任一信号出现时，
+    /// 撤掉主胜方向注——低水热门的「赢球不赢盘/被爆冷」是欧战杯赛的系统性现象（教训 1/1b）。
+    ///
+    /// 只对主胜方向生效：客胜方向注是「跟钱走」，不需要这道闸（AC米兰撤的让-2客胜 Hit=1）。
+    /// </summary>
+    private static void ApplyLowPriceAwayMoneyVeto(MatchRecommendation rec, decimal? spfHome)
+    {
+        if (rec.RecResult is not '3') return;          // 只拦主胜方向
+        if (rec.IsOddsFallback) return;
+        if (spfHome is not > 1m or > BigWinFavouriteOdds) return;  // 只对超级低水热门（>1.00 且 ≤1.35）
+        if (rec.PnlIdxAway is null && rec.RatioAway is null) return;
+
+        var pnlDeepNegative = rec.PnlIdxAway is <= -60m;
+        var awayRatioHot = rec.RatioAway is >= 30m;    // 客胜占比异常走高（低水热门场客胜占比通常 < 25%）
+        if (!pnlDeepNegative && !awayRatioHot) return;
+
+        MarkVeto(rec, '3', "low-price-away-money");
+        rec.Tags |= SignalTag.AwayMoneySteam | SignalTag.NotFeatured;
+        var bits = new List<string>();
+        if (pnlDeepNegative) bits.Add($"客胜盈亏指数 {rec.PnlIdxAway:0}");
+        if (awayRatioHot) bits.Add($"客胜必发占比 {rec.RatioAway:0.#}%");
+        rec.SignalDesc += $"；主胜超级低水({spfHome:F2})但钱往客胜跑（{string.Join("、", bits)}），反向否决";
+        rec.RecResult = null;
+        rec.Confidence = null;
+        rec.SignalLevel = 0;
+        rec.ScoreCandidates.Clear();
+        rec.GoalCandidates.Clear();
     }
 
     /// <summary>
@@ -907,6 +951,7 @@ public static class RecommendationEngine
         ApplyMarketPolicy(rec, spfHome, spfDraw, spfAway, homeExtreme, awayExtreme);
         ApplyLongPriceCaution(rec, spfHome, spfAway);
         ApplyALeagueCaution(rec);
+        ApplyLowPriceAwayMoneyVeto(rec, spfHome);
         // 重跑守卫时方向可能被改（深主让覆盖弱客向）或被清空，
         // 保持「意图」与最终方向同步，清空时保留原始意图。
         if (rec.RecResult is not null) rec.ProposedResult = rec.RecResult;

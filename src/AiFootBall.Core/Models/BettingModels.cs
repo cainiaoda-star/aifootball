@@ -68,6 +68,8 @@ public enum SignalTag
     SerieABigGoals = 1 << 12,
     /// <summary>强热门大球，比分看净胜 2 球以上，文案只补一次。</summary>
     StrongFavouriteBigGoals = 1 << 13,
+    /// <summary>必发客胜盈亏指数深负（钱往客胜跑），欧战/杯赛低水热门的反向信号。</summary>
+    AwayMoneySteam = 1 << 14,
 }
 
 /// <summary>单场推荐（引擎输出）</summary>
@@ -105,6 +107,11 @@ public sealed class MatchRecommendation
     public decimal? RatioDraw { get; set; }
     /// <summary>必发客胜投注占比</summary>
     public decimal? RatioAway { get; set; }
+
+    /// <summary>必发主胜盈亏指数（PnlIdx，深负=钱在逃离主胜）。</summary>
+    public decimal? PnlIdxHome { get; set; }
+    /// <summary>必发客胜盈亏指数（PnlIdx，深负=钱在涌入客胜）。</summary>
+    public decimal? PnlIdxAway { get; set; }
 
     /// <summary>大小球盘口线（用于进球数预测）</summary>
     public decimal? TotalLine { get; set; }

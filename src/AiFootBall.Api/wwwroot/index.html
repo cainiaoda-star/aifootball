@@ -507,6 +507,8 @@
   .ticket-foot img{height:52px;border-radius:6px;border:1px solid var(--line);vertical-align:middle}
   .hit-tag{color:var(--red);font-weight:700}
   .miss-tag{color:var(--green);font-weight:700}
+  .draw-tag{color:var(--amber);font-weight:700}
+  .bd-spf-board{margin-top:14px}
 
   /* ================= 每日复盘 ================= */
   .date-nav{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -1637,7 +1639,8 @@ function renderBoards(){
   $('#boards').innerHTML = _boards
       .map(b => (b.milkPicks ? renderMilkBoard(b, strongOnly) : renderBoard(b, strongOnly)))
       .join('')
-    + `<div class="dim" style="margin:10px 2px">胜平负 / 让球 / 大小球自 2026-11-04 起停止发布。后台仍按旧口径计算并落库（校准与否决台账要用），但不再对外给任何方向。</div>`;
+    + `<div class="dim" style="margin:10px 2px">胜平负 / 让球 / 大小球自 2026-11-04 起停止发布。后台仍按旧口径计算并落库（校准与否决台账要用），但不再对外给任何方向。</div>`
+    + `<div id="bdSpfBoard"></div>`;
   bindPickCheckboxes();
   bindSfcBits();
   bindMilkPicks();
@@ -1645,6 +1648,75 @@ function renderBoards(){
   loadWater();
   loadJcWater();
   loadMilkRecord();
+  loadBdSpfPicks();
+}
+
+/* ---------- 今日北单推荐（北单胜平负，不让球） ---------- */
+
+const BD_SIDE_TEXT = { '3': '主胜', '1': '平', '0': '客胜' };
+const BD_SIDE_CLS = { '3': 'hit-tag', '1': 'draw-tag', '0': 'miss-tag' };
+
+async function loadBdSpfPicks(){
+  const box = $('#bdSpfBoard');
+  if(!box) return;
+  try{
+    const data = await api('/api/bd/spf-picks');
+    const steady = data.steady || [];
+    const reverse = data.reverse || [];
+    if(!steady.length && !reverse.length){
+      box.innerHTML = `<div class="board bd-spf-board"><div class="board-head">
+        <span class="badge badge-bd">今日北单推荐</span>
+        <span class="meta">北单不让球胜平负 · 暂无推荐</span></div>
+        <div class="dim" style="padding:10px 14px">今天没有满足技能的北单场次，或模型未就绪。</div></div>`;
+      return;
+    }
+    box.innerHTML = renderBdSpfGroup('今日北单推荐 · 串关正路（10串1/9串1/8串1）', steady, 'steady')
+      + renderBdSpfGroup('今日北单推荐 · 爆冷参考（不进串关）', reverse, 'reverse')
+      + `<div class="dim" style="margin:6px 2px 10px">北单主玩法是「让球胜平负」（让胜/让平/让负，按让球数结算）。串关正路只收「绝对把握」，宁缺毋滥取前 ${10} 场；爆冷参考（主队热门但钱跑客队）单独列，<b>不参与串关</b>。让球盘 SP 开奖前会变，以实盘为准。串关错一场整串归零，务必只从「串关正路」里挑。只作参考。</div>`;
+  }catch(err){
+    if(err.message === 'unauthorized') return;
+    box.innerHTML = `<div class="empty">今日北单推荐加载失败：${esc(err.message)}</div>`;
+  }
+}
+
+function renderBdSpfGroup(title, list, kind){
+  if(!list || !list.length) return '';
+  const rows = list.map(p => {
+    // 让球盘方向（北单真实玩法）：让X球 + 让胜/让平/让负
+    const hcp = p.handicap != null ? (Number(p.handicap) > 0 ? `+${Number(p.handicap)}` : `${Number(p.handicap)}`) : '';
+    const hside = p.handicapSideName || BD_SIDE_TEXT[p.handicapSide] || p.sideName || '';
+    const hsideCls = BD_SIDE_CLS[p.handicapSide] || BD_SIDE_CLS[p.side] || 'dim';
+    const hprob = p.handicapProbability != null ? `<b class="conf">${Number(p.handicapProbability).toFixed(0)}</b>` : '—';
+    const odds = p.handicapOdds != null ? Number(p.handicapOdds).toFixed(2) : (p.odds != null ? Number(p.odds).toFixed(2) : '—');
+    const ex = [
+      p.ratioHome != null ? `主胜必发 ${Number(p.ratioHome).toFixed(0)}%` : null,
+      p.ratioAway != null ? `客胜必发 ${Number(p.ratioAway).toFixed(0)}%` : null,
+      p.pnlIdxAway != null ? `客胜盈亏 ${Number(p.pnlIdxAway).toFixed(0)}` : null,
+      p.pnlIdxHome != null ? `主胜盈亏 ${Number(p.pnlIdxHome).toFixed(0)}` : null
+    ].filter(Boolean).join(' · ');
+    const tm = p.matchTime ? String(p.matchTime).replace('T',' ').slice(5,16) : '';
+    return `<tr>
+      <td class="match-no">${esc(p.matchNo || '')}<br><span class="dim">${esc(p.leagueName || '')}</span></td>
+      <td><div class="teams">${esc(p.homeTeam || '')}<span class="vs">VS</span>${esc(p.awayTeam || '')}</div>
+        <div class="dim">${tm}</div></td>
+      <td><span class="${hsideCls}">让${hcp} ${esc(hside)}</span></td>
+      <td class="mono">${odds}</td>
+      <td class="predict">${hprob}</td>
+      <td class="signal">${esc(p.reason || '')}${ex ? `（${esc(ex)}）` : ''}</td>
+    </tr>`;
+  }).join('');
+  const kindTag = kind === 'steady'
+    ? '<span class="feat-tag strong-tag">串关正路</span>'
+    : '<span class="upset-tag">爆冷参考</span>';
+  return `<div class="board bd-spf-board">
+    <div class="board-head">
+      <span class="badge badge-bd">今日北单推荐</span>${kindTag}
+      <span class="meta">北单让球胜平负 · ${kind === 'steady' ? '串关用' : '钱往客胜跑 · 不进串关'} · <b>${list.length}</b> 场</span>
+    </div>
+    <div class="board-scroll"><table class="tbl"><thead><tr>
+      <th>场次</th><th>对阵</th><th>让球方向</th><th>SP赔率</th><th>把握度</th><th>依据</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>
+  </div>`;
 }
 
 /* ---------- 大奶战绩（FbMilkPick 台账） ---------- */

@@ -17,6 +17,8 @@ public sealed class JobScheduler
     private readonly PurchaseSettlementService? _purchaseSettle;
     private readonly LottoRecommendationService? _lottoRec;
     private readonly DailyFollowService? _dailyFollow;
+    private readonly BdSpfPickService? _bdSpfPick;
+    private readonly BdSpfPickRepository? _bdSpfRepo;
     private readonly Action<string>? _log;
     private readonly object _gate = new();
     private readonly List<Entry> _entries = new();
@@ -24,7 +26,8 @@ public sealed class JobScheduler
     public JobScheduler(JobsOptions options, CollectionService collection, SyncLogRepository sync,
         RecommendationService? recommendation = null, PurchaseSettlementService? purchaseSettle = null,
         Action<string>? log = null, LottoRecommendationService? lottoRec = null,
-        DailyFollowService? dailyFollow = null)
+        DailyFollowService? dailyFollow = null, BdSpfPickService? bdSpfPick = null,
+        BdSpfPickRepository? bdSpfRepo = null)
     {
         _options = options;
         _collection = collection;
@@ -33,6 +36,8 @@ public sealed class JobScheduler
         _purchaseSettle = purchaseSettle;
         _lottoRec = lottoRec;
         _dailyFollow = dailyFollow;
+        _bdSpfPick = bdSpfPick;
+        _bdSpfRepo = bdSpfRepo;
         _log = log;
     }
 
@@ -77,7 +82,8 @@ public sealed class JobScheduler
         ["settle-purchases"] = TimeSpan.FromMinutes(20),
         ["settle-recommendations"] = TimeSpan.FromMinutes(30),
         ["lotto"] = TimeSpan.FromMinutes(30),
-        ["lotto-recommend"] = TimeSpan.FromMinutes(30)
+        ["lotto-recommend"] = TimeSpan.FromMinutes(30),
+        ["bd-spf-pick"] = TimeSpan.FromMinutes(30)
     };
 
     private static TimeSpan TimeoutFor(ScheduledJob job) =>
@@ -254,6 +260,16 @@ public sealed class JobScheduler
     private readonly SemaphoreSlim _jcLane = new(1, 1);
 
     /// <summary>
+    /// 推荐生成专用通道（save-recommendations 及终版 save-final-weekday/weekend 都走这里）。
+    ///
+    /// 为什么单独：终版推荐是「卡用户截止时间」的关键任务（工作日 21:50、周末 22:50），
+    /// 而它原来和 water-sample（每轮 ~110 秒）、exchange（1~2 分钟）挤在同一个主通道里串行。
+    /// 21:50 到点的终版会被前面还没跑完的采集任务顶到 21:54+ 才执行，晚于用户截止时间落库。
+    /// 推荐生成只读模型结果 + 落库，不抢 500/竞彩接口，放独立通道安全且能保证准点。
+    /// </summary>
+    private readonly SemaphoreSlim _recommendLane = new(1, 1);
+
+    /// <summary>
     /// 把作业丢进对应通道执行。主循环不等待，只保留句柄用于退出时收尾。
     ///
     /// 通道内部是串行的：同一个通道里前一个没跑完，后一个就等着。
@@ -261,7 +277,8 @@ public sealed class JobScheduler
     /// </summary>
     private async Task EnqueueAsync(Entry entry, CancellationToken ct)
     {
-        var lane = DetachedJobTypes.Contains(entry.Job.Type) ? _jcLane : _mainLane;
+        var lane = RecommendJobTypes.Contains(entry.Job.Type) ? _recommendLane
+            : DetachedJobTypes.Contains(entry.Job.Type) ? _jcLane : _mainLane;
         try
         {
             await lane.WaitAsync(ct);
@@ -333,6 +350,12 @@ public sealed class JobScheduler
     private static readonly HashSet<string> DetachedJobTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "jc-odds-sample"
+    };
+
+    /// <summary>推荐生成类作业类型，走推荐专用通道，不被采集任务阻塞。</summary>
+    private static readonly HashSet<string> RecommendJobTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "save-recommendations"
     };
 
     /// <summary>超时中止后补一条运行记录，方便页面上查。写日志本身失败不再抛出。</summary>
@@ -663,6 +686,27 @@ public sealed class JobScheduler
                 result = alerts > 0
                     ? CollectionResult.Ok(alerts, $"临场转向哨兵：发现 {alerts} 场已出注场次市场方向漂移，已落告警")
                     : CollectionResult.Ok(0, "临场转向哨兵：本轮无市场转向告警");
+                break;
+            }
+
+            // 北单胜平负（不让球）推荐：套技能选 10 注落库，供「今日北单推荐」板块。
+            case "bd-spf-pick":
+            {
+                if (_bdSpfPick is null || _bdSpfRepo is null)
+                {
+                    result = CollectionResult.Fail("北单推荐服务未注入");
+                    break;
+                }
+                var day = await _bdSpfPick.BuildAsync(ct);
+                if (day is null)
+                {
+                    result = CollectionResult.Ok(0, "北单推荐：今天没有可选的场次或模型未就绪");
+                    break;
+                }
+                await _bdSpfRepo.EnsureTableAsync(ct);
+                var rows = await _bdSpfRepo.SaveDayAsync(DateTime.Today, day, ct);
+                result = CollectionResult.Ok(rows,
+                    $"北单推荐：确定性正路 {day.Steady.Count} 注 + 反向价值 {day.Reverse.Count} 注，已落库");
                 break;
             }
 

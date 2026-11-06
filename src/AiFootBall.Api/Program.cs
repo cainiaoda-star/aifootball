@@ -74,6 +74,8 @@ builder.Services.AddSingleton<MilkPickRepository>();
 builder.Services.AddSingleton<MilkScanService>();
 builder.Services.AddSingleton<DailyFollowRepository>();
 builder.Services.AddSingleton<DailyFollowService>();
+builder.Services.AddSingleton<BdSpfPickRepository>();
+builder.Services.AddSingleton<BdSpfPickService>();
 builder.Services.AddSingleton<AuthService>();
 builder.Services.AddSingleton<PurchaseSettlementService>();
 builder.Services.AddSingleton(sp => new JobScheduler(
@@ -84,7 +86,9 @@ builder.Services.AddSingleton(sp => new JobScheduler(
     sp.GetRequiredService<PurchaseSettlementService>(),
     message => sp.GetRequiredService<ILoggerFactory>().CreateLogger("Scheduler").LogInformation("{Message}", message),
     sp.GetRequiredService<LottoRecommendationService>(),
-    sp.GetRequiredService<DailyFollowService>()));
+    sp.GetRequiredService<DailyFollowService>(),
+    sp.GetRequiredService<BdSpfPickService>(),
+    sp.GetRequiredService<BdSpfPickRepository>()));
 builder.Services.AddHostedService<SchedulerHostedService>();
 // token 健康守护：连续被人机验证拦截时自动用本机浏览器续期，避免回补空转
 builder.Services.AddHostedService<TokenHealthService>();
@@ -1614,6 +1618,26 @@ app.MapGet("/api/milk/picks", async (MilkPickRepository repo, string? date, Canc
 {
     var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
     return Results.Ok(await repo.GetDayAsync(d, ct));
+});
+
+// 北单胜平负（不让球）推荐：「今日北单推荐」板块（2026-11-06 加）。
+// GET 读当天已落库的推荐；POST 现场重算并落库（save=1 时写台账）。
+app.MapGet("/api/bd/spf-picks", async (BdSpfPickRepository repo, string? date, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+    return Results.Ok(await repo.GetDayAsync(d, ct));
+});
+app.MapPost("/api/bd/spf-picks", async (
+    BdSpfPickService svc, BdSpfPickRepository repo, bool? save, CancellationToken ct) =>
+{
+    var day = await svc.BuildAsync(ct);
+    if (day is null) return Results.Ok(new BdSpfPickDay { Day = DateTime.Today });
+    if (save == true)
+    {
+        await repo.EnsureTableAsync(ct);
+        await repo.SaveDayAsync(DateTime.Today, day, ct);
+    }
+    return Results.Ok(day);
 });
 
 // 大奶台账 KPI：近 N 天按玩法分组的命中率、平注 ROI、模型高估幅度、热门选项

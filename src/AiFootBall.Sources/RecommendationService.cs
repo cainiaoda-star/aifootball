@@ -255,6 +255,7 @@ public sealed class RecommendationService
         var oddsDelta = fids.Count > 0 ? await _repo.GetEuOddsDeltaAsync(fids, ct, fresh) : new();
         // 复盘按「开赛时刻」取必发：必发会一直记到赛中，用最后一条等于把比分喂进信号。
         var exRatio = fids.Count > 0 ? await _repo.GetExchangeRatioAsync(fids, ct, fresh, review) : new();
+        var exPnl = fids.Count > 0 ? await _repo.GetExchangePnlAsync(fids, ct, fresh, review) : new();
         var totalLines = fids.Count > 0 ? await _repo.GetTotalLineAsync(fids, ct) : new();
         var closingEu = fids.Count > 0 ? await _repo.GetClosingEuAsync(fids, ct, fresh) : new();
         var asian = fids.Count > 0 ? await _repo.GetAsianMoveAsync(fids, ct, fresh) : new();
@@ -308,6 +309,7 @@ public sealed class RecommendationService
 
             decimal? delta = null, drawDelta = null;
             decimal? rh = null, rd = null, ra = null;
+            decimal? pnlH = null, pnlA = null;
             decimal? line = null;
             decimal? spfHome = null, spfDraw = null, spfAway = null;
             if (c.MatchId is long spfId && jcSpf.TryGetValue(spfId, out var officialSpf))
@@ -334,6 +336,11 @@ public sealed class RecommendationService
                     rh = ex.Home;
                     rd = ex.Draw;
                     ra = ex.Away;
+                }
+                if (exPnl.TryGetValue(c.MatchId.Value, out var pnl))
+                {
+                    pnlH = pnl.PnlIdxHome;
+                    pnlA = pnl.PnlIdxAway;
                 }
                 totalLines.TryGetValue(c.MatchId.Value, out line);
                 if (closingEu.TryGetValue(c.MatchId.Value, out var eu))
@@ -365,7 +372,8 @@ public sealed class RecommendationService
                 spfHome, spfDraw, spfAway,
                 drawDelta, rd,
                 ah.Open, ah.Close,
-                lateDelta, homePts, awayPts);
+                lateDelta, homePts, awayPts,
+                pnlH, pnlA);
 
             var changed = HitProbabilityService.Stamp(rec, hitSnap, spfHome, spfDraw, spfAway, ah.Open, ah.Close);
             if (changed)
@@ -583,6 +591,17 @@ public sealed class RecommendationService
         // 这里用最新 NSPF 的「让胜」字段做临场值，出注值由 GetTurnGuardNspfOpenAsync 补。
         var nspfOpen = await _jcOdds.GetEarliestNspfAsync(matchIds, ct);
 
+        // 必发静态资金快照（盈亏指数 + 客胜占比）：补第 4 个「静态资金异常」信号。
+        // 这是主胜大热反向/客胜资金涌入的铁证，时间序列诊断报不出来。
+        Dictionary<long, (decimal? PnlIdxHome, decimal? PnlIdxAway)> exPnl;
+        try { exPnl = await _repo.GetExchangePnlAsync(matchIds, ct); }
+        catch (OperationCanceledException) { throw; }
+        catch { exPnl = new(); }
+        Dictionary<long, (decimal? Home, decimal? Draw, decimal? Away)> exRatio;
+        try { exRatio = await _repo.GetExchangeRatioAsync(matchIds, ct); }
+        catch (OperationCanceledException) { throw; }
+        catch { exRatio = new(); }
+
         var alerts = new List<TurnAlertRow>();
         foreach (var p in open)
         {
@@ -594,7 +613,13 @@ public sealed class RecommendationService
             if (nspfOpen.TryGetValue(p.MatchId, out var openWin) && nspf.TryGetValue(p.MatchId, out var now))
                 rangSheng = (openWin.Win, now.Win);
 
-            var alert = TurnGuard.Judge(p, pickDir, diag, rangSheng);
+            (decimal? PnlIdxAway, decimal? RatioAway)? awayMoney = null;
+            var hasPnl = exPnl.TryGetValue(p.MatchId, out var pnl);
+            var hasRatio = exRatio.TryGetValue(p.MatchId, out var ratio);
+            if (hasPnl || hasRatio)
+                awayMoney = (hasPnl ? pnl.PnlIdxAway : null, hasRatio ? ratio.Away : null);
+
+            var alert = TurnGuard.Judge(p, pickDir, diag, rangSheng, awayMoney);
             if (alert is not null) alerts.Add(alert);
         }
 
