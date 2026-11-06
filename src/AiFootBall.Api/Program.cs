@@ -756,6 +756,105 @@ app.MapGet("/api/jobs/logs", async (int? take, SyncLogRepository repo) =>
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", time = DateTime.Now }));
 
+// 数据源连通性自检（VPS 部署前测地区、部署后测是否被反爬拦截）。
+// 并发探测 6 个上游源，每个返回 HTTP 状态 + 是否命中反爬挑战/人机验证页 + 耗时。
+// 判断依据复用 BotGuard 的挑战页/验证页识别，与正式采集同一套口径，不是简单 ping。
+app.MapGet("/api/sources/probe", async (HttpClient http, CancellationToken ct) =>
+{
+    var today = DateTime.Now.ToString("yyyy-MM-dd");
+    var probes = new (string Name, string Url, string Referer)[]
+    {
+        ("竞彩受注场次(500)", "https://trade.500.com/jczq/", "https://trade.500.com/"),
+        ("足球赛程(500)", $"https://live.500.com/?e={today}", "https://live.500.com/"),
+        ("赔率欧指(500)", "https://odds.500.com/fenxi/ouzhi-1364148.shtml", "https://odds.500.com/"),
+        ("必发投注(500)", "https://odds.500.com/fenxi/touzhu-1364148.shtml", "https://odds.500.com/"),
+        ("彩票历史(500)", "https://datachart.500.com/dlt/history/newinc/history.php?start=2026001&end=2026005", "https://datachart.500.com/"),
+        ("开奖网(pinble)", "https://www.pinble.com/", "https://www.pinble.com/")
+    };
+
+    static async Task<SourceProbeResult> ProbeOne(HttpClient http, string name, string url, string referer, CancellationToken ct)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Referrer = new Uri(referer);
+            req.Headers.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9");
+            using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            var code = (int)resp.StatusCode;
+
+            var status = "ok";
+            var note = "连通正常";
+            if (code == 403 || code == 451 || code == 503)
+            {
+                status = "blocked";
+                note = $"HTTP {code}：可能被地域或 WAF 拦截";
+            }
+            else if (code == 429 || code == 428)
+            {
+                status = "rate-limited";
+                note = $"HTTP {code}：被限流";
+            }
+            else if (!resp.IsSuccessStatusCode)
+            {
+                status = "http-error";
+                note = $"HTTP {code}";
+            }
+            else
+            {
+                // 读一小段正文判断是否反爬挑战/人机验证页（复用采集同款判断）。
+                var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+                var html = TextDecoder.DecodeGbk(bytes);
+                if (BotGuard.IsVerificationPage(html))
+                {
+                    status = "verify-required";
+                    note = "命中人机验证页（token 缺失/过期，该地区 IP 被重点拦）";
+                }
+                else if (BotGuard.IsChallenge(html))
+                {
+                    status = "challenge";
+                    note = "命中 JS 挑战页（反爬拦截，可自动解）";
+                }
+                else if (bytes.Length < 1000)
+                {
+                    status = "empty";
+                    note = $"返回过短({bytes.Length}B)，疑似拦截页";
+                }
+            }
+
+            sw.Stop();
+            return new SourceProbeResult(name, url, status, code, sw.ElapsedMilliseconds, note);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return new SourceProbeResult(name, url, "cancelled", 0, sw.ElapsedMilliseconds, "请求被取消");
+        }
+        catch (HttpRequestException)
+        {
+            sw.Stop();
+            return new SourceProbeResult(name, url, "network-error", 0, sw.ElapsedMilliseconds, "网络不通（DNS/连接失败）");
+        }
+        catch (TaskCanceledException)
+        {
+            sw.Stop();
+            return new SourceProbeResult(name, url, "timeout", 0, sw.ElapsedMilliseconds, "超时");
+        }
+    }
+
+    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+    cts.CancelAfter(TimeSpan.FromSeconds(20));
+    var results = await Task.WhenAll(probes.Select(p => ProbeOne(http, p.Name, p.Url, p.Referer, cts.Token)));
+    var okCount = results.Count(r => r.Status == "ok");
+    return Results.Ok(new
+    {
+        time = DateTime.Now,
+        okCount,
+        total = results.Length,
+        summary = okCount == results.Length ? "全部数据源连通正常" : "存在被拦截/不通的数据源，详见 items",
+        items = results
+    });
+});
+
 /* ---------------- 命中率校准 ---------------- */
 
 // 校准报表：预测值 vs 实际命中率，附带与市场基准的 Brier 对比和平注回报率。
@@ -1705,6 +1804,7 @@ internal sealed record LoginRequest(string UserName, string Password, string? Ni
 internal sealed record SkillWriteRequest(string? Title, string? Body);
 internal sealed record DailySkillWriteRequest(string? Date, string? Title, string? Body, string? Evidence);
 internal sealed record PasswordChangeRequest(string? CurrentPassword, string? NewPassword, string? ConfirmPassword);
+internal sealed record SourceProbeResult(string Name, string Url, string Status, int HttpStatus, long LatencyMs, string Note);
 
 // OCR 响应 DTO（与 Node 端 parse-ticket.js 输出对齐）
 internal sealed class OcrResponse

@@ -2555,12 +2555,11 @@ function renderMilkBoard(b, strongOnly){
     g.bestProb = Math.max(g.bestProb, Number(it.modelProbability) || 0);
   }
 
-  // 2026-11-04 晚：排序口径从 EV 改成命中率（模型概率）。
-  // EV = 概率 × 赔率，赔率越离谱越占便宜，会把 1.9% 的 3:0@80 排到 17.8% 的胜胜前面。
-  const rows = [...byMatch.values()].sort((x, y) => {
-    if(y.bestProb !== x.bestProb) return y.bestProb - x.bestProb;
-    return officialMatchSort({ matchNo: x.matchNo }, { matchNo: y.matchNo });
-  });
+  // 2026-11-06：排序口径改成按竞彩官方场次号从小到大（周五001→002→…），
+  // 不再按命中率降序——命中率排序会把高概率注堆在最上面，但用户要看的是
+  // 官方赛程顺序，便于对照官方场次逐场下注。命中率信息仍在每注角标里保留。
+  const rows = [...byMatch.values()].sort((x, y) =>
+    officialMatchSort({ matchNo: x.matchNo }, { matchNo: y.matchNo }));
   for(const g of rows)
     for(const k in g.plays) g.plays[k].sort((x, y) => Number(y.modelProbability) - Number(x.modelProbability));
 
