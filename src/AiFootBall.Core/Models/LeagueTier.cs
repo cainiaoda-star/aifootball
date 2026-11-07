@@ -60,6 +60,18 @@ public sealed class ReviewScore
     public int? HalfHomeScore { get; set; }
     public int? HalfAwayScore { get; set; }
     public int Status { get; set; }
+    public DateTime MatchTime { get; set; }
 
-    public bool Finished => Status == 3 && HomeScore is not null && AwayScore is not null;
+    /// <summary>
+    /// 完场判定不再采信 Status。
+    ///
+    /// 2026-11-07 实测：500 源当晚重采同一天，返回的 Status=0 会把已经标好的「3=完场」无条件洗回 0，
+    /// 而判定条件恰恰是 Status==3，于是结算永远等不到完场。库里「有比分但 Status=0」的脏行共 1485 行，
+    /// 最早到 2021-01-03——这个字段从根上就不该拿来判完场。
+    ///
+    /// 现口径：比分齐全 + 开赛已过 150 分钟（90 分钟 + 中场 + 补时 + 冗余）即完场；
+    /// 源明确给了 Status=3 的仍然立刻算。
+    /// </summary>
+    public bool Finished => HomeScore is not null && AwayScore is not null
+        && (Status == 3 || MatchTime <= DateTime.Now.AddMinutes(-150));
 }

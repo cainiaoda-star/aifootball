@@ -46,7 +46,13 @@ public sealed class MatchRecord
 
     public string Source { get; init; } = "500";
 
-    public bool IsFinished => Status == 3 && HomeScore.HasValue && AwayScore.HasValue;
+    /// <summary>
+    /// 完场判定：比分齐全 + （源标完场 或 开赛已过 150 分钟）。
+    /// 不看 Status 单独作数——2026-11-07 实测该字段会被当晚重采洗回 0（全库 1485 行脏数据）。
+    /// 口径必须与 <see cref="ReviewScore.Finished"/> 保持一致，否则「采集算完场、结算算未完场」。
+    /// </summary>
+    public bool IsFinished => HomeScore.HasValue && AwayScore.HasValue
+        && (Status == 3 || MatchTime <= DateTime.Now.AddMinutes(-150));
 
     /// <summary>胜平负：3=主胜 1=平 0=客胜</summary>
     public char? ResultSpf => IsFinished

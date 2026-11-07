@@ -1000,7 +1000,7 @@ public sealed class BettingRepository
         foreach (var chunk in Chunk(ids))
         {
             var rows = await conn.QueryAsync<ReviewScore>(new CommandDefinition(
-                @"SELECT MatchId, HomeScore, AwayScore, HalfHomeScore, HalfAwayScore, Status
+                @"SELECT MatchId, HomeScore, AwayScore, HalfHomeScore, HalfAwayScore, Status, MatchTime
                   FROM dbo.FbMatch
                   WHERE MatchId IN @ids",
                 new { ids = chunk }, cancellationToken: ct));
@@ -1023,7 +1023,9 @@ public sealed class BettingRepository
             var rows = await conn.QueryAsync<MatchResult>(new CommandDefinition(
                 @"SELECT MatchId, HomeScore, AwayScore, ResultSpf
                   FROM dbo.FbMatch
-                  WHERE Status = 3 AND MatchId IN @ids",
+                  WHERE HomeScore IS NOT NULL AND AwayScore IS NOT NULL
+                    AND (Status = 3 OR MatchTime <= DATEADD(minute, -150, GETDATE()))
+                    AND MatchId IN @ids",
                 new { ids = chunk }, cancellationToken: ct));
             foreach (var row in rows)
                 result[row.MatchId] = (row.HomeScore, row.AwayScore, row.ResultSpf);

@@ -73,6 +73,15 @@ public static class MilkPickEngine
     /// <summary>半全场大奶线。用户 2026-11-04 指定：4.0 以下不发。</summary>
     public const decimal MinHalfFullOdds = 4.0m;
 
+    /// <summary>
+    /// 半全场「模型 vs 市场」偏离上限（2026-11-07 新增，防 21.40%/EV 2.25 那类假 EV）。
+    /// 判据来自页面自己的口径：EV 天花板 = 玩法返奖率（半全场 0.797），一注 EV 若显著超过它，
+    /// 等价于「模型认为这注比市场平均好一大截」——我们没有这个 alpha 的证据，只能是概率算高了。
+    /// 实测：米竞技负负 EV/返奖 = 2.82 倍、奥萨苏纳胜胜 1.80 倍，两注都是模型在低样本赛事上跑飞；
+    /// 其余注 0.76~1.16 倍不受影响。阈值取 1.6 把这两注挡住，误杀为 0。
+    /// </summary>
+    public const decimal BqModelOverMarketMax = 1.6m;
+
     /// <summary>比分 / 总进球的大奶线。与半全场共用同一条线，要动一起动。</summary>
     public const decimal MinOptionOdds = 4.0m;
 
@@ -201,8 +210,8 @@ public static class MilkPickEngine
         return (1m - MarketWeight) * modelFraction + MarketWeight * marketFraction;
     }
 
-    /// <summary>全榜上限 = 三个玩法名额之和（半全场 3 + 总进球 2 + 比分 1）。</summary>
-    public const int MaxPicks = 6;
+    /// <summary>全榜上限 = 三个玩法名额之和（半全场 3 + 总进球 2 + 比分 2）+ 高赔反转单列 1。</summary>
+    public const int MaxPicks = 8;
 
     /// <summary>
     /// 各玩法的「单注概率下限」，也就是这条榜的门槛命中率。
@@ -223,14 +232,113 @@ public static class MilkPickEngine
     public const decimal MinHalfFullProbability = 12.0m;
 
     /// <summary>
-    /// 半全场「反转档」（半场方向 ≠ 全场方向，如 平负/负胜/胜平/胜负）的概率下限。
+    /// 半全场「反转档」（半场方向 ≠ 全场方向）的概率**上限**（百分数）。
     ///
-    /// 2026-11-06 用户定调放开反转档后加：反转档的概率天然远低于顺风档（胜胜/平平/负负），
-    /// 仍用 12% 会一刀切把它们全挡在门外。反转档赔率高（12~20+ 倍），模型联合分布里
-    /// 常见的反转档概率约 5%~10%，取 5% 作为下限——既放进反转档，又挡掉纯噪声。
-    /// 与比分同一条线（5%），因为两者都是「赔率高、命中率低」的长尾档。
+    /// 2026-11-07 重做：这里原来是「固定下限 5%」，是错的。
+    /// 反转 6 档的真实概率量级差 6 倍——技能13（96,703 场联赛平均）：
+    ///   平胜 4.0% / 平负 3.1% / 胜平 1.4% / 负平 1.3% / 负胜 0.7% / **胜负 0.6%**。
+    /// 固定 5% 高于其中 5 档的真实概率，等于「门开了但谁也进不来」：
+    /// 32 倍的「胜负」永远出不来——2026-11-07 周六007 朴茨茅斯 1:2（半场主胜、全场客胜）实证，
+    /// 系统一注不可能给到。且全库 0.6% 是被脏数据（78.7% 场次半场=全场）稀释的，
+    /// 可信联赛（半场=全场占比<40%）的真实值：苏超 3.20 / 英超 2.68 / 欧冠 2.66 / 英冠 2.56%。
+    ///
+    /// 正确做法 = 按赔率反推（见 <see cref="ReverseFloor"/>）：门槛随赔率走，自动分层。
+    /// 本常量退化为**上限**，与顺风档 12% 对齐，防止低赔反转档（如 3.9 倍的胜平）门槛倒挂。
     /// </summary>
-    public const decimal MinHalfFullReverseProbability = 5.0m;
+    public const decimal MinHalfFullReverseProbability = 12.0m;
+
+    /// <summary>
+    /// 反转档动态门槛系数（2026-11-07 加）：门槛 = 返奖率 / 赔率 × 本值，
+    /// 即「模型概率至少达到该档公平概率的 85%」。
+    ///
+    /// 为什么用赔率反推而不是拍一个固定数：赔率本身就是市场对「这个档有多难」的定价，
+    /// 32 倍的档公平概率只有 2.5%，拿 5% 去要求它，等于要求模型比市场看准一倍——
+    /// 而实测模型 MAE 1.53 球、比市场的 1.33 还差，不可能有这个精度。
+    /// 分层效果：32 倍 → 2.12%；15 倍 → 4.52%；7.1 倍（平负）→ 9.54%。
+    /// </summary>
+    public const decimal ReverseFloorRatio = 0.85m;
+
+    /// <summary>
+    /// 反转档动态门槛的绝对下限（百分数）：极端高赔（100 倍以上）算出来的门槛会低到 0.7%，
+    /// 那个量级模型根本区分不了信号和噪声，锁在 1.5%。
+    /// </summary>
+    public const decimal MinReverseAbsolute = 1.5m;
+
+    /// <summary>
+    /// 高赔反转单列的赔率下限（2026-11-07 加）：12 倍起步。
+    ///
+    /// 定 12 的理由：主榜现有档位全在 4~5.3 倍（11-07 实测 7 注：5.30/4.10/4.00/4.30/4.15/4.15/4.05），
+    /// 一个「大奶榜」连 10 倍档都出不来，名不副实。12 倍以上才够「小刀锯大树」的量级，
+    /// 也正好卡在反转档的常见赔率区间（平负 7.1 / 胜平 15 / 负胜 29 / 胜负 32）——低于 12 的走主榜。
+    /// </summary>
+    public const decimal CounterHighMinOdds = 12.0m;
+
+    /// <summary>
+    /// 高赔单列的联赛基线准入（%，2026-11-07 加）：该联赛该反转档的实测概率必须 ≥ 本值。
+    ///
+    /// 为什么单列还要再过一道联赛闸：赔率反推的门槛只回答「模型敢不敢」，不回答「这事在这个联赛会不会发生」。
+    /// 友谊赛胜负档实测 0.05%（23k 场），模型偶尔会给它 2.5%——那不是发现价值，是拿小样本噪声赌 32 倍。
+    /// 取 1.2%：英冠 2.56 / 英超 2.68 / 苏超 3.20 全过，友谊赛 0.05 / 阿甲 1.23(胜负档) 边缘、
+    /// 荷乙 2.62 全过；低反转联赛自动出局，不需要逐个维护名单。
+    /// </summary>
+    public const decimal MinCounterHighLeaguePct = 1.2m;
+
+    /// <summary>
+    /// 高赔单列的 EV 上限 = 半全场返奖率 × 本值（2026-11-07 加，复查时补的）。
+    ///
+    /// 第一版只用了全局 <see cref="MaxEv"/>=2.5，结果实测出一注「米竞技 3-0 @45.00 / 模型 2.15% / EV 0.968」——
+    /// 而半全场返奖率只有 0.797，EV 0.968 意味着模型认为它比市场准 21%，前端会同时挂
+    /// 「高赔单列」和「EV 超上限·概率存疑」两个标签，自相矛盾（正是用户 11-07 抓出的那条）。
+    ///
+    /// 单列票的定位是「小注买一个真实存在的高赔可能」，不是「模型发现了价值」。
+    /// 所以它的 EV 必须落在返奖率附近（×1.05 容差），超了就说明概率被高估——宁可不发。
+    /// </summary>
+    public const decimal CounterHighEvToPaybackMax = 1.05m;
+
+    /// <summary>
+    /// 高赔单列「基线 EV / 返奖率」的下限（2026-11-07 夜二次修订）：0.95。
+    ///
+    /// 为什么单列的概率判据从「模型概率」换成「联赛基线」：模型在极端反转档上系统性低估。
+    /// 实证（2026-11-07 周六007 英冠 朴茨茅斯 vs 斯托克城，半场主胜→全场 1:2，胜负@32.00）：
+    /// 模型给 1.76%（由 ExpTotal 2.534 / ExpGd +0.24 拆出的泊松两段），
+    /// 反推门槛是 0.797 ÷ 32 × 0.85 = 2.12% → 模型被自己的门槛挡死，一注没发；
+    /// 而英冠实测 2.56%、市场去水隐含 2.50%，这一注其实是「市场定价公道、模型看错」。
+    /// 一个 3248 场支撑的联赛基线，比一个 MAE 1.53 球的模型可靠一个量级。
+    ///
+    /// 判据：基线概率 × 赔率 ÷ 返奖率 ∈ [0.95, 1.15]。
+    /// 下界 0.95 拦掉「这个联赛本来就不出、赔率也没补偿」的注；
+    /// 上界 1.15 拦掉「基线高估 / 赔率虚高」，防止挂出去和前端「EV 超上限」红标自相矛盾。
+    /// 校验：英冠 3-0 @32 → 2.56%×32÷0.797 = 1.028 ✓；西甲 0-1 @17 → 5.24%×17÷0.797 = 1.118 ✓；
+    /// 米竞技 3-0 @45（兜底基线 2.08%）→ 2.08%×45÷0.797 = 1.174 ✗ 被拦住。
+    /// </summary>
+    public const decimal CounterHighBaseEvMinRatio = 0.95m;
+
+    /// <summary>高赔单列「基线 EV / 返奖率」的上限（2026-11-07 夜二次修订）：1.15。见 <see cref="CounterHighBaseEvMinRatio"/>。</summary>
+    public const decimal CounterHighBaseEvMaxRatio = 1.15m;
+
+    /// <summary>
+    /// 单列注的模型概率相对联赛基线的容忍下限（2026-11-07 夜二次修订）：0.40。
+    ///
+    /// 概率判据虽换成基线，但不能完全绕过模型——模型给 0.3%、基线给 2.56% 的场次，
+    /// 说明模型连方向都看不上（比如主力伤停、阵型对位完全相反），这种「基线高但模型强烈否定」
+    /// 的注不该占名额。取 0.40 而非 0.70：英冠 32 倍那注模型/基线 = 1.76/2.56 = 0.69，
+    /// 若取 0.70 恰好把它挡掉，等于白改。0.40 只拦「模型强烈否定」，不拦「模型略保守」。
+    /// </summary>
+    public const decimal CounterHighModelVsBaseMin = 0.40m;
+
+    /// <summary>
+    /// 「模型低可信」标记阈值（2026-11-07 夜加）：模型概率 &lt; 联赛基线 × 0.70 就标记。
+    ///
+    /// 为什么是 0.70 而不是否决线 0.40：这两个数干的是完全不同的事。
+    /// 0.40 是**否决权**——低于它就撤注（模型连方向都不认同）；
+    /// 0.70 是**标记权**——低于它照样发注，但必须告诉用户「这注的模型概率不可信」。
+    /// 中间这段 [0.40, 0.70) 恰恰是最需要解释的区间：模型保守 30% 以上、
+    /// 但联赛历史上就是会发生（英冠胜负档模型 1.76% / 基线 2.56% = 0.69，正落在这里）。
+    /// 以前这段被静默处理——要么按模型概率排到末尾被挤掉，要么发出来也不解释为什么。
+    ///
+    /// 前端看到这个标记要展示「模型低估·按联赛基线看」，不能装作模型也认同这注。
+    /// </summary>
+    public const decimal ModelLowConfidenceRatio = 0.70m;
 
     /// <summary>
     /// 零封倾向阈值（0-1 概率，2026-11-06 加）。某队全场零封对手的模型概率达到此线，
@@ -267,7 +375,8 @@ public static class MilkPickEngine
     public const decimal HotFadeRatioMin = 70m;
 
     /// <summary>必发盈亏指数深负线（教训1l，2026-11-07 定稿）。≤-60 才算「钱涌客胜」的硬信号；
-    /// -37~-56 的中等强度钱逃在小联赛实测 1/5，是噪音，不参与任何否决/反向。</summary>
+    /// -37~-56 的中等强度「被买重」在小联赛实测 1/5，是噪音，不参与任何否决/反向。
+    /// 语义注：PnlIdx 负数=该方向被买重（庄家在该结果亏钱），不是「钱逃离」，11-07 公式反推订正。</summary>
     public const decimal PnlDeepNegative = -60m;
 
     /// <summary>
@@ -330,8 +439,27 @@ public static class MilkPickEngine
     /// </summary>
     private static decimal ProbabilityFloorFor(MilkPick pick)
         => pick.PlayType == JcPlayTypes.Bq && IsHalfFullReverse(pick)
-            ? MinHalfFullReverseProbability
+            ? ReverseFloor(pick.Odds)
             : ProbabilityFloor(pick.PlayType);
+
+    /// <summary>
+    /// 反转档动态概率门槛（百分数，2026-11-07 加，替代原来的固定 5%）。
+    /// 门槛 = 返奖率 / 赔率 × <see cref="ReverseFloorRatio"/>，再夹在
+    /// [<see cref="MinReverseAbsolute"/>, <see cref="MinHalfFullReverseProbability"/>] 之间。
+    ///
+    /// 返奖率取半全场官方固定水位 <see cref="StandardOverRound"/> 的倒数（1/1.254 ≈ 0.797），
+    /// 与 Blend 用的是同一个数，避免两套返奖率打架。
+    ///
+    /// 量纲（这里栽过一次，别再错）：返回的是**百分数**，因为 ModelProbability 是百分数；
+    /// 而 Blend 返回的是 0~1 小数。两者不能直接比。
+    /// </summary>
+    private static decimal ReverseFloor(decimal odds)
+    {
+        if (odds <= 1m) return MinHalfFullReverseProbability;
+        var payback = 1m / StandardOverRound(JcPlayTypes.Bq);   // ≈0.797
+        var fairPct = payback / odds * 100m;                    // 公平概率（百分数）
+        return Math.Clamp(fairPct * ReverseFloorRatio, MinReverseAbsolute, MinHalfFullReverseProbability);
+    }
 
     /// <summary>半全场 OptionCode 形如 "X-Y"（X=半场方向，Y=全场方向，3胜/1平/0负），X != Y 即反转档。</summary>
     private static bool IsHalfFullReverse(MilkPick pick)
@@ -537,6 +665,16 @@ public static class MilkPickEngine
 
         foreach (var r in recs)
         {
+            // 联赛黑名单（2026-11-07 用户拍板）：澳超整类不发。大奶榜是组串的主要来源，
+            // 澳超无升降级+高方差+判罚争议高发（11-07 珀斯光荣越位进球判有效，正是实购 4 串 1 的挂腿）。
+            // 名单集中在 NoParlayLeagues，恢复某联赛只改那里。
+            if (NoParlayLeagues.IsExcluded(r.LeagueName))
+            {
+                if (funnel.Skipped.Count < 20)
+                    funnel.Skipped.Add($"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：{r.LeagueName} 属黑名单，不进串关");
+                continue;
+            }
+
             if (r.MatchId is not long mid)
             {
                 if (funnel.Skipped.Count < 20) funnel.Skipped.Add($"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：无 MatchId");
@@ -772,7 +910,13 @@ public static class MilkPickEngine
                     bqPick.FavoriteReversalPct = favProfile?.ReversalRate;
                     bqPick.HighReversalFavorite = highRevFav;
                     bqPick.CrushFavorite = crushFav;
-                    matchPicks.Add(WithProbability(bqPick, Blend((decimal)p, pt.Odds, bqOver)));
+                    // 市场一致性闸（2026-11-07）：模型概率超过市场隐含 2.5 倍即判「模型跑飞了」。
+                    // 半全场的联合概率会把 λ 的偏差放大，不设这道闸，模型估偏的场次会靠虚高 EV 霸榜。
+                    // 注意量纲：Blend 返回 0~1 的小数（ModelProbability 落库时才 ×100），
+                    // 市场隐含也必须是小数，写成 100/odds/over 会恒假（当日已栽过一次）。
+                    var blended = Blend((decimal)p, pt.Odds, bqOver);
+                    if (bqOver > 0 && blended > 1m / pt.Odds / bqOver * BqModelOverMarketMax) continue;
+                    matchPicks.Add(WithProbability(bqPick, blended));
                 }
 
                 // 让平出注（2026-11-07，技能10落地）：NSPF 让平是全引擎此前从不出注的最大价值档。
@@ -1023,13 +1167,21 @@ public static class MilkPickEngine
 
         // 4) 按玩法分组各取前几名，不混在一起排。
         // 混排时比分档位多、半全场只有三档，混着排会让半全场整片消失；前端也按玩法分组展示。
-        // 组内同样按概率降序——这是「提高中奖率」这条指示的直接落点。
+        //
+        // 排序口径分家（2026-11-07 修，用户实测反推）：
+        //   · 半全场/总进球/让球：仍按模型概率降序——这是「提高中奖率」这条指示的直接落点。
+        //   · **比分改按 EV 降序**。比分是 31 档分散玩法，单档概率天然只有 5~15%，按概率排
+        //     必然永远选到「赔率被压得最狠」的那个热门档（阿森纳 vs 赫尔城 2:0 @5.30）。
+        //     实测 204 场主胜热门（SPF<1.8）：2:1 命中 12.25% > 2:0 10.30% > 1:0 8.33%，
+        //     而 Dixon-Coles 网格在强弱分明时峰值落在 2:0，模型概率与真实分布反向。
+        //     同日 4 场落点（威尼斯2:1 / 柏太阳神2:1 / 珀斯2:1 / 鸟栖1:2）全部错过，
+        //     根因就是「按模型概率取最高」把一个系统性低估的档位永远排在 2:0 后面。
         var ranked = capped
             .GroupBy(x => x.PlayType)
             .OrderBy(g => Array.IndexOf(PlayOrder, g.Key))
             .SelectMany(g => g
-                .OrderByDescending(x => x.ModelProbability)
-                .ThenByDescending(x => x.Ev)
+                .OrderByDescending(x => x.PlayType == JcPlayTypes.Bf ? x.Ev : x.ModelProbability)
+                .ThenByDescending(x => x.ModelProbability)
                 .Take(MaxPerPlay.TryGetValue(g.Key, out var cap) ? cap : 4))
             .ToList();
 
@@ -1043,8 +1195,114 @@ public static class MilkPickEngine
             .Where(x => x.PlayType != JcPlayTypes.Jq || x.OptionCode != "0" || x.MatchId is not long m || !zeroZero.Contains(m))
             .ToList();
 
+        // 5) 高赔反转单列（2026-11-07 加）。
+        //
+        //    主榜半全场只有 3 个名额、组内按模型概率排，而反转档概率天然只有 2%~5%，
+        //    永远挤不过胜胜/负负/平平——结果是 30 倍以上的档位在主榜里「结构上不存在」。
+        //    实证：2026-11-07 周六007 朴茨茅斯 vs 斯托克城，半场主胜、全场 1:2，胜负@32，
+        //    系统全程一注没给；周六008 马拉加同型。用户买的就是这个量级。
+        //
+        //    这里单独开 1 个名额：不进主榜排序，只认「赔率够高 + 过动态门槛 + EV 不超上限」。
+        //    每期最多 1 注，标记 CounterHigh，前端必须写明「高赔单列·长期负期望」——
+        //    它的 EV 天花板仍是玩法返奖率 0.797，不能混进主榜装作能赚。
+        //
+        //    从 gated 而不是 coherent 里挑：coherent 已经做过「同一场只讲一个剧本」的
+        //    连贯性剪枝——锚点通常是概率最高的胜胜/平平，方向与反转档天然冲突，
+        //    反转档在那一关就被剪掉了，从 coherent 挑等于永远挑不到（改完实测证实：
+        //    32 倍胜负档一注都进不来）。gated 已过概率门槛和 EV 上限，
+        //    强背离撤注对反转档本来就有豁免（IsReverseOrCleanSheet），复活的风险可控。
+        //    第二个坑（2026-11-07 夜二次修订，实测抓出）：从 gated 挑同样挑不到。
+        //    gated 在 1045 行已经做过 ModelProbability >= ProbabilityFloorFor(x) 的过滤，
+        //    反转档的门槛是「按赔率反推」的（32 倍 → 2.12%），而模型给 32 倍档的概率只有 1.76%，
+        //    它连 gated 都进不去——在 gated 后面加任何判据都是死代码。
+        //    所以候选池必须回到 result（未过滤全量），再在单列通道里自己做全套闸。
+        //
+        //    这样做的代价：result 里含被「强背离撤注」砍掉过的注，理论上会复活。
+        //    风险由三道闸控住：赔率 ≥12、基线 EV/返奖率 ∈ [0.95,1.15]、模型 ≥ 基线×0.40。
+        //    而且反转档在强背离撤注里本来就有豁免（IsReverseOrCleanSheet），不是新增漏洞。
+        var bqPayback = 1m / StandardOverRound(JcPlayTypes.Bq);
+        var counterHighRow = result
+            .Where(x => x.PlayType == JcPlayTypes.Bq && IsHalfFullReverse(x))
+            .Where(x => x.Odds >= CounterHighMinOdds)
+            // 联赛基线闸（2026-11-07）：模型敢给不等于这个联赛会出。友谊赛胜负档实测 0.05%，
+            // 模型给 2.5% 只是噪声；英冠 2.56%、英超 2.68%、苏超 3.20% 才是真的会翻。
+            .Where(x => LeagueHalfFullBaseline.Passes(x.LeagueName, x.OptionCode, MinCounterHighLeaguePct))
+            .Select(x => new
+            {
+                Pick = x,
+                BasePct = LeagueHalfFullBaseline.Pct(x.LeagueName, x.OptionCode) ?? 0m
+            })
+            .Where(t => t.BasePct > 0m)
+            // 概率判据用「联赛基线」而不是「模型概率」（2026-11-07 夜）：
+            // 基线 EV / 返奖率 落在 [0.95, 1.15] 才算「市场定价公道 + 这个联赛真会翻」。
+            // 用模型概率会把 32 倍档全部误杀（模型在长尾档系统性低估 30%），用基线才是对的。
+            .Where(t =>
+            {
+                var ratio = t.BasePct / 100m * t.Pick.Odds / bqPayback;
+                return ratio >= CounterHighBaseEvMinRatio && ratio <= CounterHighBaseEvMaxRatio;
+            })
+            // 但模型不能强烈否定（模型概率 ≥ 基线×0.40）：模型给 0.3%、基线给 2.56%，
+            // 说明模型连方向都看不上（伤停/对位反了），这种不该占名额。
+            .Where(t => t.Pick.ModelProbability >= t.BasePct * CounterHighModelVsBaseMin)
+            // 保留全局 EV 天花板（防模型爆表把 EV 撑到 2.5 以上）
+            .Where(t => t.Pick.Ev <= MaxEv)
+            .Where(t => !picks.Any(p => p.MatchId == t.Pick.MatchId))
+            // 排序：赔率降序（2026-11-07 夜改，原为 EV 降序）。
+            // 原因：用 EV 排序选「大奶」在数学上选不出来——赔率越高 EV 必然越低，
+            // 32 倍档永远排最后，通道拿去发了 15~17 倍那档。要的是大奶，排序键就必须是赔率。
+            .OrderByDescending(t => t.Pick.Odds)
+            .ThenByDescending(t => t.BasePct)
+            .FirstOrDefault();
+
+        if (counterHighRow is not null)
+        {
+            var counterHigh = counterHighRow.Pick;
+            counterHigh.CounterHigh = true;
+            // 单列注展示用的期望值走基线口径，不走模型口径（模型在这种档位不可信）。
+            counterHigh.BaselineProbability = counterHighRow.BasePct;
+            counterHigh.BaselineEv = decimal.Round(counterHighRow.BasePct / 100m * counterHigh.Odds, 3);
+            picks.Add(counterHigh);
+        }
+
+        // 「模型低可信」统一打标（2026-11-07 夜）：对所有最终入选的半全场反转档生效，
+        // 不分主榜/单列。放在最后统一扫一遍而不是在选注时逐个算，理由有两个：
+        // ① 主榜那 3 个半全场名额里也可能出反转档（平负/平胜 概率 11%~14%，能过 12% 门槛），
+        //    它们同样存在「模型比联赛基线保守」的问题，不能只标单列注；
+        // ② 单列注刚在上面才补了 BaselineProbability，在选注过程中扫描时它还读不到。
+        // 只标不撤：用户要的是「把事实摆出来」，不是「用模型的不自信替用户做决定」。
+        MarkLowConfidence(picks);
+
         funnel.Final = picks.Count;
         return new MilkBuildResult { Picks = picks, Gates = gates, ShowRows = showRows, Funnel = funnel };
+    }
+
+    /// <summary>
+    /// 给半全场反转档打「模型低可信」标记（2026-11-07 夜，从 Build 里的内联循环抽出）。
+    ///
+    /// 判据：模型概率 &lt; 联赛基线 × <see cref="ModelLowConfidenceRatio"/>(0.70)，只标不撤。
+    /// 顺风档（胜胜/平平/负负）不参与——那些档模型样本充足、概率本来就在 12% 以上，
+    /// 不存在「模型比历史保守 30%」的问题，标了只会制造噪声。
+    ///
+    /// 独立成 public 方法而不是内联在 Build 里，是为了能单测：
+    /// 内联时想验证它必须构造一整套能选中 12 倍反转档的赔率网格，而那种网格
+    /// 对模型概率的约束是间接的（要经过 Blend），测挂了也说不清是哪一步在起作用。
+    ///
+    /// 侧效应：被标记的注会补上 <see cref="MilkPick.BaselineProbability"/> 与
+    /// <see cref="MilkPick.BaselineEv"/>——前端要并排展示「模型 X% / 基线 Y%」，
+    /// 只给布尔标记不给数字，等于让用户自己猜比例。
+    /// </summary>
+    public static void MarkLowConfidence(IEnumerable<MilkPick> picks)
+    {
+        foreach (var p in picks.Where(x => x.PlayType == JcPlayTypes.Bq && IsHalfFullReverse(x)))
+        {
+            var basePct = p.BaselineProbability ?? LeagueHalfFullBaseline.Pct(p.LeagueName, p.OptionCode);
+            if (basePct is not > 0m) continue;
+            if (p.ModelProbability >= basePct.Value * ModelLowConfidenceRatio) continue;
+
+            p.ModelLowConfidence = true;
+            p.BaselineProbability ??= basePct;
+            p.BaselineEv ??= decimal.Round(basePct.Value / 100m * p.Odds, 3);
+        }
     }
 
     /// <summary>
@@ -1122,7 +1380,10 @@ public static class MilkPickEngine
         [JcPlayTypes.Bq] = 3,
         [JcPlayTypes.Nspf] = 1,
         [JcPlayTypes.Jq] = 2,
-        [JcPlayTypes.Bf] = 1
+        // 比分 31 档，每期只发 1 注等于赌单格，而单格最高命中率也不过 12%。
+        // 2026-11-07 用户实测：当天 4 场落在 2:1/1:2（占已完赛 18 场的 22%），1 注容量一注没沾。
+        // 放宽到 2 注：主力档 + 次选档（通常即「净胜 1 球」与「原最高概率」两个方向）。
+        [JcPlayTypes.Bf] = 2
     };
 
     /* ---------------- 同一场的一致性 ---------------- */

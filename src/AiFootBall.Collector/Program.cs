@@ -30,7 +30,12 @@ internal static class Program
         var jcOddsRepo = new JcOddsRepository(factory);
         var milkScan = new MilkScanService(new MilkRepository(factory), bettingRepo);
         var recService = new RecommendationService(cardSource, bettingRepo, jcOddsRepo, milk: milkScan,
-            hit: new HitProbabilityService(bettingRepo));
+            hit: new HitProbabilityService(bettingRepo),
+            // 2026-11-07：CLI 以前没注入这两个仓库，SaveMilkAsync 一进门就 return，
+            // 命令行跑 save-recommendations 只打印「已刷新」却一行都不写台账（落库全靠 Api 常驻进程）。
+            // 端到端验证必须在同一进程里跑通「算 → 落库 → 读回」，否则改了等于没改。
+            tickets: new TicketRepository(factory),
+            milkPicks: new MilkPickRepository(factory));
         var progress = new Progress<string>(Console.WriteLine);
 
         try
@@ -259,7 +264,15 @@ internal static class Program
                         .OrderBy(x => x.MatchNo, StringComparer.Ordinal)
                         .ThenBy(x => x.PlayType, StringComparer.Ordinal)
                         .ThenByDescending(x => x.Ev))
-                        Console.WriteLine($"  [{p.MatchNo}] {p.PlayType} {p.OptionCode} @{p.Odds} 概率{p.ModelProbability}% EV{p.Ev}  ({p.HomeTeam} vs {p.AwayTeam})");
+                    {
+                        // 单列注必须自报基线口径（2026-11-07 夜）：不打印的话，回放时看到的
+                        // 「概率2.27% EV0.658」会让人以为通道还是在按模型发注，看不出它其实
+                        // 走的是联赛基线（英超 2.68% → 基线 EV 0.777）。
+                        var tag = p.CounterHigh
+                            ? $"  ★单列 基线概率{p.BaselineProbability}% 基线EV{p.BaselineEv}"
+                            : "";
+                        Console.WriteLine($"  [{p.MatchNo}] {p.PlayType} {p.OptionCode} @{p.Odds} 概率{p.ModelProbability}% EV{p.Ev}{tag}  ({p.HomeTeam} vs {p.AwayTeam})");
+                    }
                     return 0;
                 }
 

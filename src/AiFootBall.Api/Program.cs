@@ -147,6 +147,18 @@ _ = Task.Run(async () =>
     }
 });
 app.UseCors();
+// 全局异常兜底：未捕获异常记录完整堆栈（此前 500 无日志可查）
+app.UseExceptionHandler(a => a.Run(async context =>
+{
+    var feature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>();
+    if (feature?.Error is not null)
+    {
+        app.Logger.LogError(feature.Error, "未处理异常 {Path}", context.Request.Path);
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        await context.Response.WriteAsJsonAsync(new { message = "服务器内部错误：" + feature.Error.Message });
+    }
+}));
 app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
 {
@@ -1455,7 +1467,22 @@ static object ToMilkItem(MilkPick p) => new
     marketDirectionName = p.MarketDirectionName,
     marketDirectionPct = p.MarketDirectionPct,
     // 纯模型标记（2026-11-05 加）：该玩法快照档数不全，概率没掺盘口，EV 会偏高。
-    marketPriced = p.MarketPriced
+    marketPriced = p.MarketPriced,
+    // 高赔反转单列（2026-11-07 加）：这一注不在主榜 3 个半全场名额里竞争，
+    // 是「赔率 ≥12 倍 + 过动态门槛 + 联赛基线准入」的独立名额。
+    // 前端必须单独分区并写明「长期负期望」——它的 EV 天花板仍是返奖率 0.797，不能混进主榜装作能赚。
+    counterHigh = p.CounterHigh,
+    // 基线口径（2026-11-07 夜加）：单列注的可信度来自「这个联赛这个档实测会不会出」，
+    // 不是「模型敢不敢给」。前端对单列注展示 baselineEv，不展示 modelProbability 口径的 ev
+    // ——模型在 30 倍档系统性低估 30%，展示模型 EV 会把这注说成 0.658 的垃圾，
+    // 而按英冠/英超 3248 场实测是 0.777~0.82，两者对用户的含义完全不同。
+    baselineProbability = p.BaselineProbability,
+    baselineEv = p.BaselineEv,
+    // 模型低可信（2026-11-07 夜加）：模型概率 < 联赛基线 × 0.70。前端必须把
+    // 「模型说 X% / 联赛基线 Y%」两个数字并排展示，并标明这注是「模型低估、按联赛基线看」，
+    // 不能让模型单方面的低概率把一注有 3000+ 场历史依据的票说成不值。
+    // 只标不撤：即使模型很不认同，注照样发，用户自己判断。
+    modelLowConfidence = p.ModelLowConfidence
 };
 
 // 大奶票投影（与票面台账同源的一张票）

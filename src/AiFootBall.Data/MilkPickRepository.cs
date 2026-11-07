@@ -31,14 +31,28 @@ public sealed class MilkPickRepository
             rows += await conn.ExecuteAsync(new CommandDefinition(
                 @"INSERT INTO dbo.FbMilkPick
                     (PickDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
-                     PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev)
+                     PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
+                     BaselineProbability, BaselineEv, ModelLowConfidence)
                   VALUES (@d, @mid, @no, @lg, @home, @away, @time,
-                          @play, @code, @name, @odds, @prob, @ev)",
+                          @play, @code, @name, @odds, @prob, @ev, @counterHigh,
+                          @basePct, @baseEv, @lowConf)",
                 new
                 {
                     d, mid, no = p.MatchNo, lg = p.LeagueName, home = p.HomeTeam, away = p.AwayTeam,
                     time = p.MatchTime, play = p.PlayType, code = p.OptionCode, name = p.OptionName,
-                    odds = p.Odds, prob = p.ModelProbability, ev = p.Ev
+                    odds = p.Odds, prob = p.ModelProbability, ev = p.Ev,
+                    // 高赔反转单列标记必须落库（2026-11-07）：只在内存里置位，API 一投影就丢，
+                    // 第二天回看台账谁也分不清哪一注是单列额外出的大赔率票。
+                    counterHigh = p.CounterHigh,
+                    // 基线口径的期望值（2026-11-07 夜）：单列注的可信度来自联赛实测频率，
+                    // 不来自模型概率。不落库的话，赛后复盘只能看到模型那条被低估到 0.658 的 EV，
+                    // 会把这个通道判成「发垃圾注」，而真实口径是 0.777。
+                    basePct = p.BaselineProbability,
+                    baseEv = p.BaselineEv,
+                    // 模型低可信标记（2026-11-07 夜）：赛后复盘要能回答
+                    // 「这条被模型低估的注，最后到底中没中」——没有这一列，
+                    // 标记只活在前端，长期验证就断了。
+                    lowConf = p.ModelLowConfidence
                 }, tx, cancellationToken: ct));
         }
 
@@ -127,7 +141,8 @@ public sealed class MilkPickRepository
         await using var conn = await _factory.OpenAsync(ct);
         return (await conn.QueryAsync<MilkPickRow>(new CommandDefinition(
             @"SELECT PickId, PickDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
-                     PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev,
+                     PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
+                     BaselineProbability, BaselineEv, ModelLowConfidence,
                      ActualScore, ActualHalfScore, ActualGoals, Hit, SettledAt
               FROM dbo.FbMilkPick WHERE PickDate=@d
               ORDER BY ModelProbability DESC, Ev DESC", new { d }, cancellationToken: ct))).ToList();
@@ -400,6 +415,14 @@ public sealed class MilkPickRow
     public decimal Odds { get; set; }
     public decimal ModelProbability { get; set; }
     public decimal Ev { get; set; }
+    /// <summary>高赔反转单列（2026-11-07）。true = 12 倍以上的次名额，不在主榜 3 个半全场名额里。</summary>
+    public bool CounterHigh { get; set; }
+    /// <summary>联赛基线的实测概率（%，2026-11-07 夜加）。单列注必有；主榜反转档被标记时也会补。</summary>
+    public decimal? BaselineProbability { get; set; }
+    /// <summary>按联赛基线算的 EV（2026-11-07 夜加）。单列注/低可信注该给用户看的期望值。</summary>
+    public decimal? BaselineEv { get; set; }
+    /// <summary>模型在该注上概率低可信（2026-11-07 夜加）：模型概率 &lt; 联赛基线×0.70。</summary>
+    public bool ModelLowConfidence { get; set; }
     public string? ActualScore { get; set; }
     public string? ActualHalfScore { get; set; }
     public int? ActualGoals { get; set; }

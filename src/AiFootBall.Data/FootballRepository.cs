@@ -40,7 +40,7 @@ WHEN MATCHED THEN UPDATE SET
     HomeTeamName = @HomeTeamName, AwayTeamName = @AwayTeamName,
     HomeScore = ISNULL(@HomeScore, t.HomeScore), AwayScore = ISNULL(@AwayScore, t.AwayScore),
     HalfHomeScore = ISNULL(@HalfHomeScore, t.HalfHomeScore), HalfAwayScore = ISNULL(@HalfAwayScore, t.HalfAwayScore),
-    Status = @Status, Handicap = ISNULL(@Handicap, t.Handicap),
+    Status = CASE WHEN @Status > t.Status THEN @Status ELSE t.Status END, Handicap = ISNULL(@Handicap, t.Handicap),
     ResultSpf = ISNULL(@ResultSpf, t.ResultSpf), ResultHandicap = ISNULL(@ResultHandicap, t.ResultHandicap),
     TotalGoals = ISNULL(@TotalGoals, t.TotalGoals), ScoreText = ISNULL(@ScoreText, t.ScoreText),
     UpdatedAt = SYSDATETIME()
@@ -152,7 +152,8 @@ WHEN NOT MATCHED THEN INSERT
                          m.Status, m.Handicap, m.ResultSpf, m.ResultHandicap, m.TotalGoals
                   FROM dbo.FbMatch m
                   LEFT JOIN dbo.FbLeague l ON l.LeagueId = m.LeagueId
-                  WHERE m.Status = 3 AND m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                  WHERE m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                    AND (m.Status = 3 OR m.MatchTime <= DATEADD(minute, -150, GETDATE()))
                     AND m.MatchId IN @ids",
                 new { ids = chunk }, cancellationToken: ct));
             foreach (var r in rows) map[r.MatchId] = r;

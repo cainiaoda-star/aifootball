@@ -108,9 +108,9 @@ public sealed class MatchRecommendation
     /// <summary>必发客胜投注占比</summary>
     public decimal? RatioAway { get; set; }
 
-    /// <summary>必发主胜盈亏指数（PnlIdx，深负=钱在逃离主胜）。</summary>
+    /// <summary>必发主胜盈亏指数（PnlIdx = Pnl/TotalVolume×100；深负=主胜被买重、庄家在该结果亏钱）。</summary>
     public decimal? PnlIdxHome { get; set; }
-    /// <summary>必发客胜盈亏指数（PnlIdx，深负=钱在涌入客胜）。</summary>
+    /// <summary>必发客胜盈亏指数（PnlIdx，深负=客胜被买重、钱在涌入客胜）。</summary>
     public decimal? PnlIdxAway { get; set; }
 
     /// <summary>大小球盘口线（用于进球数预测）</summary>

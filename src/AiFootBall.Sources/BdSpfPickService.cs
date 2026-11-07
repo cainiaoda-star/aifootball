@@ -25,9 +25,11 @@ public sealed class BdSpfPickService
     /// <summary>客胜盈亏指数（PnlIdxAway）深负阈值：钱净流入客胜，主胜热门被爆冷的前兆。</summary>
     public const decimal AwayPnlDeepNegative = -60m;
 
-    /// <summary>主胜盈亏指数（PnlIdxHome）深负阈值：钱在逃离主胜，说明主胜热门是「假热门」。
+    /// <summary>主胜盈亏指数（PnlIdxHome）深负阈值：主胜被买重（庄家在主胜结果上亏钱），主胜热门是「假热门」。
+    /// 语义订正（2026-11-07，珀斯光荣场公式反推验证）：PnlIdx = Pnl/TotalVolume×100，
+    /// 负数一律代表「该方向被买重」，与 PnlIdxAway 深负=钱流入客胜 对称；旧注释「钱逃离主胜」是反的。
     /// 2026-11-07 赛果验证（SkillId=8）后从 -45 退回 -60：11-06 夜场「热门翻车」预测仅 1/5，
-    /// 中等强度钱逃信号（-37~-56）在北单小联赛基本是噪音（场5德累斯顿 3:0 大胜属错杀）。
+    /// 中等强度被买重信号（-37~-56）在北单小联赛基本是噪音（场5德累斯顿 3:0 大胜属错杀）。
     /// 中等强度信号不再踢出串关，只用于「让平优先」提示。</summary>
     public const decimal HomePnlDeepNegative = -60m;
 
@@ -92,6 +94,10 @@ public sealed class BdSpfPickService
 
         foreach (var r in live)
         {
+            // 联赛黑名单（2026-11-07 用户拍板）：澳超整类不进串关——无升降级+高方差+判罚争议高发，
+            // 11-07 珀斯光荣（越位进球判有效）正是实购 4 串 1 的挂腿。名单见 NoParlayLeagues。
+            if (NoParlayLeagues.IsExcluded(r.LeagueName)) continue;
+
             // 没有让球盘方向（引擎没算出让球结果）的场次跳过。
             if (r.RecHandicap is not char hside) continue;
 
@@ -119,7 +125,7 @@ public sealed class BdSpfPickService
                 continue;
             }
 
-            // 必发反向信号：主队被买成大热，但钱在逃离主胜/流入客胜 → 让球盘方向可能翻车，单独列不进串关。
+            // 必发反向信号：主队被买成大热，且主胜被买重（PnlIdx 深负）/客胜被买重 → 让球盘方向可能翻车，单独列不进串关。
             if (IsReverseSignal(r, hside))
             {
                 reverse.Add(BuildPick(r, hside, reversed: true));
@@ -168,21 +174,25 @@ public sealed class BdSpfPickService
     }
 
     /// <summary>
-    /// 反向价值：主队被买成大热，但钱在逃离主胜/流入客胜（教训 1 的「主胜大热反向」）。
+    /// 反向价值：主队被买成大热，且资金重压在客胜或主胜（教训 1 的「主胜大热反向」）。
     /// 前提是「主队本来是热门」——主胜必发占比得有一定热度（≥40%），
     /// 否则「钱在客胜」只是客队本来的强势，不是反向。
     ///
+    /// 语义订正（2026-11-07）：PnlIdx 负数 = 该方向被买重（庄家在该结果上亏钱），
+    /// 与 PnlIdxAway 深负=钱流入客胜 对称。旧注释「钱逃离主胜」写反了，逻辑行为不受影响
+    /// （主胜被买重 + 占比≥70% 本身就是教训1的「大热反向」画像）。
+    ///
     /// 2026-11-06 补充方向维度：只有当「让球方向是让胜（hside='3'，追主队赢）」时，
-    /// 「主胜大热 + 钱逃主胜」才是自相矛盾的翻车画像。若让球方向本来就是「让负」（已看衰主队），
-    /// 那钱逃主胜与让负方向一致，是正确的注，不能误伤（例：场40让-1让负，PnlIdxHome=-52 反而印证让负）。
+    /// 「主胜大热 + 主胜被买重」才是自相矛盾的翻车画像。若让球方向本来就是「让负」（已看衰主队），
+    /// 那主胜被买重与让负方向并不矛盾，不能轻易误伤（例：场40让-1让负，PnlIdxHome=-52）。
     /// </summary>
     private static bool IsReverseSignal(MatchRecommendation r, char hside)
     {
         if (r.RatioHome is not decimal rh || rh < 40m) return false;
         // 客胜盈亏深负（钱净流入客胜）——不管让球方向，主胜热门被客队爆冷的前兆。
         if (r.PnlIdxAway is <= AwayPnlDeepNegative) return true;
-        // 主胜大热但钱在逃离主胜——只有「追主队的让胜」方向才自相矛盾，是假热门；
-        // 「让负」方向本来就赌主队输盘，钱逃主胜反而印证它，不标反向。
+        // 主胜大热且主胜被买重（庄家在此结果亏钱）——只有「追主队的让胜」方向才自相矛盾，是假热门；
+        // 「让负」方向本来就赌主队输盘，不标反向。
         if (hside == '3' && rh >= HotRatioThreshold && r.PnlIdxHome is <= HomePnlDeepNegative) return true;
         return false;
     }

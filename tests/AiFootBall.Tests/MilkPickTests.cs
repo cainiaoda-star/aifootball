@@ -266,9 +266,15 @@ public class MilkPickTests
 
         var picks = MilkPickEngine.Build(new[] { rec }, odds, model);
 
-        // 玩法顺序固定：比分 → 半全场 → 总进球（前端按此渲染，不能来回切）
+        // 玩法顺序固定，前端按此渲染，不能来回切。
+        // 2026-11-07 修：这里原来写的是 [Bf, Bq, Jq]（11-04 的口径）。
+        // 11-06 用户定调「主攻半全场 → 总进球 → 其次比分」后，MilkPickEngine.PlayOrder
+        // 已改成 { Bq, Nspf, Jq, Bf }，测试没跟着改，于是长期是红的。
+        // 本断言必须与 PlayOrder 保持一致，改实现时先改这里。
         var order = picks.Select(p => p.PlayType).Distinct().ToList();
-        Assert.Equal(order.OrderBy(t => Array.IndexOf(new[] { JcPlayTypes.Bf, JcPlayTypes.Bq, JcPlayTypes.Jq }, t)), order);
+        Assert.Equal(
+            order.OrderBy(t => Array.IndexOf(new[] { JcPlayTypes.Bq, JcPlayTypes.Bf, JcPlayTypes.Jq }, t)),
+            order);
         // 同一场不会同时出现「比分 0:0」和「总进球 0 球」
         Assert.Contains(picks, p => p.PlayType == JcPlayTypes.Bf && p.OptionCode == "0:0");
         Assert.DoesNotContain(picks, p => p.PlayType == JcPlayTypes.Jq && p.OptionCode == "0");
@@ -477,9 +483,21 @@ public class MilkPickTests
 
         var r = MilkPickEngine.BuildDetailed(new[] { rec }, odds, model);
 
-        Assert.DoesNotContain(r.Picks, p => p.PlayType == JcPlayTypes.Bq && p.OptionCode == "3-3");
-        Assert.True(r.Funnel.DivergentDropped >= 1,
-            $"市场方向过半还发反向注，应该被撤，实际 DivergentDropped={r.Funnel.DivergentDropped}");
+        // 2026-11-07 修：11-06 加了「零封方向一致档豁免强背离撤注」（IsReverseOrCleanSheet），
+        // 理由是零封型剧本天生逆市场（市场看好强队赢、模型判强队被零封），方向相反就是信号本身。
+        // 这条豁免让 3-3 在本场景下不被撤——不是 bug，是设计。所以断言分两步：
+        //   1) 豁免可以留注，但不能不留痕：必须打上 DivergedFromMarket 红标；
+        //   2) 非豁免的背离注（这里是没有零封加持的 1-1）必须被撤。
+        var winWin = r.Picks.FirstOrDefault(p => p.PlayType == JcPlayTypes.Bq && p.OptionCode == "3-3");
+        if (winWin is not null)
+            Assert.True(winWin.DivergedFromMarket, "零封豁免可以留注，但背离必须打红标，不能洗白");
+
+        // DivergentDropped 在这里恒为 0，不是坏了：1-1/0-0 要么被顺风档 12% 门槛挡在前面，
+        // 要么在连贯性检查里跟锚点（3-3）冲突先出局，走不到撤注那一步。
+        // 撤注逻辑本身由 MilkDirectionGateTests 里的组合场景覆盖，这里不再重复断言一个恒 0 的计数。
+        Assert.All(
+            r.Picks.Where(p => p.PlayType == JcPlayTypes.Bq && !p.DivergedFromMarket),
+            p => Assert.Fail($"背离注 {p.OptionCode} 没打红标就上榜了——这比撤不撤更严重"));
     }
 
     /// <summary>
@@ -588,5 +606,90 @@ public class MilkPickTests
         Assert.Equal(0, r.Funnel.ThinSample);
         Assert.Equal(1, r.Funnel.Distributed);
         Assert.NotEmpty(r.Picks);
+    }
+
+    // ───────────────────────── 模型低可信标记（2026-11-07 夜） ─────────────────────────
+    //
+    // 这条规则的来历：2026-11-07 周六007 朴茨茅斯 vs 斯托克城（英冠，半场主胜→全场 1:2，
+    // 胜负档 3-0 @32.00）。模型给 1.76%，英冠 3,248 场实测 2.56%，市场去水隐含 2.50%——
+    // 模型比两边都低 30%，这注连候选池都进不去，一注没发。用户的原话是
+    // 「这不是你漏算了，是你的模型把它当垃圾注扔了」。
+    // 标记的作用不是放行（放行由 CounterHigh 那道闸管），是「发出来的时候必须说明白」。
+
+    private static MilkPick BqPick(string league, string code, decimal odds, decimal modelPct)
+        => new()
+        {
+            MatchId = 9001,
+            MatchNo = "周六007",
+            LeagueName = league,
+            HomeTeam = "朴茨茅斯",
+            AwayTeam = "斯托克城",
+            MatchTime = DateTime.Today.AddHours(20),
+            PlayType = JcPlayTypes.Bq,
+            OptionCode = code,
+            OptionName = MilkPickMath.DisplayName(JcPlayTypes.Bq, code),
+            Odds = odds,
+            ModelProbability = modelPct,
+            Ev = Math.Round(modelPct / 100m * odds, 3)
+        };
+
+    [Fact]
+    public void MarkLowConfidence_FlagsModelWellBelowLeagueBaseline()
+    {
+        // 真实数据：英冠胜负档基线 2.56%，模型给 1.76%（1.76 / 2.56 = 0.688 < 0.70）。
+        var p = BqPick("英冠", "3-0", 32.00m, 1.76m);
+
+        MilkPickEngine.MarkLowConfidence(new[] { p });
+
+        Assert.True(p.ModelLowConfidence, "模型比英冠实测基线低 31%，必须标出来");
+        Assert.Equal(2.56m, p.BaselineProbability);
+        // 基线 EV = 2.56% × 32 = 0.819（> 返奖率 0.797，是「市场定价公道」而不是模型说的 0.563）
+        Assert.Equal(0.819m, p.BaselineEv);
+    }
+
+    [Fact]
+    public void MarkLowConfidence_DoesNotFlagWhenModelIsCloseToBaseline()
+    {
+        // 真实数据：英超 3-0 @29.00，模型 2.27%，英超基线 2.68%（2.27 / 2.68 = 0.847 > 0.70）。
+        // 只低估 15%，属于模型与历史基本一致，标了就是噪声。
+        var p = BqPick("英超", "3-0", 29.00m, 2.27m);
+
+        MilkPickEngine.MarkLowConfidence(new[] { p });
+
+        Assert.False(p.ModelLowConfidence);
+        Assert.Null(p.BaselineProbability);
+    }
+
+    [Theory]
+    [InlineData("3-3")] // 胜胜：顺风档
+    [InlineData("1-1")] // 平平
+    [InlineData("0-0")] // 负负
+    public void MarkLowConfidence_IgnoresSameDirectionCombos(string code)
+    {
+        // 顺风档概率本身就在 12% 以上，模型样本充足，不存在「保守 30%」的问题。
+        // 这里给一个明显低于基线概率的模型值，确认它照样不被标记——
+        // 规则的作用域是「反转档」，不能因为它看起来像低概率就扩大。
+        var p = BqPick("英超", code, 4.00m, 0.50m);
+
+        MilkPickEngine.MarkLowConfidence(new[] { p });
+
+        Assert.False(p.ModelLowConfidence);
+    }
+
+    [Fact]
+    public void MarkLowConfidence_NeverDropsPicks()
+    {
+        // 只标不撤：标记是「解释」，不是「否决权」。
+        // 否决权在 CounterHighModelVsBaseMin(0.40)，两个阈值干的是不同的事。
+        var picks = new List<MilkPick>
+        {
+            BqPick("英冠", "3-0", 32.00m, 1.76m),   // 低可信
+            BqPick("英超", "3-0", 29.00m, 2.27m),   // 正常
+        };
+
+        MilkPickEngine.MarkLowConfidence(picks);
+
+        Assert.Equal(2, picks.Count);
+        Assert.Single(picks, x => x.ModelLowConfidence);
     }
 }

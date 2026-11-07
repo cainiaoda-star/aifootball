@@ -388,6 +388,16 @@
   .milk-merged .opt-pay{font-size:11px;color:var(--dim);border:1px solid var(--line);
     border-radius:4px;padding:0 4px;margin-left:4px;white-space:nowrap}
   .milk-merged .opt-pay.costly{color:#e6c36a;border-color:#e6c36a}
+  /* EV 超返奖上限（2026-11-07）：EV 的天花板就是返奖率，越线即「模型概率算高了」。
+     用红色实心块压住「EV 最高」卖点——这种注不是价值，是算错。 */
+  .milk-merged .opt-counter{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;background:rgba(180,120,20,.16);color:#b47814;border:1px solid rgba(180,120,20,.45);font-weight:600}
+  /* 「模型低估」角标（2026-11-07 夜）：模型概率 < 联赛基线×0.70 的反转档。
+     用蓝色而不是红色——红色留给「EV 超上限」那种自相矛盾的危险信号；
+     这条是「信息不对称」，告诉用户该看哪个数字，不是让他别买。 */
+  .milk-merged .opt-lowconf{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
+    background:rgba(45,110,190,.15);color:#3d82c8;border:1px solid rgba(45,110,190,.45);font-weight:600}
+  .milk-merged .opt-overpay{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
+    border:1px solid #a33;color:#fff;background:#a33;margin-left:4px;font-weight:650}
   /* 「EV 最高」角标：只标全榜一个，和主排序（命中率）解耦，免得 EV 高的废票当主角 */
   .milk-merged .opt-evtop{font-size:11px;line-height:1.4;padding:2px 8px;border-radius:5px;white-space:nowrap;
     border:1px solid #8a6a2a;color:#e6c36a;background:#2a2418}
@@ -2708,7 +2718,15 @@ function renderMilkBoard(b, strongOnly){
       return list.map(it => {
         const ev = Number(it.ev) || 0;
         const isEvTop = evTopKey != null && pickKey(it) === evTopKey;
-        const evTopTag = isEvTop
+        // EV 超过返奖率 = 自相矛盾：页面自己的口径就是「EV 天花板 = 返奖率」。
+        // 出现这种数字要么模型概率算高了、要么快照没掺市场，两种都不能当价值看。
+        // 所以一旦越线，直接压掉「EV 最高」卖点，改挂红色警示（2026-11-07，用户抓出 EV 1.44/2.25 配「返奖 80%」）。
+        const _pay0 = MILK_PAYOUT[play] || 0;
+        const evOverPay = _pay0 > 0 && ev > _pay0 * 1.2;
+        // 「EV 最高」不能发给走基线口径的注（counterHigh / modelLowConfidence）：
+        // 它们的 EV 是「联赛基线×赔率」，跟其余注的「模型×赔率」不是同一把尺子，
+        // 放在一起比大小是拿苹果比橘子，标出来等于骗人。
+        const evTopTag = isEvTop && !evOverPay && !it.counterHigh && !it.modelLowConfidence
           ? `<span class="opt-evtop" title="纯 EV 视角下今天最划算的一注（概率×赔率最高）。不是最可能中的那注，别当主推。">EV 最高</span>`
           : '';
         const mk = milkPickKey(it);
@@ -2722,7 +2740,14 @@ function renderMilkBoard(b, strongOnly){
         const payTag = pay
           ? `<span class="opt-pay${pay < 0.75 ? ' costly' : ''}" title="竞彩${esc(MILK_PLAY_NAME[play] || play)}固定返奖率：每投 100 元，长期期望回收 ${Math.round(pay * 100)} 元。这是任何一注的天花板，EV 不可能到 1。">返奖 ${Math.round(pay * 100)}%</span>`
           : '';
-        const evCls = pay && ev >= pay * 0.97 ? 'ev-fair' : 'ev-poor';
+        // 上色按「离公平价还差多少」判。注意先按模型 EV 给个初值，
+        // 后面如果这注改走基线口径展示，会按基线 EV 重算一次——否则会出现
+        // 「显示 EV 0.78（基线）、颜色却是红的（模型 EV 0.66）」这种自相矛盾。
+        let evCls = pay && ev >= pay * 0.97 ? 'ev-fair' : 'ev-poor';
+        // EV 越过返奖率上限的红色警示（2026-11-07）：这个数字本身就是「模型概率算高了」的证据。
+        const overPayTag = evOverPay
+          ? `<span class="opt-overpay" title="EV ${ev.toFixed(2)} 已经超过该玩法返奖率 ${Math.round(pay * 100)}%：EV 的天花板就是返奖率，超出说明模型把这注的概率估高了（90% 是模型算错，不是市场给错了价）。这类注别当主推，更别串关。">EV 超上限·概率存疑</span>`
+          : '';
         // 逆市场角标（2026-11-05）：这注方向和竞彩市场最强方向相反，等于模型在跟整个市场对赌。
         // 市场方向占比过半的已经被引擎撤掉了，能留在这里的都是「市场没那么坚决」的弱背离。
         // 但该说的还得说：周四011 阿尔克马 vs 尤文图斯就是市场客胜 1.71、模型发「胜胜」，
@@ -2735,12 +2760,44 @@ function renderMilkBoard(b, strongOnly){
         const modelOnlyTag = it.marketPriced === false
           ? `<span class="opt-modelonly" title="这场${esc(MILK_PLAY_NAME[play] || play)}的快照档数不全（比分 31 档 / 半全场 9 档 / 总进球 8 档），概率完全来自模型、没有掺盘口。这类 EV 天生偏高，别当成价值。">纯模型</span>`
           : '';
+        // 高赔反转单列（2026-11-07）：12 倍以上的独立名额票，不参与主榜 3 个半全场名额的竞争。
+        // 它解决的正是「大奶榜连 10 倍档都出不来」——但必须写明长期负期望：
+        // 半全场返奖率 79.7%，这注 EV 天花板就到 0.797，中了是运气好，不是它能赚钱。
+        const counterTag = it.counterHigh
+          ? `<span class="opt-counter" title="高赔反转单列：赔率≥12 倍且该联赛该档实测基线达标（英冠胜负 2.56% / 英超 2.68% / 苏超 3.20%）。它是单列名额，不进主榜排序。长期负期望——半全场返奖率 79.7%，EV 天花板 0.80，平均几十期才中一次，只适合小注。">高赔单列·长期负期望</span>`
+          : '';
+        // 单列注改展示「基线口径」（2026-11-07 夜）：模型在 30 倍档系统性低估 30%
+        // （周六007 英冠 胜负@32：模型 1.76%、英冠实测 2.56%、市场去水 2.50%），
+        // 用模型概率展示，会把一注「市场定价公道」的票说成 2.3%/EV0.66 的垃圾。
+        // 单列注的概率来源本来就是联赛实测频率，展示口径必须跟着来源走。
+        //
+        // 2026-11-07 夜二次扩展：不只单列注，凡打了 modelLowConfidence 的注都走基线口径。
+        // 主榜那 3 个半全场名额里也会出反转档（平负/平胜 有 11%~14%，能过门槛），
+        // 它们同样存在模型保守 30% 的问题，不能只有单列注享受基线口径。
+        const hasBaseline = it.baselineProbability != null && it.baselineEv != null;
+        const isCounterBaseline = hasBaseline && (!!it.counterHigh || !!it.modelLowConfidence);
+        const showProb = isCounterBaseline ? Number(it.baselineProbability) : Number(it.modelProbability);
+        const showEv = isCounterBaseline ? Number(it.baselineEv) : ev;
+        const probTitle = isCounterBaseline
+          ? `联赛实测基线概率（不是模型概率）：这一档在同类联赛的历史发生频率。模型在这个量级的档位会系统性低估约 30%，所以这里不用模型口径（模型给的是 ${Number(it.modelProbability).toFixed(2)}%）。`
+          : '';
+        const evTitle = isCounterBaseline
+          ? `基线 EV = 联赛实测概率 × 赔率 = ${showEv.toFixed(3)}。天花板仍是该玩法返奖率（半全场 0.797），长期负期望，只适合小注。`
+          : 'EV = 模型概率 × 赔率，也就是这注的长期回报。竞彩有水位，EV 最高只能到该玩法的返奖率，到不了 1。';
+        // 走基线口径时，颜色跟着展示的那个数字走（见上面 evCls 的注释）。
+        if (isCounterBaseline) evCls = pay && showEv >= pay * 0.97 ? 'ev-fair' : 'ev-poor';
+        // 「模型低估」角标（2026-11-07 夜加）：模型概率 < 联赛基线×0.70。
+        // 单独标出来的理由：这个区间 [0.40, 0.70) 以前是静默处理的——模型不认同、
+        // 联赛历史上就是会发生，用户看不到这个分歧，只能看到模型那个小概率。
+        const lowConfTag = it.modelLowConfidence
+          ? `<span class="opt-lowconf" title="模型低估：模型只给 ${Number(it.modelProbability).toFixed(2)}%，而${esc(g.leagueName || '该联赛')}这一档的实测基线是 ${Number(it.baselineProbability).toFixed(2)}%（模型仅为基线的 ${(Number(it.modelProbability)/Number(it.baselineProbability)*100).toFixed(0)}%）。这不是模型算错一个数字，是泊松 λ 在这类长尾档系统性偏低（模型 λ 误差 1.53 球，市场反推 1.33）。概率与 EV 已按联赛基线展示。">模型低估·按联赛基线看</span>`
+          : '';
         return `<div class="opt-line${on ? ' mk-on' : ''}">
           <input type="checkbox" class="milk-pick" data-mk="${esc(mk)}" ${on ? 'checked' : ''} title="勾选这一注" />
           <b class="opt-name">${esc(it.option || '')}</b>
           <span class="opt-odds">@${Number(it.odds).toFixed(2)}</span>
-          <span class="opt-prob">${Number(it.modelProbability).toFixed(1)}%</span>
-          <span class="opt-ev ${evCls}" title="EV = 模型概率 × 赔率，也就是这注的长期回报。竞彩有水位，EV 最高只能到该玩法的返奖率，到不了 1。">EV ${ev.toFixed(2)}</span>${payTag}${divTag}${modelOnlyTag}${evTopTag}
+          <span class="opt-prob"${probTitle ? ` title="${esc(probTitle)}"` : ''}>${showProb.toFixed(1)}%</span>
+          <span class="opt-ev ${evCls}" title="${esc(evTitle)}">EV ${showEv.toFixed(2)}</span>${payTag}${overPayTag}${divTag}${modelOnlyTag}${counterTag}${lowConfTag}${evTopTag}
         </div>`;
       }).join('');
     };

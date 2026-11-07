@@ -285,9 +285,26 @@ public class MilkDirectionGateTests
         Assert.True(gate.BlockedPicks > 0, "若开否决会挡掉几注，这个数必须留着，将来重测还要用");
         Assert.False(string.IsNullOrEmpty(gate.BlockedBest));
         Assert.Equal(1, result.DivergedMatches);
-        Assert.True(result.Funnel.DivergentDropped > 0, "市场方向过半，反向注必须被撤");
-        Assert.DoesNotContain(result.Picks,
-            p => p.DivergedFromMarket && (p.MarketDirectionPct ?? 0m) >= 45m);
+
+        // 2026-11-07 修：11-06 给「反转档 / 零封方向一致档」加了强背离豁免
+        // （MilkPickEngine.IsReverseOrCleanSheet——假热门反向是核心规律，被强背离一刀砍掉就废了）。
+        // 所以「榜上不许出现强背离注」这条断言不再成立，改成更精确的那条：
+        // 强背离注可以留，但**只允许豁免类型留**，其它类型一律不许。
+        var strongDiverged = result.Picks
+            .Where(p => p.DivergedFromMarket && (p.MarketDirectionPct ?? 0m) >= 45m)
+            .ToList();
+        Assert.All(strongDiverged, p =>
+        {
+            var isReverseHalfFull = p.PlayType == JcPlayTypes.Bq
+                                    && p.OptionCode.Length == 3
+                                    && p.OptionCode[1] == '-'
+                                    && p.OptionCode[0] != p.OptionCode[2];
+            var isCleanSheetAligned = p.CleanSheetDirection is char cd
+                                      && ((p.OptionCode == "3-3" && cd == '3')
+                                          || (p.OptionCode == "0-0" && cd == '0'));
+            Assert.True(isReverseHalfFull || isCleanSheetAligned,
+                $"{p.OptionCode} 不属于豁免类型，强背离却留在榜上——方向闸被绕过了");
+        });
     }
 
     [Fact]
