@@ -145,7 +145,11 @@ public sealed class BettingCardSource
             {
                 var label = input.GetAttributeValue("value", "");
                 if (label is not ("胜" or "平" or "负")) continue;
-                var n = ParseNum(input.ParentNode?.InnerText);
+                // 2026-11-07 修复：不再取 ParentNode.InnerText（页面渲染中途单元格结构变化时，
+                // 会把相邻选项的 SP 吃进来——场227 让负曾存成让平的 36.47）。
+                // 改为精确读同单元格内的 sp_value；拿不到再兜底父节点文本。
+                var span = input.ParentNode?.SelectSingleNode(".//span[contains(@class,'sp_value')]");
+                var n = ParseNum(span?.InnerText) ?? ParseNum(input.ParentNode?.InnerText);
                 if (n is not > 1) continue;
                 if (label == "胜") row.Home = n;
                 else if (label == "平") row.Draw = n;

@@ -222,6 +222,9 @@ public static class RecommendationSelection
             '1' => rqDraw is > 1 ? rqDraw : null,
             _ => rqLoss is > 1 ? rqLoss : null
         };
+        // 2026-11-07 合理性闸：北单让球胜平负 SP 正常区间约 1.0~15，极端死局盘也不该超过 25。
+        // 超过说明抓串了别的玩法/选项（场227 让负曾串成让平的 36.47），置空显示「SP未知」，宁缺毋错。
+        if (rec.HandicapOdds is > 25m) rec.HandicapOdds = null;
         rec.HandicapMarketProbability = market is null
             ? null
             : Math.Round((side == '3' ? market.Value.Home : side == '1' ? market.Value.Draw : market.Value.Away) * 100m, 1);

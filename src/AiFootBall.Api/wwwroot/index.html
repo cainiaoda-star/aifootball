@@ -546,6 +546,14 @@
   /* 总账数字可点：点场次/有方向/命中/会发布 → 跳到对应板块或弹出场次清单 */
   .tally-link{cursor:pointer;border-bottom:1px dashed var(--dim);padding:0 1px}
   .tally-link:hover{color:var(--amber);border-bottom-color:var(--amber)}
+  /* 逐场跟进：按天折叠（2026-11-07） */
+  .follow-day{border:1px solid var(--line);border-radius:10px;margin:12px 2px;background:var(--panel);overflow:hidden}
+  .follow-day>summary{cursor:pointer;padding:11px 14px;font-weight:600;font-size:14px;list-style:none;user-select:none;background:var(--panel2)}
+  .follow-day>summary::-webkit-details-marker{display:none}
+  .follow-day>summary::before{content:'▸';color:var(--dim);margin-right:8px}
+  .follow-day[open]>summary::before{content:'▾'}
+  .follow-day[open]>summary{border-bottom:1px solid var(--line)}
+  .follow-day>.board{margin:10px;border:1px solid var(--line)}
   .rv-pop{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99;display:flex;align-items:center;justify-content:center}
   .rv-pop .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;max-width:600px;width:94%;max-height:72vh;overflow:auto;padding:14px 16px}
   .rv-pop .box h5{margin:0 0 10px;font-size:14px}
@@ -5602,6 +5610,11 @@ function renderDailyFollow(d){
     changeMap[c.matchId].push(c);
   }
 
+  // 按开赛的日历日分组折叠（受注日会跨天，如 11-08 凌晨的球挂在 11-07 页里）。
+  // 默认全部收起，只展开「今天」的分组（2026-11-07）。
+  const todayKey = new Date().toLocaleDateString('sv-SE');
+  const dayKeys = [];
+  const dayMap = {};
   for(const it of sorted){
     const settled = !!it.settledAt;
     const hitTag = !settled ? '<span class="dim">待开赛</span>'
@@ -5630,7 +5643,7 @@ function renderDailyFollow(d){
       changeHtml += `</div>`;
     }
 
-    html += `<div class="board">
+    const __card = `<div class="board">
       <div class="board-head">
         <span class="badge ${playCls(it.playType)}">${playBadge(it.playType)}</span>
         <span class="meta">${esc(it.matchNo || '')} ${esc(it.leagueName || '')} ${esc(it.homeTeam || '')} vs ${esc(it.awayTeam || '')} ${it.matchTime ? esc(fmtDateTime(it.matchTime)) : ''}</span>
@@ -5646,6 +5659,17 @@ function renderDailyFollow(d){
         ${review}
       </div>
     </div>`;
+    const dkey = it.matchTime ? new Date(it.matchTime).toLocaleDateString('sv-SE') : '未知';
+    if(!dayMap[dkey]){ dayMap[dkey] = { cards: [], settled: 0, hit: 0 }; dayKeys.push(dkey); }
+    dayMap[dkey].cards.push(__card);
+    if(settled){ dayMap[dkey].settled++; if(it.hit === true) dayMap[dkey].hit++; }
+  }
+
+  for(const dk of dayKeys){
+    const grp = dayMap[dk];
+    const wd = ['周日','周一','周二','周三','周四','周五','周六'][new Date(dk + 'T12:00:00').getDay()];
+    const open = dk === todayKey ? ' open' : '';
+    html += `<details class="follow-day"${open}><summary>${esc(dk)} ${wd} · ${grp.cards.length} 场 · 结算 ${grp.settled} · 命中 ${grp.hit}</summary>${grp.cards.join('')}</details>`;
   }
 
   box.innerHTML = html;
