@@ -161,7 +161,27 @@ public sealed class RecommendationService
         catch (OperationCanceledException) { throw; }
         catch { scoreDiags = new(); }
 
-        var built = MilkPickEngine.BuildDetailed(recs, odds, snap.Scores, asian, scoreDiags, perMatch);
+        // 主胜「开盘→临场」水位（2026-11-07，技能11升水否决）：升水≥12% 撤主胜方向注。
+        // 取不到就算了，别让一个可选字段把整张榜拖死。
+        Dictionary<long, (decimal? Open, decimal? Curr)> spfWater;
+        try { spfWater = _oddsCapture is not null ? await _oddsCapture.GetSpfWaterAsync(fids, ct) : new(); }
+        catch (OperationCanceledException) { throw; }
+        catch { spfWater = new(); }
+
+        // 俱乐部画像（2026-11-07）：热门方历史反转倾向，高反转队反向档提级、碾压队抑制反向。
+        // 取不到就算了，别让一个可选字段把整张榜拖死。
+        Dictionary<string, TeamProfile> teamProfiles;
+        try
+        {
+            teamProfiles = _oddsCapture is not null
+                ? await _oddsCapture.GetTeamProfilesAsync(
+                    recs.SelectMany(r => new[] { r.HomeTeam, r.AwayTeam }), ct: ct)
+                : new();
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { teamProfiles = new(); }
+
+        var built = MilkPickEngine.BuildDetailed(recs, odds, snap.Scores, asian, scoreDiags, spfWater, teamProfiles, perMatch);
         // 模型没跑起来的时候，空榜必须自己说出原因——否则「空榜」和「今天确实没注」长得一模一样。
         if (!built.Funnel.ScoresReady)
             built.Funnel.ScoresNote = _hit?.LastError ?? "比分模型样本不足（可用样本 < 30 场），本次不出榜";

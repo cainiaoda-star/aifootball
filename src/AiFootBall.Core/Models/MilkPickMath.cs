@@ -72,6 +72,7 @@ public static class MilkPickMath
         JcPlayTypes.Bf => $"比分 {code}",
         JcPlayTypes.Bq => $"半全场 {HalfFullName(code)}",
         JcPlayTypes.Jq => code == "7" ? "总进球 7+球" : $"总进球 {code}球",
+        JcPlayTypes.Nspf => $"让球胜平负 {HcpName(code)}",
         _ => code
     };
 
@@ -81,6 +82,16 @@ public static class MilkPickMath
         JcPlayTypes.Bf => code,
         JcPlayTypes.Bq => HalfFullName(code),
         JcPlayTypes.Jq => code == "7" ? "7+球" : $"{code}球",
+        JcPlayTypes.Nspf => HcpName(code),
+        _ => code
+    };
+
+    /// <summary>让球胜平负三档名（竞彩口径：3=让胜、1=让平、0=让负）。</summary>
+    public static string HcpName(string code) => code switch
+    {
+        "3" => "让胜",
+        "1" => "让平",
+        "0" => "让负",
         _ => code
     };
 

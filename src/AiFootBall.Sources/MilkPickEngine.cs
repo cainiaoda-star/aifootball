@@ -255,6 +255,63 @@ public static class MilkPickEngine
     /// </summary>
     public const decimal NetOneGoalThreshold = 0.15m;
 
+    /// <summary>
+    /// 「低水杯赛热门」的主胜水位上限（2026-11-07 加）。杯赛/欧战主胜 ≤ 此线 + 必发大热/钱涌客胜，
+    /// 判「市场过度定价主队」，半全场平负(1-0)/负负(0-0)提级。依据（教训1/1b 回测）：
+    /// 欧罗巴主胜&lt;1.5 翻车率 88.9%（9 场）、主胜&lt;1.35 的 6 场反转率 67%、仅 17% 主胜。
+    /// 对联赛不适用——赛季初联赛低水热门常是真碾压（悉尼FC 半场2:0 全场3:0，教训1f/1j）。
+    /// </summary>
+    public const decimal CupHotFadeMaxOdds = 1.35m;
+
+    /// <summary>「低水杯赛热门」要求的必发主胜占比下限（%）。教训1 的危险组合口径：必发主胜 ≥70%。</summary>
+    public const decimal HotFadeRatioMin = 70m;
+
+    /// <summary>必发盈亏指数深负线（教训1l，2026-11-07 定稿）。≤-60 才算「钱涌客胜」的硬信号；
+    /// -37~-56 的中等强度钱逃在小联赛实测 1/5，是噪音，不参与任何否决/反向。</summary>
+    public const decimal PnlDeepNegative = -60m;
+
+    /// <summary>
+    /// 主胜临场升水否决线（2026-11-07 加，技能11落地，%）。
+    /// 竞彩 SPF 主胜「首轮→现价」升幅 ≥ 此线时，主胜方向注（胜胜/平胜/主胜比分）整类撤下。
+    /// 依据（9758 场平均盘开盘vs临场回测）：升水≥12% 的主胜兑现率仅 26.3%、按终赔下注 ROI 恶化到 33
+    /// （平盘基准 54，差 21 个点，全梯度单调）；降水方向只确认既有判断、无超额价值，故只否决不奖励。
+    /// </summary>
+    public const decimal WaterRiseVetoPct = 12m;
+
+    /// <summary>平局倾向线（2026-11-07，模型概率口径 0-1）。模型全场平局概率 ≥ 30% 即视为
+    /// 「平局剧本场」（全库基准约 26%，联赛平平档占 22.7%）——此时半全场「平平」提级。
+    /// 这是引擎第一个平局方向哨兵：此前零封/杯热/画像全部围绕胜/负，平局没有任何信号。</summary>
+    public const decimal DrawSetupThreshold = 0.30m;
+
+    /// <summary>让平出注的大热门槛（2026-11-07，技能10）。主胜 SPF ≤ 1.5 + 深盘让-1，
+    /// 对应回测里让平 26.4%、EV 0.92 的高价值区（FbBdHistory 7895 场）。</summary>
+    public const decimal HcpDrawHotOdds = 1.5m;
+
+    /// <summary>让平出注的盘口下限：主让 1 球或更深（整数盘）。半球盘（-0.5/-1.5）没有「走盘」，
+    /// 让平语义退化为净胜恰卡盘口，回测口径不覆盖，不发。</summary>
+    public const decimal HcpDrawMaxLine = -1m;
+
+    /// <summary>让平出注的模型概率下限（0-1）。全库让-1 让平基准约 26%，低于 20% 说明这场
+    /// 模型认为会打穿盘口，让平不值得占名额。</summary>
+    public const decimal HcpDrawMinProbability = 0.20m;
+
+    /// <summary>
+    /// 「高反转热门」的反转率下限（2026-11-07 加，俱乐部画像落地，%）。
+    /// 全库画像（db/21_team_profile.sql，39.5 万场）反转身位梯度：广岛三箭 43.2、尤文 41.4、
+    /// 蔚山 41.4、马竞 41.0 在上；联赛均值约 36。取 38 = 显著高于平均的反转倾向队。
+    /// 这类队做热门时「半场领先被翻/半场平后崩」是系统性现象 → 反向档提级。
+    /// </summary>
+    public const decimal ReversalFavoriteMinRate = 38m;
+
+    /// <summary>「碾压型真强队」的反转率上限。拜仁 31.3 / 勒沃库森 31.4 / 巴黎 29.2。</summary>
+    public const decimal CrushReversalMaxRate = 33m;
+
+    /// <summary>「碾压型真强队」的零封率上限（巴黎 33.8 / 勒沃库森 33.0——进攻强，难零封对手也难被零封）。</summary>
+    public const decimal CrushCleanSheetMaxRate = 36m;
+
+    /// <summary>画像可信的最低样本（巴黎全历史仅 65 场，样本太小不做画像判断）。</summary>
+    public const int ProfileMinGames = 150;
+
     /// <inheritdoc cref="MinScoreProbability"/>
     public const decimal MinGoalProbability = 10.0m;
 
@@ -282,6 +339,28 @@ public static class MilkPickEngine
            && pick.OptionCode.Length == 3
            && pick.OptionCode[1] == '-'
            && pick.OptionCode[0] != pick.OptionCode[2];
+
+    /// <summary>
+    /// 这注是不是「全场主胜」方向（2026-11-07 加，技能11升水否决的撤注范围）：
+    /// 半全场全场主胜档（X-3）+ 主胜比分档（H:A 且 H&gt;A，含「胜其它」）。总进球与平/客胜方向不算。
+    /// </summary>
+    private static bool IsHomeWinDirection(MilkPick pick)
+    {
+        if (pick.PlayType == JcPlayTypes.Bq)
+            return pick.OptionCode.Length == 3 && pick.OptionCode[1] == '-' && pick.OptionCode[2] == '3';
+
+        if (pick.PlayType == JcPlayTypes.Bf)
+        {
+            // 「胜其它」两个写法都兜住（采集端 500 用「其它」、别的源出现过「其他」）。
+            if (pick.OptionCode.EndsWith("其它", StringComparison.Ordinal)
+                || pick.OptionCode.EndsWith("其他", StringComparison.Ordinal))
+                return pick.OptionCode[0] == '胜';
+            var split = SplitScore(pick.OptionCode);
+            return split is { } s && s.H > s.A;
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// 这注是不是「该豁免强背离撤注」的反转档 / 零封方向一致档（2026-11-06 加）。
@@ -313,16 +392,18 @@ public static class MilkPickEngine
 
     /// <summary>
     /// 半全场档位优先级（越小越先选）。2026-11-06 用户定调「主攻半全场、主攻高赔反转大奶」，
-    /// 后又补齐零封/半场平转/让胜陷阱规律，统一成四层决策：
+    /// 后又补齐零封/半场平转/让胜陷阱/低水杯热规律，统一成决策层：
     ///   0 = 高赔反转档（胜平/负平/负胜/胜负，12.5~16 倍起步）——翻盘大奶，最高优先；
     ///   1 = 零封方向一致档（胜胜/负负）——仅当这场零封倾向显著时提到这里，否则按概率自然竞争；
+    ///   1 = 低水杯赛热门的「平负/负负」档（2026-11-07）——杯赛主胜≤1.35+必发大热/钱涌客胜时，
+    ///       半场平/落后→全场崩是最高频剧本，与零封档同级；
     ///   2 = 让胜陷阱的「胜胜」档（2026-11-06）——主队让胜被买成极端低水、净胜卡1球时，
     ///       胜胜(3-3)是「只赢1球」的正确落点（半场领先、全场守住小胜），与零封档同级；
     ///   3 = 其他半全场档（顺风档平平 + 低赔反转档 平胜/平负）。
     ///
     /// perMatch 逐场跟进选注时，先看有没有高赔反转档；没有再判断零封倾向——
     /// 若这场大概率零封（CleanSheetDirection 命中本注方向），优先选方向一致的胜胜/负负；
-    /// 再看让胜陷阱——若命中则胜胜提级；最后退回平平/平胜/平负。
+    /// 再看低水杯热与让胜陷阱——命中则平负/负负、胜胜分别提级；最后退回平平/平胜/平负。
     /// </summary>
     private static int HalfFullTier(MilkPick pick)
     {
@@ -341,9 +422,31 @@ public static class MilkPickEngine
             if (isHomeCleanWin || isAwayCleanWin) return 1;
         }
 
+        // 1：低水杯赛热门的「平负/负负」档（2026-11-07，教训1/1b 落地）。
+        //    杯赛/欧战主胜 ≤1.35 + 必发大热/钱涌客胜时，半场没领先、下半场崩盘是最高频剧本：
+        //    AC米兰0:2(平负)、勒沃库森0:1(平负)、桑德兰0:2(负负)。与零封档同级，
+        //    排在普通高赔反转档之后——后者赔率更高，前者命中率更高，同场兼有时反转档先出。
+        if (pick.CupHotFade && pick.OptionCode is "1-0" or "0-0")
+            return 1;
+
+        // 1：高反转热门的「反向」低赔反转档（2026-11-07，俱乐部画像落地）。
+        //    热门方反转率≥38%（广岛/尤文/蔚山/马竞档）→ 该队做热门时半场平后崩、领先被翻
+        //    是系统性现象：主队热门被翻 = 平负(1-0)/负负(0-0)；客队热门被翻 = 平胜(1-3)/负胜(0-3)。
+        if (pick.HighReversalFavorite && pick.FavoriteSide is char favS)
+        {
+            var isHomeFavFade = favS == '3' && pick.OptionCode is "1-0" or "0-0";
+            var isAwayFavFade = favS == '0' && pick.OptionCode is "1-3" or "0-3";
+            if (isHomeFavFade || isAwayFavFade) return 1;
+        }
+
         // 2：让胜陷阱的「胜胜」档（2026-11-06）。主队让胜被买成极端低水、净胜卡1球，
         //    此时「只赢1球」的正确半全场是胜胜(3-3)——半场领先、全场守住小胜不扩大比分。
         if (pick.HotHomeTrap && pick.OptionCode == "3-3")
+            return 2;
+
+        // 2：平局倾向的「平平」档（2026-11-07）。模型平局概率 ≥30% 的场次（基准约26%），
+        //    平平是该场的第一落点：双方谁也打不开、半场平全场平。与让胜陷阱的胜胜同级。
+        if (pick.DrawSetup && pick.OptionCode == "1-1")
             return 2;
 
         return 3;
@@ -420,6 +523,8 @@ public static class MilkPickEngine
         ScorelineModel scores,
         IReadOnlyDictionary<long, (decimal? Open, decimal? Close)>? asian = null,
         IReadOnlyDictionary<long, ScoreDiagRow>? scoreDiags = null,
+        IReadOnlyDictionary<long, (decimal? Open, decimal? Curr)>? spfWater = null,
+        IReadOnlyDictionary<string, TeamProfile>? teamProfiles = null,
         bool perMatch = false)
     {
         var result = new List<MilkPick>();
@@ -508,6 +613,35 @@ public static class MilkPickEngine
             var mass = grid.Sum(c => c.P);
             if (mass <= 0) continue;
             funnel.Distributed++;
+
+            // 俱乐部画像（2026-11-07 落地）：模型热门方的历史反转倾向。
+            // 队名先过 ScorelineModel.Resolve（竞彩简称→数据源全称），画像键是数据源全称。
+            TeamProfile? favProfile = null;
+            char favSide = '3';
+            if (teamProfiles is { Count: > 0 })
+            {
+                var pH = ResultProbability(grid, mass, '3');
+                var pA = ResultProbability(grid, mass, '0');
+                favSide = pH >= pA ? '3' : '0';
+                var favName = favSide == '3' ? r.HomeTeam! : r.AwayTeam!;
+                var favKey = scores.Resolve(r.LeagueName, favName);
+                if (favKey is not null
+                    && teamProfiles.TryGetValue(favKey, out var tp)
+                    && tp.Games >= ProfileMinGames)
+                    favProfile = tp;
+            }
+            var highRevFav = favProfile is { } hf && hf.ReversalRate >= ReversalFavoriteMinRate;
+            var crushFav = favProfile is { } cf
+                           && cf.ReversalRate <= CrushReversalMaxRate
+                           && cf.CleanSheetRate <= CrushCleanSheetMaxRate;
+
+            // 主胜临场升水（2026-11-07，技能11落地）：FbMatchTrend 的 SPF OpenWin→CurrWin。
+            // 升水≥12% = 资金放弃主队，主胜方向注整类撤下（常量见 WaterRiseVetoPct）。
+            decimal? waterRisePct = null;
+            if (spfWater is not null && spfWater.TryGetValue(mid, out var wtr)
+                && wtr.Open is > 1m && wtr.Curr is > 1m)
+                waterRisePct = Math.Round((wtr.Curr.Value - wtr.Open.Value) / wtr.Open.Value * 100m, 1);
+            var waterVeto = waterRisePct >= WaterRiseVetoPct;
 
             // 每场的候选注先攒在这里，等方向闸判完再决定要不要进榜（2026-11-05）。
             // 直接往 result 里塞的话，闸就没法「整场撤下」——它只能事后从榜上摘，
@@ -600,6 +734,26 @@ public static class MilkPickEngine
                                   && nspfHome.Odds <= MinNspfHotOdds
                                   && netOneGoal >= (double)NetOneGoalThreshold;
 
+                // 平局倾向（2026-11-07）：模型全场平局概率 ≥30%（基准约26%）→ 平局剧本场，
+                // 半全场「平平」提级（见 HalfFullTier）。此前平局方向没有任何哨兵。
+                var drawSetup = ResultProbability(grid, mass, '1') >= (double)DrawSetupThreshold;
+
+                // 低水杯赛热门（2026-11-07，教训1/1b/1f/1g 落地）：杯赛/欧战 + 竞彩主胜 ≤1.35
+                // + 必发主胜大热(≥70%)或钱涌客胜(PnlIdxAway≤-60，中等强度 -37~-56 是噪音不算)
+                // → 市场过度定价主队（欧罗巴主胜<1.35 翻车率 81.8%、低水热门 6 场反转率 67%），
+                // 半全场「平负(1-0)/负负(0-0)」是最高频落点，该档提到与零封同级。
+                // 注意教训1f 的边界：这只对杯赛成立——联赛低水热门常是真碾压（悉尼FC 3:0），
+                // 赛季初的联赛场次不适用反向。友谊赛则整类砍掉反转档（反转档仅 2.7%）。
+                var leagueCat = LeagueCategory(r.LeagueName);
+                var spfHome = points.FirstOrDefault(p => p.PlayType == JcPlayTypes.Spf && p.OptionCode == "3");
+                // 碾压型真强队（画像：反转低+零封低）不做反向——假热门规律硬套真碾压就是负 alpha
+                // （教训1f：悉尼FC 低水真碾压 3:0；教训1h：拜仁/巴黎/勒沃库森反转+零封双低）。
+                var cupHotFade = !crushFav
+                                 && leagueCat == "CUP"
+                                 && spfHome is not null && spfHome.Odds <= CupHotFadeMaxOdds
+                                 && ((r.RatioHome is decimal rh && rh >= HotFadeRatioMin)
+                                     || (r.PnlIdxAway is decimal pa && pa <= PnlDeepNegative));
+
                 foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bq))
                 {
                     if (!HalfFullCombos.Contains(pt.OptionCode, StringComparer.Ordinal)) continue;
@@ -607,9 +761,42 @@ public static class MilkPickEngine
                     var p = joint[SideIndex(pt.OptionCode[0]), SideIndex(pt.OptionCode[2])];
                     if (p <= 0) continue;
                     var bqPick = Option(pt, r);
+                    // 友谊赛反转档全库仅 2.7%（39.5万场实测，联赛 11.1%、杯赛 15.1%），
+                    // 友谊赛「胜胜」畸形高（44.1%），押反转纯属买彩票——整类不发（教训1g）。
+                    if (leagueCat == "FRIENDLY" && IsHalfFullReverse(bqPick)) continue;
                     bqPick.CleanSheetDirection = cleanDir;
                     bqPick.HotHomeTrap = hotHomeTrap;
+                    bqPick.CupHotFade = cupHotFade;
+                    bqPick.DrawSetup = drawSetup;
+                    bqPick.FavoriteSide = favProfile is null ? null : favSide;
+                    bqPick.FavoriteReversalPct = favProfile?.ReversalRate;
+                    bqPick.HighReversalFavorite = highRevFav;
+                    bqPick.CrushFavorite = crushFav;
                     matchPicks.Add(WithProbability(bqPick, Blend((decimal)p, pt.Odds, bqOver)));
+                }
+
+                // 让平出注（2026-11-07，技能10落地）：NSPF 让平是全引擎此前从不出注的最大价值档。
+                // 触发条件（满足其一）：①深盘(主让≥1球整数盘) + 主胜大热(≤1.5)——10.8万场回测
+                // 让平 26.4%、EV 0.92 > 让胜 0.78；②让胜陷阱（让胜被买到极端低水 + 净胜卡1球）。
+                // 概率 = 模型「主队净胜恰卡盘口」的格子合计（让-1 → 净胜1球）。半球盘不发（无走盘语义）。
+                var nspfDraw = points.FirstOrDefault(p => p.PlayType == JcPlayTypes.Nspf && p.OptionCode == "1");
+                if (nspfDraw is not null && nspfDraw.Odds >= MinOptionOdds
+                    && r.Handicap is decimal hcpLine
+                    && hcpLine <= HcpDrawMaxLine && hcpLine == Math.Floor(hcpLine))
+                {
+                    var hcpTarget = (int)(-hcpLine); // 让-1 → 主队净胜恰 1 球
+                    var hcpDrawP = grid.Where(c => c.Home - c.Away == hcpTarget).Sum(c => c.P) / mass;
+                    var hcpHot = spfHome is not null && spfHome.Odds <= HcpDrawHotOdds;
+                    if (hcpDrawP >= (double)HcpDrawMinProbability && (hcpHot || hotHomeTrap))
+                    {
+                        var nspfOver = SnapshotComplete(points, JcPlayTypes.Nspf)
+                            ? StandardOverRound(JcPlayTypes.Nspf)
+                            : 0m;
+                        var nd = Option(nspfDraw, r);
+                        nd.HandicapDrawSetup = true;
+                        nd.DrawSetup = drawSetup;
+                        matchPicks.Add(WithProbability(nd, Blend((decimal)hcpDrawP, nspfDraw.Odds, nspfOver)));
+                    }
                 }
             }
 
@@ -617,6 +804,7 @@ public static class MilkPickEngine
             // 纯模型算出来的 EV 天生偏高——看着像「发现价值」，其实是没有参照物。
             // 标出来让前端提示，别让人拿它当证据。
             foreach (var p in matchPicks)
+            {
                 p.MarketPriced = p.PlayType switch
                 {
                     JcPlayTypes.Bf => bfOver > 0,
@@ -624,6 +812,20 @@ public static class MilkPickEngine
                     JcPlayTypes.Bq => bqOver > 0,
                     _ => true
                 };
+                p.WaterRisePct = waterRisePct;
+            }
+
+            // 升水否决（2026-11-07，技能11）：主胜临场升水≥12% → 撤掉全部主胜方向注
+            // （半全场全场主胜档 + 主胜比分档）。总进球/平局/客胜方向不在这条规则管界内。
+            if (waterVeto)
+            {
+                var before = matchPicks.Count;
+                matchPicks.RemoveAll(IsHomeWinDirection);
+                funnel.WaterRiseVeto += before - matchPicks.Count;
+                if (before > matchPicks.Count && funnel.Skipped.Count < 20)
+                    funnel.Skipped.Add(
+                        $"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：主胜升水 {waterRisePct:0.#}%（≥{WaterRiseVetoPct:0}%），主胜方向注已撤");
+            }
 
             // 方向闸（2026-11-05）：模型方向与市场去水方向背离 → 整场不发。
             // 半全场拿不到模型进球期望时只是少一个玩法，不该连着比分和总进球一起退出，
@@ -893,7 +1095,7 @@ public static class MilkPickEngine
     /// 榜单玩法的固定顺序。2026-11-06 用户定调侧重点：主攻半全场 → 总进球为辅 → 其次比分。
     /// 顺序即优先级，perMatch 逐场跟进按它选「每场一个大奶」，全局榜按它分玩法排序。
     /// </summary>
-    private static readonly string[] PlayOrder = { JcPlayTypes.Bq, JcPlayTypes.Jq, JcPlayTypes.Bf };
+    private static readonly string[] PlayOrder = { JcPlayTypes.Bq, JcPlayTypes.Nspf, JcPlayTypes.Jq, JcPlayTypes.Bf };
 
     /// <summary>
     /// 市场方向占比达到这个数（%）就算「市场说得够明白」，此时与该方向相反的注直接撤（2026-11-05 加）。
@@ -918,6 +1120,7 @@ public static class MilkPickEngine
     private static readonly Dictionary<string, int> MaxPerPlay = new()
     {
         [JcPlayTypes.Bq] = 3,
+        [JcPlayTypes.Nspf] = 1,
         [JcPlayTypes.Jq] = 2,
         [JcPlayTypes.Bf] = 1
     };
@@ -1002,8 +1205,9 @@ public static class MilkPickEngine
         => pick.PlayType == JcPlayTypes.Bf && pick.OptionCode.EndsWith("其它", StringComparison.Ordinal);
 
     /// <summary>
-    /// 赛事类型分类（2026-11-06 加）。冷门是「赛事类型放大的」：杯赛主胜热门翻车率是联赛的 4 倍，
-    /// 国家队/欧国联看实力差是否真实。用于后续让「杯赛才押反转」的规律落到引擎选注。
+    /// 赛事类型分类（2026-11-06 加，2026-11-07 起被半全场选注消费）。
+    /// 冷门是「赛事类型放大的」：杯赛反转档合计 15.1% > 联赛 11.1% > 友谊赛 2.7%（39.5万场实测）；
+    /// 友谊赛反转档整类不发、杯赛低水热门触发平负/负负提级（见 CupHotFade）。
     /// 返回 "CUP"=杯赛 / "FRIENDLY"=友谊赛 / "LEAGUE"=联赛。
     /// </summary>
     private static string LeagueCategory(string? leagueName)

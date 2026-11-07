@@ -1617,7 +1617,15 @@ app.MapGet("/api/milk/today", async (MilkScanService milk, CancellationToken ct)
 app.MapGet("/api/milk/picks", async (MilkPickRepository repo, string? date, CancellationToken ct) =>
 {
     var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
-    return Results.Ok(await repo.GetDayAsync(d, ct));
+    var list = await repo.GetDayAsync(d, ct);
+    // 午夜回退（2026-11-07 修复，同北单 bug）：没传 date 且当天为空时，回退到最近一个有数据的日期。
+    // 竞彩注 21:50/22:50 落库、场次开到次日凌晨，凌晨查"今天"会落空。
+    if (list.Count == 0 && !DateTime.TryParse(date, out _))
+    {
+        var last = await repo.GetLatestPickDateBeforeAsync(d, ct);
+        if (last is DateTime ld) list = await repo.GetDayAsync(ld, ct);
+    }
+    return Results.Ok(list);
 });
 
 // 北单胜平负（不让球）推荐：「今日北单推荐」板块（2026-11-06 加）。
@@ -1625,7 +1633,9 @@ app.MapGet("/api/milk/picks", async (MilkPickRepository repo, string? date, Canc
 app.MapGet("/api/bd/spf-picks", async (BdSpfPickRepository repo, string? date, CancellationToken ct) =>
 {
     var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
-    return Results.Ok(await repo.GetDayAsync(d, ct));
+    // 兜底：无数据时也返回空结构而非 null（null 会被序列化成空响应体，前端 response.json() 会报错）。
+    var day = await repo.GetDayAsync(d, ct) ?? new BdSpfPickDay { Day = d };
+    return Results.Ok(day);
 });
 app.MapPost("/api/bd/spf-picks", async (
     BdSpfPickService svc, BdSpfPickRepository repo, bool? save, CancellationToken ct) =>

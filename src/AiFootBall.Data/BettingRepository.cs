@@ -129,6 +129,137 @@ public sealed class BettingRepository
             new { b = board, from = day.Date, to = day.Date.AddDays(1) }, cancellationToken: ct))).ToList();
     }
 
+    /// <summary>
+    /// 按「受注日」取受注卡，竞彩复盘专用。竞彩受注和出票都在开赛前：
+    /// 欧洲场北京时间凌晨开赛（00:00~11:00），当天下午开赛的才是受注日当天。
+    /// 所以受注日 D 的窗口取开赛时间 [D 11:00, D+1 11:00)——
+    /// 用开赛日取卡会把「周五002~014」全划给周六，复盘里周五只剩一场（2026-11-06 实测踩到）。
+    /// 竞彩每场停售都在开赛时刻（日批 21:58/22:58 只是最后一批），11 点切线足够稳。
+    /// </summary>
+    public async Task<List<BettingCardRecord>> GetCardsBySaleDayAsync(
+        string board, DateTime day, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<BettingCardRecord>(new CommandDefinition(
+            @"WITH cte AS (
+                  SELECT c.CardId, c.Board, c.Expect, c.MatchNo, c.MatchId, c.LeagueName,
+                         c.HomeTeam, c.AwayTeam, COALESCE(c.MatchTime, m.MatchTime) AS MatchTime,
+                         c.Handicap, c.SpfHome, c.SpfDraw, c.SpfAway, c.IsSingle, c.CapturedAt,
+                         ROW_NUMBER() OVER (
+                             PARTITION BY COALESCE(CONVERT(varchar(20), c.MatchId), c.MatchNo)
+                             ORDER BY c.CapturedAt DESC, c.CardId DESC) AS rn
+                  FROM dbo.BettingCard c
+                  LEFT JOIN dbo.FbMatch m ON m.MatchId = c.MatchId
+                  WHERE c.Board = @b
+                    AND COALESCE(c.MatchTime, m.MatchTime) >= @from
+                    AND COALESCE(c.MatchTime, m.MatchTime) < @to
+              )
+              SELECT CardId, Board, Expect, MatchNo, MatchId, LeagueName, HomeTeam, AwayTeam,
+                     MatchTime, Handicap, SpfHome, SpfDraw, SpfAway, IsSingle, CapturedAt
+              FROM cte WHERE rn = 1
+              ORDER BY MatchTime, MatchNo",
+            new { b = board, from = day.Date.AddHours(11), to = day.Date.AddDays(1).AddHours(11) },
+            cancellationToken: ct))).ToList();
+    }
+
+    /// <summary>按 MatchId 集合取受注卡（同场保留最后一次采集）。北单复盘只写「今日北单推荐」出现过的场次。</summary>
+    public async Task<List<BettingCardRecord>> GetCardsByMatchIdsAsync(
+        string board, IReadOnlyCollection<long> matchIds, CancellationToken ct = default)
+    {
+        if (matchIds.Count == 0) return new List<BettingCardRecord>();
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<BettingCardRecord>(new CommandDefinition(
+            @"WITH cte AS (
+                  SELECT c.CardId, c.Board, c.Expect, c.MatchNo, c.MatchId, c.LeagueName,
+                         c.HomeTeam, c.AwayTeam, COALESCE(c.MatchTime, m.MatchTime) AS MatchTime,
+                         c.Handicap, c.SpfHome, c.SpfDraw, c.SpfAway, c.IsSingle, c.CapturedAt,
+                         ROW_NUMBER() OVER (
+                             PARTITION BY COALESCE(CONVERT(varchar(20), c.MatchId), c.MatchNo)
+                             ORDER BY c.CapturedAt DESC, c.CardId DESC) AS rn
+                  FROM dbo.BettingCard c
+                  LEFT JOIN dbo.FbMatch m ON m.MatchId = c.MatchId
+                  WHERE c.Board = @b AND c.MatchId IN @ids
+              )
+              SELECT CardId, Board, Expect, MatchNo, MatchId, LeagueName, HomeTeam, AwayTeam,
+                     MatchTime, Handicap, SpfHome, SpfDraw, SpfAway, IsSingle, CapturedAt
+              FROM cte WHERE rn = 1
+              ORDER BY MatchTime, MatchNo",
+            new { b = board, ids = matchIds }, cancellationToken: ct))).ToList();
+    }
+
+    /// <summary>某受注日的「今日北单推荐」注（FbBdSpfPick）。MatchId → 各注文本（正路/反向 + 方向@赔率 + 中失）。</summary>
+    public async Task<Dictionary<long, List<string>>> GetBdPickMarksAsync(
+        DateTime day, CancellationToken ct = default)
+    {
+        try
+        {
+            await using var conn = await _factory.OpenAsync(ct);
+            var rows = (await conn.QueryAsync<BdPickMark>(new CommandDefinition(
+                @"SELECT MatchId, Kind, SideName, Odds, Handicap, HandicapSideName, HandicapOdds, Hit
+                  FROM dbo.FbBdSpfPick
+                  WHERE PickDate = @d", 
+                new { d = day.Date }, cancellationToken: ct))).ToList();
+            return rows
+                .GroupBy(r => r.MatchId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Select(r =>
+                    {
+                        // SideName 已是让球盘方向（让胜/让平/让负）时不再拼让球后缀，避免「让让胜」。
+                        var side = r.SideName ?? "";
+                        var hcp = r.Handicap is decimal h && !string.IsNullOrEmpty(r.HandicapSideName)
+                                  && !side.Contains("让")
+                            ? " / 让" + r.HandicapSideName
+                              + (r.HandicapOdds is decimal ho ? "@" + ho.ToString("0.##") : "")
+                            : "";
+                        return (r.Kind == "reverse" ? "反向" : "正路") + " " + side
+                            + (r.Odds is decimal o ? "@" + o.ToString("0.##") : "")
+                            + hcp
+                            + (r.Hit is null ? "" : r.Hit is true ? "中" : "失");
+                    }).ToList());
+        }
+        catch (Exception) { return new Dictionary<long, List<string>>(); /* 表未建不影响复盘 */ }
+    }
+
+    private sealed class BdPickMark
+    {
+        public long MatchId { get; set; }
+        public string Kind { get; set; } = "steady";
+        public string? SideName { get; set; }
+        public decimal? Odds { get; set; }
+        public decimal? Handicap { get; set; }
+        public string? HandicapSideName { get; set; }
+        public decimal? HandicapOdds { get; set; }
+        public bool? Hit { get; set; }
+    }
+
+    /// <summary>某受注日的大奶注，复盘标记「已推荐」用。MatchId → 该场各注「选项@赔率」。</summary>
+    public async Task<Dictionary<long, List<string>>> GetMilkPickOptionsAsync(
+        DateTime day, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = (await conn.QueryAsync<MilkPickMark>(new CommandDefinition(
+            @"SELECT MatchId, OptionName, Odds, Hit
+              FROM dbo.FbMilkPick
+              WHERE PickDate = @d AND MatchId IS NOT NULL",
+            new { d = day.Date }, cancellationToken: ct))).ToList();
+        return rows
+            .GroupBy(r => r.MatchId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(r => r.OptionName + "@" + r.Odds.ToString("0.##")
+                        + (r.Hit is null ? "" : r.Hit is true ? "中" : "失"))
+                    .ToList());
+    }
+
+    private sealed class MilkPickMark
+    {
+        public long MatchId { get; set; }
+        public string OptionName { get; set; } = "";
+        public decimal Odds { get; set; }
+        public bool? Hit { get; set; }
+    }
+
     /* ---------------- 推荐信号数据 ---------------- */
 
     /// <summary>按 fid 批量取欧赔主胜 初盘→终盘 变化（平均值 CompanyId=0）</summary>

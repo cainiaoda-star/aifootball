@@ -133,6 +133,15 @@ public sealed class MilkPickRepository
               ORDER BY ModelProbability DESC, Ev DESC", new { d }, cancellationToken: ct))).ToList();
     }
 
+    /// <summary>指定日期之前最近一个有大奶注的日期（跨午夜回退用），没有则 null。</summary>
+    public async Task<DateTime?> GetLatestPickDateBeforeAsync(DateTime pickDate, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
+            "SELECT MAX(PickDate) FROM dbo.FbMilkPick WHERE PickDate < @d",
+            new { d = pickDate.Date }, cancellationToken: ct));
+    }
+
     /// <summary>
     /// 近 N 天大奶战绩报表：按玩法分组 + 整体 + 未结算数 + 热门选项。
     /// 只统计已结算（Hit 非空）的行；未结算的单独报数，免得「刚发的榜」把命中率稀释成 0。
@@ -309,10 +318,14 @@ public sealed class MilkPickRepository
             new { d }, cancellationToken: ct))).ToList();
     }
 
-    /// <summary>当天已发出、未开赛、未结算的大奶注，供临场转向哨兵扫描。</summary>
+    /// <summary>
+    /// 读「开放中的大奶注」：未结算 + 比赛未开赛。
+    /// 2026-11-07 修复跨午夜翻篇：原来按 PickDate=今天过滤，午夜一过就查不到昨晚落库的注，
+    /// TurnGuard 对凌晨开赛的场次集体失明（恰是最需要监控的时段）。
+    /// 现在只看「未结算 + 未开赛」这个真正的开放语义，pickDate 参数保留兼容但不再参与过滤。
+    /// </summary>
     public async Task<List<MilkPickRow>> GetOpenDayAsync(DateTime pickDate, CancellationToken ct = default)
     {
-        var d = pickDate.Date;
         await using var conn = await _factory.OpenAsync(ct);
         return (await conn.QueryAsync<MilkPickRow>(new CommandDefinition(
             @"SELECT p.PickId, p.PickDate, p.MatchId, p.MatchNo, p.LeagueName, p.HomeTeam, p.AwayTeam,
@@ -320,10 +333,10 @@ public sealed class MilkPickRepository
                      p.ActualScore, p.ActualHalfScore, p.ActualGoals, p.Hit, p.SettledAt
               FROM dbo.FbMilkPick p
               JOIN dbo.FbMatch m ON m.MatchId = p.MatchId
-              WHERE p.PickDate=@d AND p.Hit IS NULL AND p.SettledAt IS NULL
+              WHERE p.Hit IS NULL AND p.SettledAt IS NULL
                 AND m.Status <> 3 AND m.MatchTime > SYSDATETIME()
               ORDER BY m.MatchTime, p.MatchNo",
-            new { d }, cancellationToken: ct))).ToList();
+            cancellationToken: ct))).ToList();
     }
 
     private sealed class MilkPendingRow

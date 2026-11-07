@@ -1,3 +1,4 @@
+using AiFootBall.Core.Models;
 using Dapper;
 
 namespace AiFootBall.Data;
@@ -108,6 +109,44 @@ public sealed class OddsCaptureRepository
         var list = rows.ToList();
         foreach (var r in list) r.TagHit = JudgeTag(r);
         return list;
+    }
+
+    /// <summary>
+    /// 按场次集合取 SPF「开盘→现价」水位（技能11升水否决用，2026-11-07）。
+    /// 直接读 FbMatchTrend（jc-odds-sample 每轮刷新），OpenWin/CurrWin 任一缺失的场不进字典。
+    /// </summary>
+    public async Task<Dictionary<long, (decimal? Open, decimal? Curr)>> GetSpfWaterAsync(
+        IReadOnlyCollection<long> matchIds, CancellationToken ct = default)
+    {
+        if (matchIds.Count == 0) return new();
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.QueryAsync<(long MatchId, decimal? OpenWin, decimal? CurrWin)>(new CommandDefinition(
+            @"SELECT MatchId, OpenWin, CurrWin
+              FROM dbo.FbMatchTrend
+              WHERE PlayType = 'SPF' AND MatchId IN @ids",
+            new { ids = matchIds }, cancellationToken: ct));
+        return rows
+            .Where(r => r.OpenWin is > 1m && r.CurrWin is > 1m)
+            .ToDictionary(r => r.MatchId, r => ((decimal?)r.OpenWin, (decimal?)r.CurrWin));
+    }
+
+    /// <summary>
+    /// 按队名取俱乐部画像（2026-11-07，dbo.FbTeamProfile，db/21_team_profile.sql 回填）。
+    /// 键 = 数据源全称队名——调用方必须先用 ScorelineModel.Resolve 把竞彩简称解析成全称再查。
+    /// minGames 过滤样本太小的队（巴黎全历史才 65 场，画像不可信）。
+    /// </summary>
+    public async Task<Dictionary<string, TeamProfile>> GetTeamProfilesAsync(
+        IEnumerable<string> teamNames, int minGames = 150, CancellationToken ct = default)
+    {
+        var names = teamNames.Where(n => !string.IsNullOrWhiteSpace(n)).Distinct().ToList();
+        if (names.Count == 0) return new();
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.QueryAsync<TeamProfile>(new CommandDefinition(
+            @"SELECT TeamName, Games, ReversalRate, CleanSheetRate, HalfDrawTurnRate
+              FROM dbo.FbTeamProfile
+              WHERE TeamName IN @names AND Games >= @minGames",
+            new { names, minGames }, cancellationToken: ct));
+        return rows.ToDictionary(r => r.TeamName, r => r, StringComparer.Ordinal);
     }
 
     /// <summary>

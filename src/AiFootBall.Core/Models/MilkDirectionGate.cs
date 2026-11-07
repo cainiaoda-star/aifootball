@@ -235,6 +235,13 @@ public sealed class MilkFunnel
     /// <summary>被方向闸整场撤下的场次（仅 EnforceDirectionVeto 打开时）。</summary>
     public int BlockedByGate { get; set; }
 
+    /// <summary>
+    /// 因「主胜临场升水 ≥12%」被撤下的主胜方向注数（2026-11-07，技能11落地）。
+    /// 9758 场平均盘回测：升水≥12% 的主胜 ROI 恶化到 33（平盘基准 54，差 21 个点），
+    /// 是全部水位分桶里唯一大幅恶化的信号——升水=硬利空，主胜方向的注直接撤。
+    /// </summary>
+    public int WaterRiseVeto { get; set; }
+
     /// <summary>通过方向闸的注数。</summary>
     public int AfterGate { get; set; }
 

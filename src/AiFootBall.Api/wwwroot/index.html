@@ -532,6 +532,10 @@
   .review-doc li{margin:3px 0;font-size:13px;line-height:1.45}
   .review-doc li.sub{margin-left:12px;color:var(--dim)}
   .review-doc h4{font-size:13px;margin:12px 0 4px}
+  /* 复盘里「推荐过」的场次：⭐内部存档推荐 / 🍓大奶榜（真实发布过），左侧色条高亮一眼定位
+     类名用 rv- 前缀，别用 milk-pick——那是大奶榜勾选框的样式（14px 方块），撞了会把标题压成竖排 */
+  .review-doc h4.rv-rec{border-left:3px solid #e8a33d;padding-left:8px}
+  .review-doc h4.rv-milk{border-left:3px solid #e0566d;padding-left:8px;background:rgba(224,86,109,.08)}
   .review-doc details.issue{background:var(--panel2);margin:8px 0 0;padding:8px 12px}
   .review-doc details.issue > summary{font-weight:650}
   .review-doc .tally-wrap{overflow-x:auto;margin:8px 0 12px}
@@ -539,6 +543,19 @@
   .review-doc table.tally th,.review-doc table.tally td{padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
   .review-doc table.tally th{text-align:left;color:var(--dim);font-weight:600}
   .review-doc table.tally td.num,.review-doc table.tally th.num{text-align:right;font-variant-numeric:tabular-nums}
+  /* 总账数字可点：点场次/有方向/命中/会发布 → 跳到对应板块或弹出场次清单 */
+  .tally-link{cursor:pointer;border-bottom:1px dashed var(--dim);padding:0 1px}
+  .tally-link:hover{color:var(--amber);border-bottom-color:var(--amber)}
+  .rv-pop{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99;display:flex;align-items:center;justify-content:center}
+  .rv-pop .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;max-width:600px;width:94%;max-height:72vh;overflow:auto;padding:14px 16px}
+  .rv-pop .box h5{margin:0 0 10px;font-size:14px}
+  .rv-pop .it{padding:7px 8px;border-bottom:1px solid var(--line);cursor:pointer;font-size:13px;line-height:1.5}
+  .rv-pop .it:hover{background:rgba(255,255,255,.05)}
+  .rv-pop .it .sub{color:var(--dim);margin-left:8px}
+  .rv-pop .close{float:right;cursor:pointer;color:var(--dim);font-size:16px;padding:0 4px}
+  .rv-pop .close:hover{color:var(--amber)}
+  h4.rv-flash{animation:rvFlash 1.8s ease 1}
+  @keyframes rvFlash{0%,55%{background:rgba(232,163,61,.28)}100%{background:transparent}}
   .review-doc table.tally tr:last-child td{border-bottom:0}
   .skill-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;align-items:start}
   .skill-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:0 0 10px}
@@ -1818,7 +1835,7 @@ function milkRecordHtml(r){
 /* ---------- 竞彩大奶榜（2026-11-04 改向：比分/半全场/总进球；2026-11-06 侧重点改为 半全场→总进球→比分） ---------- */
 
 const MILK_PLAY_ORDER = { BQ: 0, JQ: 1, BF: 2 };
-const MILK_PLAY_NAME = { BF: '比分', BQ: '半全场', JQ: '总进球' };
+const MILK_PLAY_NAME = { BF: '比分', BQ: '半全场', JQ: '总进球', NSPF: '让球' };
 // 竞彩各玩法的固定返奖率 = 1/水位（2026-11-05 实测同批次 13 场，逐场水位一致到小数点后三位）。
 // 这是这条玩法「每投 100 元长期能收回多少」的天花板，也是 EV 的理论上限——EV 永远到不了 1。
 const MILK_PAYOUT = { BF: 0.709, BQ: 0.797, JQ: 0.797, SPF: 0.878, NSPF: 0.878 };
@@ -2646,7 +2663,7 @@ function renderMilkBoard(b, strongOnly){
   let html = `<div class="board" data-board="jc">
     <div class="board-head">
       <span class="badge badge-jc">竞彩大奶</span>
-      <span class="meta">共 <b>${b.total || 0}</b> 场受注 · 大奶 <b>${picks.length}</b> 注 / <b>${rows.length}</b> 场 · 主攻半全场 → 总进球为辅 → 其次比分 · 半全场只发 胜胜/平平/负负 且≥12% · 总进球≥10% 且不发 5 球档 · 比分 4.0~40 倍且≥5% · 概率 = 模型 70% + 盘口去水 30%${b.saleNote ? ' · ' + esc(b.saleNote) : ''}</span>
+      <span class="meta">共 <b>${b.total || 0}</b> 场受注 · 大奶 <b>${picks.length}</b> 注 / <b>${rows.length}</b> 场 · 主攻半全场 → 总进球为辅 → 其次比分 → 让球只发「让平」剧本（强队让胜陷阱，深盘大热只赢1球） · 半全场只发 胜胜/平平/负负 且≥12% · 总进球≥10% 且不发 5 球档 · 比分 4.0~40 倍且≥5% · 概率 = 模型 70% + 盘口去水 30%${b.saleNote ? ' · ' + esc(b.saleNote) : ''}</span>
     </div>
     ${(b.showRows || []).some(r => /欧冠|欧罗巴|欧协联|亚冠/.test(r.leagueName || ''))
       ? '<div class="fn-warn">本日含欧战（欧冠/欧罗巴/欧协联/亚冠）场次：这类赛事球队本赛事样本少（门槛已放宽到 3 场），模型给的概率仍以「联赛均值+主场优势」为主，命中率无保证，仅供参考、谨慎下单。</div>'
@@ -2671,7 +2688,7 @@ function renderMilkBoard(b, strongOnly){
   html += `<div class="milk-record" id="milkRecord"><div class="dim">大奶战绩加载中…</div></div>`;
 
   if(!rows.length){
-    html += `<div class="empty">今天没有够格的大奶：半全场只发 胜胜/平平/负负 且≥12%，总进球≥10%（不发 5 球档），比分 4.0~40 倍且≥5%。门槛是按「能不能中」定的，宁缺毋滥。</div>`;
+    html += `<div class="empty">今天没有够格的大奶：半全场只发 胜胜/平平/负负 且≥12%，总进球≥10%（不发 5 球档），比分 4.0~40 倍且≥5%，让球只发让平剧本。门槛是按「能不能中」定的，宁缺毋滥。</div>`;
   } else {
     // 勾选按「注」算：同一场三列玩法各有各的选项和赔率，按场勾会混。
     // 每次重渲染都重建 data 表，勾选集合 _milkPickSet 保留，但要把本轮不存在的清理掉。
@@ -2722,7 +2739,7 @@ function renderMilkBoard(b, strongOnly){
 
     html += `<div class="board-scroll"><table class="tbl rec-tbl milk-merged"><thead><tr>
         <th>场次</th><th>对阵</th><th>开赛</th>
-        <th>${esc(MILK_PLAY_NAME.BQ)}</th><th>${esc(MILK_PLAY_NAME.JQ)}</th><th>${esc(MILK_PLAY_NAME.BF)}</th>
+        <th>${esc(MILK_PLAY_NAME.BQ)}</th><th>${esc(MILK_PLAY_NAME.JQ)}</th><th>${esc(MILK_PLAY_NAME.BF)}</th><th>让球</th>
       </tr></thead><tbody>`;
     for(const g of rows){
       html += `<tr class="match-row">
@@ -2733,6 +2750,7 @@ function renderMilkBoard(b, strongOnly){
         <td>${cell(g, 'BQ')}</td>
         <td>${cell(g, 'JQ')}</td>
         <td>${cell(g, 'BF')}</td>
+        <td>${cell(g, 'NSPF')}</td>
       </tr>`;
     }
     html += `</tbody></table></div>`;
@@ -3859,7 +3877,7 @@ const JOB_META = {
   'save-final-weekday': ['终版保存(工作日)', '停售前 8 分钟（周一~五 21:50）最后全量重算一遍，锁当天最终推荐。竞彩工作日 21:58 停售。'],
   'save-final-weekend': ['终版保存(周末)', '停售前 8 分钟（周六/日 22:50）最后全量重算一遍，锁当天最终推荐。竞彩周末 22:58 停售。'],
   'recommend-evidence': ['推荐留证', '把当时页面上的推荐、库里当天的行，和一张图片写到 evidence/recommendations。按时间追加，不覆盖。'],
-  'daily-review': ['每日复盘文档', '早上写前一天。竞彩和胜负彩全部场次，北单 A、B、C 级，没进精选的也写，落到 reviews。'],
+  'daily-review': ['每日复盘文档', '早上写前一天。竞彩和胜负彩全部场次，北单只写今日北单推荐出现过的场次，落到 reviews。'],
   'odds-sample': ['赔率采样', '只采开赛前这段时间里的欧赔，用来看水位升降。'],
   'odds-sample-late': ['临场赔率', '开赛前 90 分钟再加密采一次。'],
   'exchange': ['必发', '只采开赛前这段时间里的必发成交。'],
@@ -4947,8 +4965,70 @@ function ratePill(name, hit, total){
   return `<span class="pill"><b>${name}</b> ${hit}/${total} <em class="${rate>=50?'hit-tag':'miss-tag'}">${wilsonText(hit, total)}</em></span>`;
 }
 
+const WEEK_CN = ['周日','周一','周二','周三','周四','周五','周六'];
+function weekdayCn(ymd){
+  const [y,m,d] = ymd.split('-').map(Number);
+  return WEEK_CN[new Date(y, m-1, d).getDay()] || '';
+}
+
+/* 复盘文档的全场次索引：总账数字点击后按板块+口径过滤，弹层列出、点击跳到那场 */
+let _reviewIndex = [];
+const TALLY_SEC = {'竞彩':'竞彩（全部场次）','胜负彩':'胜负彩（全部场次）','北单':'北单（推荐场次）'};
+function rvMatchInfo(title, lines){
+  const dirLine = lines.find(l => l.startsWith('- 终盘重算：')) || '';
+  const direction = (dirLine.match(/^- 终盘重算：(.+?)，/) || [])[1] || (dirLine ? '没有方向' : '');
+  const verdict = (lines.find(l => l.startsWith('- 对照：')) || '').replace('- 对照：', '').trim();
+  return { title, direction, verdict, published: lines.some(l => l.includes('页面会发布')) };
+}
+function rvJump(id){
+  const el = document.getElementById(id);
+  closeRvPop();
+  if(!el) return;
+  let p = el.parentElement;
+  while(p){ if(p.tagName === 'DETAILS') p.open = true; p = p.parentElement; }
+  setTimeout(() => {
+    el.scrollIntoView({behavior:'smooth', block:'center'});
+    el.classList.remove('rv-flash'); void el.offsetWidth; el.classList.add('rv-flash');
+  }, 60);
+}
+function closeRvPop(){
+  const p = document.querySelector('.rv-pop');
+  if(p) p.remove();
+}
+function openRvPop(secTitle, kind){
+  const items = _reviewIndex.filter(m => m.sec === secTitle).filter(m => {
+    if(kind === 'aimed') return m.verdict === '命中' || m.verdict === '未中';
+    if(kind === 'hit') return m.verdict === '命中';
+    if(kind === 'pub') return m.published;
+    return true;
+  });
+  const label = {total:'全部场次', aimed:'有方向', hit:'命中', pub:'页面会发布'}[kind] || kind;
+  const tag = v => v === '命中' ? '<span class="hit-tag">命中</span>'
+    : v === '未中' ? '<span class="miss-tag">未中</span>'
+    : v ? `<span class="dim">${esc(v)}</span>` : '';
+  const rows = items.length ? items.map(m => `
+      <div class="it" data-id="${m.id}">
+        ${esc(m.title)}<br/>
+        <span class="sub">方向 ${esc(m.direction || '—')}</span>
+        <span class="sub">对照 ${tag(m.verdict)}</span>
+      </div>`).join('')
+    : '<div class="dim" style="padding:10px 4px">这天没有符合条件的场次</div>';
+  const pop = document.createElement('div');
+  pop.className = 'rv-pop';
+  pop.innerHTML = `<div class="box">
+      <h5>${esc(secTitle)} · ${label}（${items.length}）<span class="close" title="关闭">✕</span></h5>
+      ${rows}
+    </div>`;
+  pop.addEventListener('click', e => { if(e.target === pop) closeRvPop(); });
+  pop.querySelector('.close').onclick = closeRvPop;
+  pop.querySelectorAll('.it').forEach(it => { it.onclick = () => rvJump(it.dataset.id); });
+  document.body.appendChild(pop);
+}
+
 function renderReviewDoc(md){
   const lines = String(md).replace(/\r/g,'').split('\n');
+  const docDate = (String(md).replace(/^\uFEFF/, '').match(/^#\s*(\d{4}-\d{2}-\d{2})/m) || [])[1] || '';
+  _reviewIndex = [];
   const sections = [];
   let cur = { title: '', lines: [] };
   for(const line of lines){
@@ -4962,18 +5042,45 @@ function renderReviewDoc(md){
   let html = '';
   for(const sec of sections){
     const body = sec.title === '总账' ? reviewTally(sec.lines)
-      : sec.title.startsWith('胜负彩') ? reviewSfcSection(sec.lines)
+      : sec.title.startsWith('胜负彩') ? reviewSfcSection(sec.lines, sec.title)
+      : /^(竞彩|北单)/.test(sec.title) ? reviewBoardSection(sec.lines, docDate, sec.title)
       : reviewLines(sec.lines);
     if(!sec.title){ html += body; continue; }
     html += `<details ${open.has(sec.title) ? 'open' : ''}><summary>${esc(sec.title)}</summary>${body}</details>`;
   }
   return html;
 }
+/* 竞彩/北单板块：场次按「日期+周X」分组，默认折叠，点开展开看每场。
+   一篇复盘就是一个受注日（竞彩按受注日取卡），所以整组收成一个折叠。 */
+function reviewBoardSection(lines, docDate, key){
+  const blocks = [];
+  let cur = null;
+  const preface = [];
+  for(const line of lines){
+    const h3 = line.match(/^###\s+(.*)$/);
+    if(h3){ if(cur) blocks.push(cur); cur = { title: h3[1], lines: [] }; continue; }
+    if(cur) cur.lines.push(line); else preface.push(line);
+  }
+  if(cur) blocks.push(cur);
+  if(!blocks.length) return reviewLines(lines);
+  const pickCls = t => /🍓/.test(t) ? 'rv-milk' : /⭐/.test(t) ? 'rv-rec' : '';
+  const body = blocks.map((b, i) => {
+    const id = `rvb-${key}-${i}`;
+    _reviewIndex.push({ id, sec: key, ...rvMatchInfo(b.title, b.lines) });
+    return `<h4 id="${id}" class="${pickCls(b.title)}">${esc(b.title)}</h4>${reviewLines(b.lines)}`;
+  }).join('');
+  const label = docDate ? `${docDate} ${weekdayCn(docDate)}` : '全部场次';
+  return reviewLines(preface)
+    + `<details class="board-day"><summary>${esc(label)} · ${blocks.length} 场（点击展开）</summary>${body}</details>`;
+}
 function reviewTally(lines){
   const tableLines = lines.filter(l => l.startsWith('|'));
   if(tableLines.length >= 2){
     const rest = lines.filter(l => !l.startsWith('|'));
-    return markdownTable(tableLines) + reviewLines(rest);
+    const rows = tableLines.map(l => l.split('|').slice(1, -1).map(c => c.trim()))
+      .filter(cells => cells.length && !cells.every(c => /^:?-+:?$/.test(c)));
+    if(rows.length < 2) return reviewLines(lines);
+    return tallyTableHtml(rows[0], rows.slice(1)) + reviewLines(rest);
   }
   const re = /^- (.+?) (\d+) 场，完场 (\d+)，有方向 (\d+) 中 (\d+)，页面会发布 (\d+) 中 (\d+)/;
   const rows = [];
@@ -4989,10 +5096,24 @@ function reviewTally(lines){
   const allDone = rows.every(r => r.done === r.n);
   const rate = (hit, total) => total ? Math.round(100 * hit / total) + '%' : '—';
   const head = ['板块','场次'].concat(allDone ? [] : ['完场']).concat(['有方向','命中','命中率','会发布']);
-  const body = rows.map(r => [r.name, r.n].concat(allDone ? [] : [r.done]).concat([
-    r.aimed, r.hit, rate(r.hit, r.aimed), r.pub ? `${r.pub} 中 ${r.pubHit}` : '—'
+  const body = rows.map(r => [r.name, String(r.n)].concat(allDone ? [] : [String(r.done)]).concat([
+    String(r.aimed), String(r.hit), rate(r.hit, r.aimed), r.pub ? `${r.pub} 中 ${r.pubHit}` : '—'
   ]));
-  return tallyHtml(head, body) + reviewLines(rest);
+  return tallyTableHtml(head, body) + reviewLines(rest);
+}
+/* 总账表：场次/有方向/命中/会发布 四列数字可点，弹出该板块对应口径的场次清单 */
+function tallyTableHtml(head, body){
+  const cols = {'场次':'total','有方向':'aimed','命中':'hit','会发布':'pub'};
+  const th = head.map((c, i) => `<th class="${i ? 'num' : ''}">${esc(c)}</th>`).join('');
+  const tr = body.map(cells => {
+    const sec = TALLY_SEC[cells[0]] || cells[0];
+    return `<tr>${cells.map((c, i) => {
+      const k = i > 0 ? cols[head[i]] : null;
+      if(k && /^\d/.test(c)) return `<td class="num"><span class="tally-link" data-sec="${esc(sec)}" data-k="${k}">${esc(c)}</span></td>`;
+      return `<td class="${i ? 'num' : ''}">${esc(c)}</td>`;
+    }).join('')}</tr>`;
+  }).join('');
+  return `<div class="tally-wrap"><table class="tally"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>`;
 }
 function markdownTable(lines){
   const rows = lines.map(l => l.split('|').slice(1, -1).map(c => c.trim()))
@@ -5005,7 +5126,7 @@ function tallyHtml(head, body){
   const tr = body.map(row => `<tr>${row.map((c, i) => `<td class="${i ? 'num' : ''}">${esc(c)}</td>`).join('')}</tr>`).join('');
   return `<div class="tally-wrap"><table class="tally"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>`;
 }
-function reviewSfcSection(lines){
+function reviewSfcSection(lines, key){
   const issues = [];
   let current = null;
   let match = null;
@@ -5065,7 +5186,10 @@ function reviewSfcSection(lines){
     const brief = issue.extra || sfcIssueBrief(issue.matches);
     html += `<details class="issue"><summary>第 ${esc(issue.key)} 期${brief ? ' · ' + esc(brief) : ''}</summary>`;
     for(const m of issue.matches){
-      html += `<h4>${esc(m.title)}</h4>${reviewLines(m.lines)}`;
+      const pc = /🍓/.test(m.title) ? 'rv-milk' : /⭐/.test(m.title) ? 'rv-rec' : '';
+      const id = `rvs-${key}-${issue.key}-${m.title.slice(0, 12).replace(/\s/g, '')}`;
+      _reviewIndex.push({ id, sec: key, ...rvMatchInfo(m.title, m.lines) });
+      html += `<h4 id="${id}" class="${pc}">${esc(m.title)}</h4>${reviewLines(m.lines)}`;
     }
     html += '</details>';
   }
@@ -5145,6 +5269,10 @@ function renderSummary(d){
   }
 
   $('#summary').innerHTML = html;
+  // 总账数字 → 场次清单弹层
+  document.querySelectorAll('#summary .tally-link').forEach(el => {
+    el.onclick = () => openRvPop(el.dataset.sec, el.dataset.k);
+  });
   bindDateQuery('sum', () => summaryDate, v => { summaryDate = v; }, loadSummary);
 }
 
@@ -5202,7 +5330,7 @@ function renderSummaryItem(it){
       <div class="rev-top">
         <span class="badge badge-${it.board}">${BOARD_TEXT[it.board]||it.board}</span>
         <span class="match-no">${it.matchNo||''}</span>
-        ${it.isBought ? '<span class="bought-tag">已实购</span>' : ''}
+        ${it.isBought ? '<span class="bought-tag">已实购</span>' : '<span class="lowconf-tag">内部存档·未对外发布</span>'}
         ${it.confidence!=null && it.confidence<60 ? '<span class="lowconf-tag">低置信</span>' : ''}
         <span class="b-meta">${it.leagueName||''}</span>
         <span class="b-meta">${tm}</span>

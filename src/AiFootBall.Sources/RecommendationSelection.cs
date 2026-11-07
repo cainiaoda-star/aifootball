@@ -142,6 +142,8 @@ public static class RecommendationSelection
         rec.RecHandicap = null;
         rec.HandicapProbability = null;
         rec.HandicapOdds = null;
+        rec.HandicapDrawProbability = null;
+        rec.HandicapDrawOdds = null;
         if (rec.Handicap is not decimal hcp) return;
         var p = HandicapMath.FromOdds(spfHome, spfDraw, spfAway, totalLine, hcp);
         if (p is null) return;
@@ -151,6 +153,9 @@ public static class RecommendationSelection
         rec.RecHandicap = best.Item1;
         rec.HandicapProbability = Math.Round(best.Item2 * 100m, 1);
         rec.HandicapOdds = best.Item3 is > 1 ? best.Item3 : null;
+        // 让平档单留一份：BdSpfPick 的「赢球不赢盘→让平优先」规则要用（教训 1e/1l）。
+        rec.HandicapDrawProbability = Math.Round(p.Value.Draw * 100m, 1);
+        rec.HandicapDrawOdds = spDraw is > 1 ? spDraw : null;
 
         var hcpText = hcp > 0 ? $"+{hcp:0.##}" : $"{hcp:0.##}";
         var sp = rec.HandicapOdds is decimal o ? $"，北单 SP {o:0.00}（开奖前会变）" : "";

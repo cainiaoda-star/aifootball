@@ -158,6 +158,11 @@ public sealed class MatchRecommendation
     /// <summary>北单该让球选项的 SP（开奖前会变）。</summary>
     public decimal? HandicapOdds { get; set; }
 
+    /// <summary>让平档的概率（%，模型泊松三项）。给「赢球不赢盘」让平优先规则用（教训 1e/1l）。</summary>
+    public decimal? HandicapDrawProbability { get; set; }
+    /// <summary>让平档的北单 SP（开奖前会变）。</summary>
+    public decimal? HandicapDrawOdds { get; set; }
+
     /// <summary>
     /// 让球方向概率的模型值（欧赔去水 → 泊松 → 折成让球数三项）。
     /// 和 HandicapMarketProbability 一起留，才能回答「模型和盘口谁更准」。

@@ -85,4 +85,58 @@ public sealed class MilkPick
     /// 而不是追让胜（让胜需净胜≥2，会走盘）。与「必发主胜大热反向」同源。
     /// </summary>
     public bool HotHomeTrap { get; set; }
+
+    /// <summary>
+    /// 「低水杯赛热门」衰减标记（2026-11-07 加，仅引擎内部传递、不落库）。
+    /// true = 杯赛/欧战 + 竞彩主胜 ≤<see cref="MilkPickEngine.CupHotFadeMaxOdds"/> +
+    /// 必发主胜大热(≥70%)或钱涌客胜(PnlIdxAway≤-60)。
+    /// 依据：欧罗巴主胜&lt;1.35 场次翻车率 81.8%（回测 11 场）、主胜&lt;1.35 低水热门 6 场反转率 67%，
+    /// 半全场「平负(1-0)/负负(0-0)」是最高频落点（AC米兰0:2/勒沃库森0:1/桑德兰0:2 全是这个剧本）。
+    /// 命中时该档在 <see cref="MilkPickEngine"/> 的半全场档位里提到与零封同级。
+    /// </summary>
+    public bool CupHotFade { get; set; }
+
+    /// <summary>
+    /// 竞彩主胜「早盘→临场」升水幅度（%，2026-11-07 加，技能11）。null = 没有可用的开盘对照。
+    /// ≥12% 时主胜方向注（胜胜/平胜/主胜比分）被 <see cref="MilkPickEngine"/> 整类撤下：
+    /// 9758 场平均盘回测，升水≥12% 的主胜 ROI 33 vs 平盘基准 54——资金放弃主队是最可信的利空；
+    /// 降水方向只确认既有判断、不产生超额价值（利好已被定价），故只否决升水、不奖励降水。
+    /// </summary>
+    public decimal? WaterRisePct { get; set; }
+
+    /// <summary>
+    /// 本场模型热门方（'3'=主队 / '0'=客队，2026-11-07 俱乐部画像落地）。null = 没有画像或没分出方向。
+    /// </summary>
+    public char? FavoriteSide { get; set; }
+
+    /// <summary>热门方的历史反转率（%，全库口径见 <see cref="TeamProfile"/>）。null = 无画像。</summary>
+    public decimal? FavoriteReversalPct { get; set; }
+
+    /// <summary>
+    /// 热门方是「高反转队」（反转率≥<see cref="MilkPickEngine.ReversalFavoriteMinRate"/>，广岛/尤文/蔚山/马竞档）。
+    /// 这类队领先被翻是系统性现象，半全场「热门反向」的低赔反转档（平负/负负 或 平胜/负胜）提级。
+    /// </summary>
+    public bool HighReversalFavorite { get; set; }
+
+    /// <summary>
+    /// 热门方是「碾压型真强队」（反转率≤<see cref="MilkPickEngine.CrushReversalMaxRate"/> 且零封率≤
+    /// <see cref="MilkPickEngine.CrushCleanSheetMaxRate"/>，拜仁/巴黎/勒沃库森档）。
+    /// 这类队该赢就真赢，杯赛低水热门的反向提级（CupHotFade）对它们失效——防止拿假热门规律硬套真碾压。
+    /// </summary>
+    public bool CrushFavorite { get; set; }
+
+    /// <summary>
+    /// 平局倾向（2026-11-07）：模型全场平局概率 ≥ <see cref="MilkPickEngine.DrawSetupThreshold"/>
+    /// （30%，全库基准约 26%）。此时半全场「平平」是该场的第一落点，提级处理。
+    /// 之前引擎只有胜/负两个方向的哨兵（零封/杯热/画像全围绕热门），平局完全没人看——
+    /// 而平平在联赛占 22.7%（仅次于胜胜 38.6%），是第三大半全场档。
+    /// </summary>
+    public bool DrawSetup { get; set; }
+
+    /// <summary>
+    /// 让平命中（2026-11-07，技能10落地）：深盘让-1 + 主胜大热(≤1.5) 或 让胜陷阱 →
+    /// 「赢球不赢盘」，让球盘走盘=让平。10.8 万场回测：大热+让-1 让平 26.4%、EV 0.92，
+    /// 显著高于让胜的 0.78。此前 NSPF 从来不出注，这是全引擎最大的价值缺口。
+    /// </summary>
+    public bool HandicapDrawSetup { get; set; }
 }

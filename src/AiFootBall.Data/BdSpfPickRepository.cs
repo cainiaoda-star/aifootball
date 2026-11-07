@@ -119,7 +119,7 @@ public sealed class BdSpfPickRepository
         return rows;
     }
 
-    /// <summary>读当天北单推荐（两组）。</summary>
+    /// <summary>读当天北单推荐（两组）。北单期次横跨午夜：指定日期无数据时回退到最近一个有数据的日期。</summary>
     public async Task<BdSpfPickDay?> GetDayAsync(DateTime pickDate, CancellationToken ct = default)
     {
         var d = pickDate.Date;
@@ -135,6 +135,30 @@ public sealed class BdSpfPickRepository
                        CASE WHEN Kind='steady' THEN TRY_CAST(MatchNo AS INT) END ASC,
                        ISNULL(Confidence,0) DESC",
             new { d }, cancellationToken: ct))).ToList();
+
+        // 午夜回退：北单场次开到次日凌晨，过了 00:00 按"今天"查会落空，
+        // 此时回退到最近一个有数据的 PickDate（昨晚落库的那批就是现在在踢的这期）。
+        if (rows.Count == 0)
+        {
+            var last = await conn.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
+                "SELECT MAX(PickDate) FROM dbo.FbBdSpfPick WHERE PickDate < @d",
+                new { d }, cancellationToken: ct));
+            if (last is DateTime ld)
+            {
+                d = ld.Date;
+                rows = (await conn.QueryAsync<BdSpfPickRow>(new CommandDefinition(
+                    @"SELECT Kind, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
+                             Side, SideName, Odds, Handicap, HandicapSide, HandicapSideName,
+                             HandicapProbability, HandicapOdds, HitProbability, MarketProb,
+                             RatioHome, RatioAway, PnlIdxHome, PnlIdxAway, Reason, Confidence,
+                             ActualScore, Hit, SettledAt
+                      FROM dbo.FbBdSpfPick WHERE PickDate=@d
+                      ORDER BY CASE Kind WHEN 'steady' THEN 0 ELSE 1 END,
+                               CASE WHEN Kind='steady' THEN TRY_CAST(MatchNo AS INT) END ASC,
+                               ISNULL(Confidence,0) DESC",
+                    new { d }, cancellationToken: ct))).ToList();
+            }
+        }
 
         if (rows.Count == 0) return null;
 

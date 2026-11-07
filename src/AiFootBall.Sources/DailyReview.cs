@@ -5,8 +5,10 @@ using AiFootBall.Data;
 namespace AiFootBall.Sources;
 
 /// <summary>
-/// 每天一份复盘。竞彩、胜负彩全部场次都写，北单 A、B、C 级都写。没进精选的也写。
+/// 每天一份复盘。竞彩、胜负彩全部场次都写；北单只写「今日北单推荐」（FbBdSpfPick）出现过的场次。
 /// 精选变少不能把这篇写短。胜负彩受注卡没有开赛时间，按比赛表的开球时间归到当天。
+/// 竞彩按「受注日」取场：凌晨开赛的欧洲场（周五002~014）属于前一天受注，
+/// 按开赛日取会把它们全划给第二天，复盘里周五只剩一场（2026-11-06 实测踩到）。
 /// </summary>
 public static class DailyReview
 {
@@ -16,22 +18,28 @@ public static class DailyReview
         RecommendationService svc, BettingRepository repo, DateTime day, CancellationToken ct = default,
         MilkScanService? milk = null, TicketRepository? tickets = null)
     {
-        var jcCards = await repo.GetCardsByKickoffAsync(Boards.Jc, day, ct);
-        var bdCards = await repo.GetCardsByKickoffAsync(Boards.Bd, day, ct);
+        var jcCards = await repo.GetCardsBySaleDayAsync(Boards.Jc, day, ct);
+        // 北单全量受注几十场没必要每场都分析：只写「今日北单推荐」（FbBdSpfPick）出现过的场次。
+        var bdPickMarks = await repo.GetBdPickMarksAsync(day, ct);
+        var bdCards = await repo.GetCardsByMatchIdsAsync(Boards.Bd, bdPickMarks.Keys.ToList(), ct);
         var sfcCards = await repo.GetCardsByKickoffAsync(Boards.Sfc, day, ct);
         var jc = await svc.ScoreForReviewAsync(Boards.Jc, jcCards, ct);
         var bd = await svc.ScoreForReviewAsync(Boards.Bd, bdCards, ct);
         var sfc = await svc.ScoreForReviewAsync(Boards.Sfc, sfcCards, ct);
         var saved = await repo.GetRecommendationsByDateAsync(day, ct);
+        // 大奶榜是唯一对外发布过的推荐，复盘里把「推荐过」的场标出来，重点看这些。
+        Dictionary<long, List<string>> milkMarks;
+        try { milkMarks = await repo.GetMilkPickOptionsAsync(day, ct); }
+        catch (Exception) { milkMarks = new Dictionary<long, List<string>>(); /* 表未建不影响复盘 */ }
 
         var ids = jc.Concat(bd).Concat(sfc).Where(r => r.MatchId is not null).Select(r => r.MatchId!.Value).Distinct().ToArray();
         var scores = await repo.GetReviewScoresAsync(ids, ct);
         var exchange = await repo.GetExchangeSpanAsync(ids, ct);
 
         var rows = new List<ReviewRow>();
-        rows.AddRange(ToRows(Boards.Jc, jc, scores, exchange, saved));
-        rows.AddRange(ToRows(Boards.Bd, bd, scores, exchange, saved));
-        rows.AddRange(ToRows(Boards.Sfc, sfc, scores, exchange, saved));
+        rows.AddRange(ToRows(Boards.Jc, jc, scores, exchange, saved, milkMarks, null));
+        rows.AddRange(ToRows(Boards.Bd, bd, scores, exchange, saved, milkMarks, bdPickMarks));
+        rows.AddRange(ToRows(Boards.Sfc, sfc, scores, exchange, saved, milkMarks, null));
 
         string? milkBody = null;
         if (milk is not null)
@@ -84,7 +92,7 @@ public static class DailyReview
         sb.AppendLine();
         sb.AppendLine($"写于 {writtenAt:yyyy-MM-dd HH:mm}。用终盘赔率和**开赛前最后一次**必发重算，不是保存那一刻的页面。");
         sb.AppendLine("必发会一直记到赛中，取最后一条等于把比分喂进信号，所以复盘卡在开赛时刻。");
-        sb.AppendLine("竞彩每场都写。胜负彩按开赛日每场都写。北单 A、B、C 级每场都写。没进精选、没有方向的也写。精选少了，这篇不能跟着短。");
+        sb.AppendLine("竞彩每场都写。胜负彩按开赛日每场都写。北单只写「今日北单推荐」出现过的场次（🎯标记），全量受注不逐场分析。没进精选、没有方向的也写。精选少了，这篇不能跟着短。");
         sb.AppendLine("胜负彩页面会把受注场次都列出来。这篇里「页面会发布」仍只算过了 55% 的场。");
         sb.AppendLine();
         sb.AppendLine("> **2026-11-04 起，胜平负 / 让球 / 大小球 / 胜负彩 / 北单全部停止对外发布，只发竞彩大奶。**");
@@ -99,23 +107,20 @@ public static class DailyReview
         {
             ("竞彩", jc),
             ("胜负彩", sfc),
-            ("北单 A 级", bd.Where(r => r.Tier == LeagueTier.A).ToList()),
-            ("北单 B 级", bd.Where(r => r.Tier == LeagueTier.B).ToList()),
-            ("北单 C 级", bd.Where(r => r.Tier == LeagueTier.C).ToList()),
-            ("北单未分级", bd.Where(r => r.Tier == "未分级").ToList())
+            ("北单", bd)
         });
         sb.AppendLine();
         sb.AppendLine("「页面会发布」只算终盘重算仍然过 55% 的场次。开赛前进过精选、终盘被撤掉的，不在这行里。那种场次写在下面，依据里会有「极端大热，不追热」。库里没有，不能当成没推荐过。");
         sb.AppendLine();
         sb.AppendLine("## 成功");
         sb.AppendLine();
-        AppendNamed(sb, "页面会发布并且命中", rows.Where(r => r.Published && r.Verdict == "命中"));
+        AppendNamedSplit(sb, "页面会发布并且命中", rows.Where(r => r.Published && r.Verdict == "命中"));
         sb.AppendLine();
         sb.AppendLine("## 失败");
         sb.AppendLine();
-        AppendNamed(sb, "页面会发布但未中", rows.Where(r => r.Published && r.Verdict == "未中"));
-        AppendNamed(sb, "有方向、没发布、未中", rows.Where(r => !r.Published && r.Verdict == "未中"));
-        AppendNamed(sb, "偏热方向未中", rows.Where(r => r.Verdict == "未中" && r.HotSide));
+        AppendNamedSplit(sb, "页面会发布但未中", rows.Where(r => r.Published && r.Verdict == "未中"));
+        AppendNamedSplit(sb, "有方向、没发布、未中", rows.Where(r => !r.Published && r.Verdict == "未中"));
+        AppendNamedSplit(sb, "偏热方向未中", rows.Where(r => r.Verdict == "未中" && r.HotSide));
         sb.AppendLine();
         sb.AppendLine("## 不改的");
         sb.AppendLine();
@@ -127,10 +132,7 @@ public static class DailyReview
         AppendOu(sb, rows);
         AppendBoard(sb, "竞彩（全部场次）", jc);
         AppendSfc(sb, sfc);
-        AppendBoard(sb, "北单 A 级", bd.Where(r => r.Tier == LeagueTier.A).ToList());
-        AppendBoard(sb, "北单 B 级", bd.Where(r => r.Tier == LeagueTier.B).ToList());
-        AppendBoard(sb, "北单 C 级", bd.Where(r => r.Tier == LeagueTier.C).ToList());
-        AppendBoard(sb, "北单未分级", bd.Where(r => r.Tier == "未分级").ToList());
+        AppendBoard(sb, "北单（推荐场次）", bd);
         return sb.ToString();
     }
 
@@ -148,7 +150,9 @@ public static class DailyReview
         List<MatchRecommendation> recs,
         Dictionary<long, ReviewScore> scores,
         Dictionary<long, (decimal? LastHome, decimal? LastDraw, decimal? LastAway, decimal? MaxHome, decimal? MaxAway)> exchange,
-        List<RecommendationRecord> saved)
+        List<RecommendationRecord> saved,
+        Dictionary<long, List<string>> milkMarks,
+        Dictionary<long, List<string>>? bdPickMarks)
     {
         var qualified = recs.Where(RecommendationSelection.QualifiesForFeatured)
             .Select(ReviewKey)
@@ -217,6 +221,12 @@ public static class DailyReview
                 : $"库里存的是 {SpfName(kept.RecResult)}，置信 {kept.Confidence?.ToString("0.#") ?? "—"}，{(kept.Hit is true ? "已标命中" : kept.Hit is false ? "已标未中" : "还没回填")}。";
 
             var tier = board == Boards.Bd ? LeagueTier.Of(rec.LeagueName) ?? "未分级" : "";
+            var milkText = rec.MatchId is long mid2 && milkMarks.TryGetValue(mid2, out var opts)
+                ? string.Join(" / ", opts)
+                : "";
+            var bdPickText = bdPickMarks is not null && rec.MatchId is long mid3 && bdPickMarks.TryGetValue(mid3, out var picks)
+                ? string.Join(" / ", picks)
+                : "";
             rows.Add(new ReviewRow
             {
                 Board = board,
@@ -240,6 +250,10 @@ public static class DailyReview
                 Strong = rec.IsFeatured,
                 Qualified = qualified.Contains(ReviewKey(rec)),
                 SavedText = savedText,
+                SavedPick = kept is not null,
+                SavedHit = kept?.Hit,
+                MilkText = milkText,
+                BdPickText = bdPickText,
                 Signal = rec.SignalDesc ?? "",
                 Tags = rec.Tags,
                 ExchangeText = exchangeText,
@@ -320,7 +334,26 @@ public static class DailyReview
         var list = rows.ToList();
         sb.AppendLine($"- {title}：{(list.Count == 0 ? "无" : list.Count + " 场")}");
         foreach (var r in list)
-            sb.AppendLine($"  - {r.MatchNo} {r.League} {r.Home} vs {r.Away} {r.ScoreText} 方向 {r.DirectionText} {Pct(r.Probability)}");
+        {
+            var marks = (r.SavedPick ? " ⭐" : "") + (string.IsNullOrEmpty(r.MilkText) ? "" : " 🍓") + (string.IsNullOrEmpty(r.BdPickText) ? "" : " 🎯");
+            sb.AppendLine($"  - {r.MatchNo} {r.League} {r.Home} vs {r.Away} {r.ScoreText} 方向 {r.DirectionText} {Pct(r.Probability)}{marks}");
+        }
+    }
+
+    /// <summary>清单按板块拆开（竞彩/北单/胜负彩），不混排。没场的板块不出行。</summary>
+    static void AppendNamedSplit(StringBuilder sb, string title, IEnumerable<ReviewRow> rows)
+    {
+        var groups = rows.GroupBy(r => r.Board).ToList();
+        if (groups.Count == 0)
+        {
+            sb.AppendLine($"- {title}：无");
+            return;
+        }
+        foreach (var g in groups)
+        {
+            var label = g.Key == Boards.Jc ? "竞彩" : g.Key == Boards.Bd ? "北单" : "胜负彩";
+            AppendNamed(sb, $"{title}（{label}）", g);
+        }
     }
 
     static void AppendSfc(StringBuilder sb, IReadOnlyList<ReviewRow> rows)
@@ -465,7 +498,17 @@ public static class DailyReview
     static void AppendMatch(StringBuilder sb, ReviewRow r, int heading)
     {
         var when = r.Kickoff?.ToString("HH:mm") ?? "";
-        sb.AppendLine($"{new string('#', heading)} {r.MatchNo} {r.League} {r.Home} vs {r.Away} {when}");
+        // 推荐标记：⭐=库内存过推荐（内部存档），🍓=大奶榜（对外真实发布过）。一眼定位推荐过的场。
+        var marks = "";
+        if (r.SavedPick)
+        {
+            marks += " ⭐已推荐";
+            if (r.SavedHit is true) marks += "✅";
+            else if (r.SavedHit is false) marks += "❌";
+        }
+        if (!string.IsNullOrEmpty(r.MilkText)) marks += $" 🍓大奶({r.MilkText})";
+        if (!string.IsNullOrEmpty(r.BdPickText)) marks += $" 🎯北单推荐({r.BdPickText})";
+        sb.AppendLine($"{new string('#', heading)} {r.MatchNo} {r.League} {r.Home} vs {r.Away} {when}{marks}");
         sb.AppendLine();
         var half = r.HalfText is null ? "" : $"，半场 {r.HalfText}";
         var actual = r.Finished ? $"{r.ActualText}{half}" : "还没有完场比分";
@@ -536,6 +579,14 @@ public sealed class ReviewRow
     public bool Strong { get; init; }
     public bool Qualified { get; init; }
     public string? SavedText { get; init; }
+    /// <summary>库里存过这场推荐（内部存档）。复盘标题标 ⭐。</summary>
+    public bool SavedPick { get; init; }
+    /// <summary>存档推荐的回填命中：null=还没回填。</summary>
+    public bool? SavedHit { get; init; }
+    /// <summary>当天大奶榜选项，如「主胜@4.2中」。复盘标题标 🍓。</summary>
+    public string MilkText { get; init; } = "";
+    /// <summary>当天「今日北单推荐」注，如「正路 主胜@2.1中」。复盘标题标 🎯。</summary>
+    public string BdPickText { get; init; } = "";
     public string Signal { get; init; } = "";
     /// <summary>Signal 的结构化版本。复盘说明按位判断，不靠 Signal 里的字。</summary>
     public SignalTag Tags { get; init; } = SignalTag.None;
