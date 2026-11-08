@@ -891,24 +891,27 @@ public sealed class JobScheduler
                 // 先补最近 7 天漏冻的（进程 23:30 没起来、当天部署、重启都靠这个兜底）。
                 var (missDays, missRows) = await _paper.FreezeMissingAsync(7, ct);
 
-                // 停售之后才有「终版」。工作日 21:58 / 周末 22:58 停售，23 点后冻今天；
-                // 凌晨 0~4 点改成回冻昨天——不是重复冻，而是**同步撤注标记**：
+                // 台账口径（2026-11-08 修正）：**注单一旦上过榜就记账，以首次上榜的价为准。**
+                // 原来只在停售后冻「终版」，会永久漏掉两类注：
+                //   ① 引擎放弃某注时是整行 DELETE（`SaveDayAsync` 删未结算行），不留撤注标记，
+                //      于是「推荐过又收回」完全无痕；
+                //   ② 早场注在开赛后被移出榜面（如 21:30 开赛的注，21:40 那版重算就没了）。
+                // 11-08 实测漏了 3 注（周日009 / 周日010 / 周日019）。
+                // FreezeDayAsync 幂等（先 UPDATE 同步撤注与告警，再 INSERT ... WHERE NOT EXISTS），
+                // 高频重复跑不会重复插行，也不会覆盖已记录的赔率。
+                var todayR = await _paper.FreezeDayAsync(DateTime.Today, ct);
+                var (ins, synced) = (todayR.Inserted, todayR.Synced);
+                var todayMsg = $"今 {ins} 注，撤注标记同步 {synced} 条";
+
+                // 凌晨 0~4 点再回冻昨天：不是重复冻，而是**同步撤注标记**——
                 // turn-guard 每 10 分钟还在盯 00:30 / 03:45 的场次，撤掉的注在
                 // FbMilkPick 里是未结算行，下一次重算就删了，只有这个窗口还读得到。
-                var h = DateTime.Now.Hour;
-                var (ins, synced) = (0, 0);
-                var todayMsg = "未到停售，今天不冻";
-                if (h >= 23)
+                if (DateTime.Now.Hour < 4)
                 {
-                    var r = await _paper.FreezeDayAsync(DateTime.Today, ct);
-                    (ins, synced) = (r.Inserted, r.Synced);
-                    todayMsg = $"今 {ins} 注，撤注标记同步 {synced} 条";
-                }
-                else if (h < 4)
-                {
-                    var r = await _paper.FreezeDayAsync(DateTime.Today.AddDays(-1), ct);
-                    (ins, synced) = (r.Inserted, r.Synced);
-                    todayMsg = $"昨 {ins} 注，撤注标记同步 {synced} 条";
+                    var y = await _paper.FreezeDayAsync(DateTime.Today.AddDays(-1), ct);
+                    ins += y.Inserted;
+                    synced += y.Synced;
+                    todayMsg += $"；昨 {y.Inserted} 注（同步 {y.Synced} 条）";
                 }
 
                 var back = missDays > 0 ? $"；补冻历史 {missDays} 天 {missRows} 注" : "";
