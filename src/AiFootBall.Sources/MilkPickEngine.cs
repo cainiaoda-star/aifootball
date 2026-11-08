@@ -172,6 +172,42 @@ public static class MilkPickEngine
     public static decimal Payout(string playType) => Math.Round(1m / StandardOverRound(playType), 3);
 
     /// <summary>
+    /// EV 天花板的容差倍率（2026-11-08 加）：玩法返奖率 × 1.05。
+    /// 一注的名义 EV 超过本玩法返奖率 5% 以上，在数学上只有一种解释——**模型概率给高了**，
+    /// 因为市场把所有注的期望压在返奖率上，没有人能靠「算得准」把它抬到返奖率之上。
+    /// </summary>
+    public const decimal EvCapOverPaybackRatio = 1.05m;
+
+    /// <summary>
+    /// 该玩法的 EV 名义天花板。半全场/总进球 0.837、比分 0.745、胜平负 0.922。
+    ///
+    /// 用途只有一个：给「模型高估」打标，**不撤注**（2026-11-08 用户定的口径）。
+    /// 撤注会把榜砍空，而且这些注并非必挂——它们的真实命中率约等于市场隐含概率，
+    /// 只是「EV 显示 1.138」这件事本身是幻觉，不能挂在榜上让用户当成「这注不亏」。
+    /// </summary>
+    public static decimal EvCapFor(string playType) => Math.Round(Payout(playType) * EvCapOverPaybackRatio, 3);
+
+    /// <summary>
+    /// 给「名义 EV 超天花板」的注打标（2026-11-08 加）：只标不撤。
+    ///
+    /// 实测背景（2026-11-08 早班）：近 5 天榜上几乎每个玩法都有 EV 超返奖率的注，
+    /// BQ 最高 1.221、今天周日007 埃尔切 半全场胜胜@5.75 报 1.138（模型 19.8%，
+    /// 而按赔率反推市场只给 13.9%）——模型比市场高估 42%，却因为 EV 最高排在组内前面。
+    /// 用户按 EV 挑注，正好挑到高估最狠的那一注。
+    ///
+    /// 所以必须把「名义 EV」和「可期收益」分开：标记为 true 的注，前端要把 EV 显示成
+    /// 「模型高估」并给出本玩法天花板，不能让 1.138 这个数字裸奔。
+    /// </summary>
+    public static void MarkOverconfident(IEnumerable<MilkPick> picks)
+    {
+        foreach (var p in picks)
+        {
+            if (p.Ev <= EvCapFor(p.PlayType)) continue;
+            p.ModelOverconfident = true;
+        }
+    }
+
+    /// <summary>
     /// 竞彩每个玩法的档数是固定的（比分 31 / 半全场 9 / 总进球 8 / 胜平负 3）。
     /// 快照抓到的档数不足，说明生成推荐时盘口还没开全：这时拿「全档的水位」去水会把
     /// 仅有的几档隐含概率放大（分母是全档，分子只有几档的 1/赔率），必须退回纯模型概率。
@@ -265,13 +301,41 @@ public static class MilkPickEngine
     public const decimal MinReverseAbsolute = 1.5m;
 
     /// <summary>
-    /// 高赔反转单列的赔率下限（2026-11-07 加）：12 倍起步。
+    /// 高赔反转单列的赔率区间：**30 ~ &lt;40 倍**（2026-11-08 修订，原为「12 倍以上、取最高」）。
     ///
-    /// 定 12 的理由：主榜现有档位全在 4~5.3 倍（11-07 实测 7 注：5.30/4.10/4.00/4.30/4.15/4.15/4.05），
-    /// 一个「大奶榜」连 10 倍档都出不来，名不副实。12 倍以上才够「小刀锯大树」的量级，
-    /// 也正好卡在反转档的常见赔率区间（平负 7.1 / 胜平 15 / 负胜 29 / 胜负 32）——低于 12 的走主榜。
+    /// 为什么收窄到 30-39（35 天 10-05~11-08、620 场、1104 个反转档报价实测，见
+    /// <see cref="CounterHighMaxOdds"/> 的注释）：
+    /// 40 倍以上 197 注只中 2 条（1.02%），30-39 倍 201 注中 4 条（1.99%）——同一通道里
+    /// 30-39 是命中率最高的一档，40 倍以上是最差的一档。「挑赔率最高」等于每天主动站在
+    /// 期望最差的位置，而且回测里每日最高赔那条 35 天 0 命中（均赔 46.7）。
+    ///
+    /// 上限之所以不是 45/50：那两档同样在 1% 附近，且供给稀疏（45 倍以上 35 天仅 148 场）。
+    /// 30-39 档 35 天 218 场、约 6.2 场/天，每天都有得挑，不会因为卡太紧而空榜。
+    ///
+    /// 12 倍下限作废的理由：12-19 与 20-29 两档本来就走主榜（半全场 3 个名额），
+    /// 单列再从这里捞，等于和主榜抢同一批注，还占掉「大奶」的名分。
     /// </summary>
-    public const decimal CounterHighMinOdds = 12.0m;
+    public const decimal CounterHighMinOdds = 30.0m;
+
+    /// <summary>
+    /// 高赔反转单列的赔率上界（开区间，2026-11-08 加）：40 倍。
+    ///
+    /// 实测依据（35 天 / 1022 注 / 平注 1 元，每场每档取赛前最高赔率）：
+    ///   12-20 倍  124 注 中 4 → 3.23%
+    ///   20-29 倍  500 注 中 14 → 2.80%
+    ///   30-39 倍  201 注 中 4 → 1.99%   ← 本通道选中档位
+    ///   40 倍以上  197 注 中 2 → 1.02%   ← 旧策略每天站在这里
+    ///
+    /// 另一个必须知道的事实（同批 1104 个档位报价的分布统计）：竞彩半全场赔率是按档位走的，
+    /// 主力价位是 40/42/45/46/50/55/60/65/70，**49.00 这个精确值 35 天只出现 1 次**
+    /// （2026-11-08 德甲 弗赖堡 vs 柏林联合 胜负@49，纯属空档巧合）。
+    /// 所以「挑赔率最高」挑到的价位本身就不稳定，今天 49 明天 55 后天 65，没有可复现性；
+    /// 30-39 是唯一供给稳定、命中率又最好的一档。
+    ///
+    /// 附带结论：首末快照均价几乎不动（3-0 档 34.06 → 34.25），半全场冷门档不像比分盘
+    /// 临场大跳水，看到 32 倍基本就买得到 32 倍。
+    /// </summary>
+    public const decimal CounterHighMaxOdds = 40.0m;
 
     /// <summary>
     /// 高赔单列的联赛基线准入（%，2026-11-07 加）：该联赛该反转档的实测概率必须 ≥ 本值。
@@ -305,16 +369,29 @@ public static class MilkPickEngine
     /// 而英冠实测 2.56%、市场去水隐含 2.50%，这一注其实是「市场定价公道、模型看错」。
     /// 一个 3248 场支撑的联赛基线，比一个 MAE 1.53 球的模型可靠一个量级。
     ///
-    /// 判据：基线概率 × 赔率 ÷ 返奖率 ∈ [0.95, 1.15]。
+    /// 判据：基线概率 × 赔率 ÷ 返奖率 ∈ [0.95, 1.35]。
     /// 下界 0.95 拦掉「这个联赛本来就不出、赔率也没补偿」的注；
-    /// 上界 1.15 拦掉「基线高估 / 赔率虚高」，防止挂出去和前端「EV 超上限」红标自相矛盾。
-    /// 校验：英冠 3-0 @32 → 2.56%×32÷0.797 = 1.028 ✓；西甲 0-1 @17 → 5.24%×17÷0.797 = 1.118 ✓；
-    /// 米竞技 3-0 @45（兜底基线 2.08%）→ 2.08%×45÷0.797 = 1.174 ✗ 被拦住。
+    /// 上界拦「基线高估 / 赔率虚高」，但**不能收太紧**——见 <see cref="CounterHighBaseEvMaxRatio"/>。
+    /// 校验：英冠 3-0 @32 → 2.56%×32÷0.797 = 1.028 ✓；西甲 0-1 @17 → 5.24%×17÷0.797 = 1.118 ✓。
     /// </summary>
     public const decimal CounterHighBaseEvMinRatio = 0.95m;
 
-    /// <summary>高赔单列「基线 EV / 返奖率」的上限（2026-11-07 夜二次修订）：1.15。见 <see cref="CounterHighBaseEvMinRatio"/>。</summary>
-    public const decimal CounterHighBaseEvMaxRatio = 1.15m;
+    /// <summary>
+    /// 高赔单列「基线 EV / 返奖率」的上限（2026-11-08 早班修订：1.15 → 1.35）。
+    ///
+    /// 为什么必须放宽（2026-11-08 08:50 实测抓出，三条反转档全部卡在 1.15）：
+    ///   周日012 伊普斯 vs 伯恩茅斯 负胜@32，英超负胜档基线 3.136% → 3.136%×32÷0.797 = 1.259 ✗
+    ///   周日016 科隆 vs 勒沃库森   负胜@30，德甲负胜档基线 3.244% → 1.221 ✗
+    ///   而今天入选的周日021 曼联 胜负@29，英超胜负档 2.682% → 0.976 ✓（恰好卡在区间内）
+    /// 也就是说 1.15 这个上界**恰好只放行「赔率不够高」的那一注**，把真正 32 倍的挡在门外——
+    /// 越是大奶、越是联赛历史上真会翻的，ratio 越高，反而越进不来。通道意图被这个数字反噬了。
+    ///
+    /// 取 1.35 的依据：实测需要放行的最紧一档是 1.259，留 7% 余量；同时仍拦掉
+    /// 「基线×赔率」离谱到 35% 以上的注（那种是赔率录错或基线虚高）。
+    /// 未知联赛不再由这个上界兜着——改用 <see cref="LeagueHalfFullBaseline.Known"/> 显式否决
+    /// （米竞技 3-0@45 走兜底基线 2.08% 算出 1.174，当时靠 1.15 侥幸拦住；上限放宽后必须换闸）。
+    /// </summary>
+    public const decimal CounterHighBaseEvMaxRatio = 1.35m;
 
     /// <summary>
     /// 单列注的模型概率相对联赛基线的容忍下限（2026-11-07 夜二次修订）：0.40。
@@ -653,6 +730,8 @@ public static class MilkPickEngine
         IReadOnlyDictionary<long, ScoreDiagRow>? scoreDiags = null,
         IReadOnlyDictionary<long, (decimal? Open, decimal? Curr)>? spfWater = null,
         IReadOnlyDictionary<string, TeamProfile>? teamProfiles = null,
+        IReadOnlyDictionary<long, PriceDivergence.PriceSpan>? priceSpans = null,
+        IReadOnlyDictionary<string, TeamForm>? teamForms = null,
         bool perMatch = false)
     {
         var result = new List<MilkPick>();
@@ -773,6 +852,21 @@ public static class MilkPickEngine
                            && cf.ReversalRate <= CrushReversalMaxRate
                            && cf.CleanSheetRate <= CrushCleanSheetMaxRate;
 
+            // 体能/状态标注（2026-11-08，曼城复盘落地）。**只标注、不扣概率**：
+            // 回测（2025-08 起，热门赔率≤2.50）显示「上一场欧战 + 96 小时内再战」的热门方
+            // 实际兑现 63.9% vs 市场隐含 59.1%（+4.8 点），三连败组 +6.3 点——方向是反的。
+            // 扣分会变成负 alpha，所以这里只写标签，把判断留给人和后续样本。详见 TeamForm 注释。
+            string? fatigueTag = null;
+            if (teamForms is not null)
+            {
+                var favNameRaw = favSide == '3' ? r.HomeTeam : r.AwayTeam;
+                var favKey2 = string.IsNullOrWhiteSpace(favNameRaw)
+                    ? null
+                    : scores.Resolve(r.LeagueName, favNameRaw!);
+                if (favKey2 is not null && teamForms.TryGetValue(favKey2, out var ff))
+                    fatigueTag = DescribeFatigue(ff, r.MatchTime);
+            }
+
             // 主胜临场升水（2026-11-07，技能11落地）：FbMatchTrend 的 SPF OpenWin→CurrWin。
             // 升水≥12% = 资金放弃主队，主胜方向注整类撤下（常量见 WaterRiseVetoPct）。
             decimal? waterRisePct = null;
@@ -892,12 +986,15 @@ public static class MilkPickEngine
                                  && ((r.RatioHome is decimal rh && rh >= HotFadeRatioMin)
                                      || (r.PnlIdxAway is decimal pa && pa <= PnlDeepNegative));
 
+                // 胜平/负平专用概率源（2026-11-08 接入选注）。取不到就返回 null，两档回落原来的
+                // 联合概率——不让一个可选模型把整场的半全场出注搞崩。
+                var halfDraw = RefineHalfDraw(points);
+
                 foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bq))
                 {
                     if (!HalfFullCombos.Contains(pt.OptionCode, StringComparer.Ordinal)) continue;
                     if (pt.Odds < MinHalfFullOdds) continue;
                     var p = joint[SideIndex(pt.OptionCode[0]), SideIndex(pt.OptionCode[2])];
-                    if (p <= 0) continue;
                     var bqPick = Option(pt, r);
                     // 友谊赛反转档全库仅 2.7%（39.5万场实测，联赛 11.1%、杯赛 15.1%），
                     // 友谊赛「胜胜」畸形高（44.1%），押反转纯属买彩票——整类不发（教训1g）。
@@ -910,6 +1007,22 @@ public static class MilkPickEngine
                     bqPick.FavoriteReversalPct = favProfile?.ReversalRate;
                     bqPick.HighReversalFavorite = highRevFav;
                     bqPick.CrushFavorite = crushFav;
+
+                    // 胜平(3-1)/负平(0-1) 换用 HalfDrawModel 的概率（2026-11-08 接入选注）。
+                    // 这两档竞彩报同一个价，价格不含方向信息，所以**不能掺盘口**——
+                    // Blend 会把市场那份相同的隐含概率混回来，正好把模型算出的方向差抹平。
+                    if (halfDraw is not null && (pt.OptionCode == "3-1" || pt.OptionCode == "0-1"))
+                    {
+                        var refinedPct = pt.OptionCode == "3-1"
+                            ? halfDraw.ProbWinDraw
+                            : halfDraw.ProbLoseDraw;
+                        if (refinedPct <= 0) continue;
+                        bqPick.HalfDrawRefined = true;
+                        matchPicks.Add(WithProbability(bqPick, refinedPct / 100m));
+                        continue;
+                    }
+
+                    if (p <= 0) continue;
                     // 市场一致性闸（2026-11-07）：模型概率超过市场隐含 2.5 倍即判「模型跑飞了」。
                     // 半全场的联合概率会把 λ 的偏差放大，不设这道闸，模型估偏的场次会靠虚高 EV 霸榜。
                     // 注意量纲：Blend 返回 0~1 的小数（ModelProbability 落库时才 ×100），
@@ -971,6 +1084,43 @@ public static class MilkPickEngine
                         $"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：主胜升水 {waterRisePct:0.#}%（≥{WaterRiseVetoPct:0}%），主胜方向注已撤");
             }
 
+            // 定价背离闸（2026-11-08，曼城复盘落地）。
+            //
+            // 2026-11-08 01:30 英超 诺丁汉森林 3:1 曼城：竞彩客胜 1.60→1.43（-10.6%），
+            // 必发 PriceAway 只动 -1.1%。两个市场在讲不同的事——竞彩散户在砸热门，
+            // 专业资金一个价都不接。我们押的 0:1 比分 / 平负半全场全挂。
+            //
+            // 回测（见 PriceDivergence 类注释，完赛场次、收盘去水）：
+            //   客胜 降≥10% + 必发动<3% → 13 场，实际 23.1% vs 隐含 40.1%，-17.0 点；
+            //   主胜 同形态           →  9 场，实际 55.6% vs 隐含 52.2%， +3.4 点。
+            // 所以只撤客胜侧。主胜侧撤了等于白扔注——这个不对称是数据给的，不是漏写，
+            // 别「为了对称」把 IsHomeWinDirection 也加进来。
+            //
+            // 样本 13 场仍小（p≈0.21），所以开关是 PriceDivergence.VetoAwayFakeHot，
+            // 关掉只停撤注，打标与漏斗计数照旧。
+            var divergence = priceSpans is not null && priceSpans.TryGetValue(mid, out var span)
+                ? PriceDivergence.Judge(span)
+                : null;
+            if (divergence is not null)
+            {
+                if (divergence.AwayFakeHot)
+                {
+                    var before = matchPicks.Count;
+                    matchPicks.RemoveAll(x => PriceDivergence.ShouldVeto(FullTimeDirection(x), divergence));
+                    funnel.DivergenceVeto += before - matchPicks.Count;
+                    if (before > matchPicks.Count && funnel.Skipped.Count < 20)
+                        funnel.Skipped.Add($"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：{divergence.Note}");
+                }
+
+                // 打标在撤注之后：留下的注（主胜/平局/总进球）带这个标签，
+                // 是为了让人知道「这场客胜方向已经被背离闸排除了」，而不是凭空少了一注。
+                foreach (var p in matchPicks)
+                {
+                    p.DivergenceTag = divergence.Tag;
+                    p.DivergenceNote = divergence.Note;
+                }
+            }
+
             // 方向闸（2026-11-05）：模型方向与市场去水方向背离 → 整场不发。
             // 半全场拿不到模型进球期望时只是少一个玩法，不该连着比分和总进球一起退出，
             // 所以上面用 if (joint is not null) 包起来，而不是 continue。
@@ -991,6 +1141,9 @@ public static class MilkPickEngine
                 .OrderByDescending(x => x.ModelProbability)
                 .Select(FullTimeDirection)
                 .FirstOrDefault(d => d is not null);
+            if (fatigueTag is not null)
+                foreach (var pk in matchPicks) pk.FatigueTag = fatigueTag;
+
             if (matchPicks.Count > 0) funnel.Candidates++;
             else if (funnel.Skipped.Count < 20) funnel.Skipped.Add($"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：模型有分布但没生成候选注（赔率越界/被禁档）");
 
@@ -1218,14 +1371,23 @@ public static class MilkPickEngine
         //    所以候选池必须回到 result（未过滤全量），再在单列通道里自己做全套闸。
         //
         //    这样做的代价：result 里含被「强背离撤注」砍掉过的注，理论上会复活。
-        //    风险由三道闸控住：赔率 ≥12、基线 EV/返奖率 ∈ [0.95,1.15]、模型 ≥ 基线×0.40。
+        //    风险由三道闸控住：赔率 30~<40、基线 EV/返奖率 ∈ [0.95,1.35]、模型 ≥ 基线×0.40。
         //    而且反转档在强背离撤注里本来就有豁免（IsReverseOrCleanSheet），不是新增漏洞。
         var bqPayback = 1m / StandardOverRound(JcPlayTypes.Bq);
         var counterHighRow = result
             .Where(x => x.PlayType == JcPlayTypes.Bq && IsHalfFullReverse(x))
-            .Where(x => x.Odds >= CounterHighMinOdds)
+            // 赔率区间 30 ~ <40（2026-11-08 修订，原为 ≥12 且取最高）：
+            // 35 天实测 40 倍以上 197 注中 2 条（1.02%），30-39 倍 201 注中 4 条（1.99%）。
+            // 「挑赔率最高」等于每天主动站在命中率最差的一档，且 40+ 的价位不稳定
+            // （49.00 这个精确值 35 天只出现 1 次），没有可复现性。
+            .Where(x => x.Odds >= CounterHighMinOdds && x.Odds < CounterHighMaxOdds)
             // 联赛基线闸（2026-11-07）：模型敢给不等于这个联赛会出。友谊赛胜负档实测 0.05%，
             // 模型给 2.5% 只是噪声；英冠 2.56%、英超 2.68%、苏超 3.20% 才是真的会翻。
+            // 联赛必须在基线表里（2026-11-08 加，与上限放宽同时上线）。
+            // 兜底均值 DefaultPct 是 14 个 A 级联赛的均值，拿来给未知联赛背书等于用别人的历史赌这一场。
+            // 上次米竞技 3-0@45 走的就是兜底 2.08%，靠 ratio 上界 1.15 侥幸拦下；现在上界放到 1.35，
+            // 必须换成显式闸，否则这类「查不到联赛、模型随便给个概率」的注会从缺口涌进来。
+            .Where(x => LeagueHalfFullBaseline.Known(x.LeagueName))
             .Where(x => LeagueHalfFullBaseline.Passes(x.LeagueName, x.OptionCode, MinCounterHighLeaguePct))
             .Select(x => new
             {
@@ -1247,12 +1409,98 @@ public static class MilkPickEngine
             // 保留全局 EV 天花板（防模型爆表把 EV 撑到 2.5 以上）
             .Where(t => t.Pick.Ev <= MaxEv)
             .Where(t => !picks.Any(p => p.MatchId == t.Pick.MatchId))
-            // 排序：赔率降序（2026-11-07 夜改，原为 EV 降序）。
-            // 原因：用 EV 排序选「大奶」在数学上选不出来——赔率越高 EV 必然越低，
-            // 32 倍档永远排最后，通道拿去发了 15~17 倍那档。要的是大奶，排序键就必须是赔率。
+            // 区间内排序：赔率降序（2026-11-08 保留）。
+            // 区间已经锁死在 30~<40，这里只决定「39 还是 30」——同一档内取更高的赔率，
+            // 不做 EV 排序（EV 排序会把 30 倍排在 39 倍前面，等于把上限收成 30）。
+            // ThenBy 基线概率：同为 32 倍时，优先这个联赛历史上真会翻的那一注
+            // （今天 伊普斯 英超负胜 3.136% 因此排在 库奥皮奥 芬超负胜 之前）。
             .OrderByDescending(t => t.Pick.Odds)
             .ThenByDescending(t => t.BasePct)
             .FirstOrDefault();
+
+        // ── 单列候选诊断（2026-11-08 加）──────────────────────────────────────
+        //    把 30~<40 档每一条候选的落点算出来，只用于展示与落库，**不参与选注**：
+        //    即使某条被判「模型否决」，它也不会因此被重新放行，选注结果与不加这段完全一致。
+        //
+        //    起因：候选区接口在 API 层重跑三道闸，唯一漏掉的是「模型不得强烈否定」——
+        //    那道闸要模型的 P(3-0)/P(0-3)，API 层拿不到。于是「被模型否决」和「被赔率挤出」
+        //    在页面上长得一样（11-08 热那亚 负胜@36 就是被模型否决的，页面只显示「未上榜」）。
+        //
+        //    ★ 判定顺序与下面那条选注链严格一一对应，改任一边必须同步另一边：
+        //      IsHalfFullReverse + 赔率区间 → Known → Passes(1.2%) → ratio∈[0.95,1.35]
+        //      → 模型≥基线×0.40 → Ev≤MaxEv → 同场未上主榜 → 排序取第一。
+        var counterDiag = new List<MilkCounterCandidate>();
+        foreach (var c in result.Where(x => x.PlayType == JcPlayTypes.Bq && IsHalfFullReverse(x)
+                                            && x.Odds >= CounterHighMinOdds && x.Odds < CounterHighMaxOdds))
+        {
+            var bpv = LeagueHalfFullBaseline.Pct(c.LeagueName ?? "", c.OptionCode) ?? 0m;
+            decimal? ratio = null;
+            string verdict;
+            string why;
+
+            if (!LeagueHalfFullBaseline.Known(c.LeagueName ?? "") || bpv <= 0m)
+            {
+                verdict = MilkCounterVerdicts.NoLeagueBaseline;
+                why = $"联赛「{c.LeagueName}」不在基线表，拿不到该档实测频率，单列不敢用兜底均值背书";
+            }
+            else if (!LeagueHalfFullBaseline.Passes(c.LeagueName ?? "", c.OptionCode, MinCounterHighLeaguePct))
+            {
+                verdict = MilkCounterVerdicts.LeagueBelowFloor;
+                why = $"该联赛该档实测 {bpv:F2}% < 准入门槛 {MinCounterHighLeaguePct:F2}%（友谊赛这类基本不出反转的联赛在此出局）";
+            }
+            else if ((ratio = decimal.Round(bpv / 100m * c.Odds / bqPayback, 3)) is decimal rr
+                     && (rr < CounterHighBaseEvMinRatio || rr > CounterHighBaseEvMaxRatio))
+            {
+                verdict = MilkCounterVerdicts.RatioOutOfBand;
+                why = $"基线EV比 {rr:F3} 落在 [{CounterHighBaseEvMinRatio:F2}, {CounterHighBaseEvMaxRatio:F2}] 之外"
+                    + (rr < CounterHighBaseEvMinRatio ? "（赔率没给够补偿）" : "（赔率/基线虚高）");
+            }
+            else if (c.ModelProbability < bpv * CounterHighModelVsBaseMin)
+            {
+                verdict = MilkCounterVerdicts.ModelVeto;
+                why = $"模型仅 {c.ModelProbability:F2}%，低于基线×{CounterHighModelVsBaseMin:F2}"
+                    + $"（{bpv * CounterHighModelVsBaseMin:F2}%）——模型连方向都不认同";
+            }
+            else if (c.Ev > MaxEv)
+            {
+                verdict = MilkCounterVerdicts.RatioOutOfBand;
+                why = $"名义 EV {c.Ev:F2} 超全局上限 {MaxEv:F2}，模型概率明显爆表";
+            }
+            else if (picks.Any(p => p.MatchId == c.MatchId))
+            {
+                verdict = MilkCounterVerdicts.SameMatchOnBoard;
+                why = "该场已占主榜名额，同一场不重复出注";
+            }
+            else if (counterHighRow is not null && counterHighRow.Pick.MatchId == c.MatchId
+                     && counterHighRow.Pick.PlayType == c.PlayType
+                     && counterHighRow.Pick.OptionCode == c.OptionCode)
+            {
+                verdict = MilkCounterVerdicts.Admitted;
+                why = "单列选中";
+            }
+            else
+            {
+                verdict = MilkCounterVerdicts.LostToRank;
+                why = "过全部闸，但同档有赔率更优的注被选中（每天只留 1 注）";
+            }
+
+            counterDiag.Add(new MilkCounterCandidate
+            {
+                MatchId = c.MatchId ?? 0,
+                MatchNo = c.MatchNo,
+                LeagueName = c.LeagueName,
+                HomeTeam = c.HomeTeam,
+                AwayTeam = c.AwayTeam,
+                MatchTime = c.MatchTime,
+                OptionCode = c.OptionCode,
+                Odds = c.Odds,
+                ModelProbability = c.ModelProbability,
+                BasePct = bpv > 0m ? bpv : null,
+                Ratio = ratio,
+                Verdict = verdict,
+                Reason = why
+            });
+        }
 
         if (counterHighRow is not null)
         {
@@ -1271,9 +1519,19 @@ public static class MilkPickEngine
         // ② 单列注刚在上面才补了 BaselineProbability，在选注过程中扫描时它还读不到。
         // 只标不撤：用户要的是「把事实摆出来」，不是「用模型的不自信替用户做决定」。
         MarkLowConfidence(picks);
+        // 名义 EV 超本玩法返奖率的注打「模型高估」标（2026-11-08 加）：只标不撤。
+        // 榜单上出现 EV 1.138 这种数字，等于在暗示「这注不亏」，而返奖率 0.797 已经把上限写死了。
+        MarkOverconfident(picks);
 
         funnel.Final = picks.Count;
-        return new MilkBuildResult { Picks = picks, Gates = gates, ShowRows = showRows, Funnel = funnel };
+        return new MilkBuildResult
+        {
+            Picks = picks,
+            Gates = gates,
+            ShowRows = showRows,
+            Funnel = funnel,
+            CounterCandidates = counterDiag
+        };
     }
 
     /// <summary>
@@ -1658,6 +1916,65 @@ public static class MilkPickEngine
     }
 
     /* ---------------- 工具 ---------------- */
+
+    /// <summary>
+    /// 热门方体能/状态的人类可读标注（2026-11-08，曼城复盘）。返回 null = 无可标注项。
+    ///
+    /// **这里只产出文字，不做任何概率调整**——回测方向是反的（见 <see cref="TeamForm"/>）：
+    /// 「欧战后 96 小时内」的热门方实际兑现 63.9% vs 市场隐含 59.1%，三连败组 +6.3 点。
+    /// 拿它扣概率会亏得更多，所以把判断权交回给人，引擎只负责把事实摆出来。
+    ///
+    /// 门槛说明：欧战按 96 小时（跨国的舟车 + 时差，72 小时太紧会漏掉绝大多数场次）；
+    /// 非欧战的短休按 72 小时。
+    /// </summary>
+    public static string? DescribeFatigue(TeamForm? form, DateTime? kickoff)
+    {
+        if (form is null || form.LastMatchTime is null || kickoff is not DateTime ko) return null;
+
+        var rest = form.RestHours(ko);
+        var bits = new List<string>();
+        if (form.ThreeLossStreak) bits.Add("连败3场");
+        if (form.PlayedContinentalLast && rest is > 0 and < 96) bits.Add($"欧战后{rest}小时");
+        else if (rest is > 0 and < 72) bits.Add($"休息{rest}小时");
+
+        return bits.Count == 0 ? null : "热门方" + string.Join("+", bits);
+    }
+
+    /// <summary>
+    /// 从本场已采报价里拼出 <see cref="HalfDrawModel"/> 的输入：SPF 三项 + 总进球八档 + 胜平/负平两档。
+    ///
+    /// 为什么在引擎里就地拼、不再查一次库：这三组报价本来就在 <c>points</c> 里
+    /// （<see cref="HalfDrawRepository"/> 走的是同一批表，只是给参考接口单独取了一次）。
+    /// 选注链上多一次往返没有意义，还会让「引擎算的」和「面板显示的」有机会对不上。
+    ///
+    /// 缺 SPF 任一项就返回 null——没有主客强弱，模型无从下手，调用方回落联合概率。
+    /// 总进球缺档时 <see cref="HalfDrawModel"/> 自己会回落泊松，不需要在这里拦。
+    /// </summary>
+    private static HalfDrawEstimate? RefineHalfDraw(IReadOnlyList<JcOddsHistoryPoint> points)
+    {
+        decimal? o3 = null, o1 = null, o0 = null, b31 = null, b01 = null;
+        var jq = new decimal?[8];
+        foreach (var pt in points)
+        {
+            if (pt.Odds <= 1m) continue;
+            switch (pt.PlayType)
+            {
+                case JcPlayTypes.Spf:
+                    if (pt.OptionCode == "3") o3 = pt.Odds;
+                    else if (pt.OptionCode == "1") o1 = pt.Odds;
+                    else if (pt.OptionCode == "0") o0 = pt.Odds;
+                    break;
+                case JcPlayTypes.Jq:
+                    if (int.TryParse(pt.OptionCode, out var g) && g >= 0 && g <= 7) jq[g] = pt.Odds;
+                    break;
+                case JcPlayTypes.Bq:
+                    if (pt.OptionCode == "3-1") b31 = pt.Odds;
+                    else if (pt.OptionCode == "0-1") b01 = pt.Odds;
+                    break;
+            }
+        }
+        return HalfDrawModel.Estimate(o3, o1, o0, jq, b31, b01);
+    }
 
     private static MilkPick Option(JcOddsHistoryPoint pt, MatchRecommendation r, double? probability = null)
         => WithProbability(new MilkPick

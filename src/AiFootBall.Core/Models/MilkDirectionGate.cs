@@ -190,6 +190,13 @@ public sealed class MilkBuildResult
     /// <summary>构建漏斗，空榜时用它解释「卡在哪一层」。2026-11-05 加。</summary>
     public MilkFunnel Funnel { get; init; } = new();
 
+    /// <summary>
+    /// 30~40 倍反转档候选的引擎判定（2026-11-08 加）。
+    /// 只做展示与追溯，不影响选注——即使某条被判「模型否决」，它也不会因此被重新放行。
+    /// 落库表 FbMilkCounterCandidate，接口 /api/milk/counter-candidates 直接读。
+    /// </summary>
+    public List<MilkCounterCandidate> CounterCandidates { get; init; } = new();
+
     /// <summary>被方向闸挡下的场次数。</summary>
     public int DivergedMatches => Gates.Count(g => g.Verdict == MilkGateVerdicts.Diverge);
 
@@ -241,6 +248,13 @@ public sealed class MilkFunnel
     /// 是全部水位分桶里唯一大幅恶化的信号——升水=硬利空，主胜方向的注直接撤。
     /// </summary>
     public int WaterRiseVeto { get; set; }
+
+    /// <summary>
+    /// 因「竞彩客胜被单边砸价、必发不认」被撤下的客胜方向注数（2026-11-08 加）。
+    /// 回测：该形态 13 场，客胜实际 23.1% vs 收盘隐含 40.1%（低 17 个点）。
+    /// 只撤客胜侧；主胜同形态 9 场是 +3.4 点，撤了等于白扔注。见 <see cref="PriceDivergence"/>。
+    /// </summary>
+    public int DivergenceVeto { get; set; }
 
     /// <summary>通过方向闸的注数。</summary>
     public int AfterGate { get; set; }

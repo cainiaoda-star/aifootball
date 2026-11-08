@@ -186,6 +186,7 @@ public sealed class JobScheduler
         {
             List<Entry> due;
             var reclaimed = new List<string>();
+            var stuck = new List<(string Name, string Type, TimeSpan Elapsed)>();
             lock (_gate)
             {
                 // 看门狗：Running=true 但早该结束（执行超时后仍未复位）的作业强制释放，
@@ -204,6 +205,9 @@ public sealed class JobScheduler
                     entry.LastMessage = $"执行超过 {limit.TotalMinutes:0} 分钟未返回，已强制释放运行标志";
                     entry.Next = entry.Schedule.GetNextOccurrence(now);
                     reclaimed.Add($"{entry.Job.Name}（已卡 {elapsed.TotalMinutes:0} 分钟）");
+                    // 被强制释放的作业连 RunGuardedAsync 都没进过，SyncLog 里不会留下任何痕迹。
+                    // 2026-11-08 的复盘就是这么消失的：日志一片正常，页面上只有一句「还没写」。
+                    stuck.Add((entry.Job.Name, entry.Job.Type, elapsed));
                 }
 
                 due = _entries.Where(x => x.Job.Enabled && !x.Running && DateTime.Now >= x.Next).ToList();
@@ -217,6 +221,21 @@ public sealed class JobScheduler
 
             foreach (var name in reclaimed)
                 _log?.Invoke($"[看门狗] 作业 {name} 长时间未返回，已强制释放");
+
+            // 强制释放的作业落一条 STUCK，页面的作业日志里才查得到「这次到底跑没跑」。
+            foreach (var (name, type, elapsed) in stuck)
+            {
+                try
+                {
+                    await _sync.WriteAsync($"job:{name}", type, "STUCK", 0,
+                        $"排队/执行卡住 {elapsed.TotalMinutes:0} 分钟未完成，已强制释放（本次未真正执行）",
+                        CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    _log?.Invoke($"[{name}] STUCK 记录写入失败：{ex.Message}");
+                }
+            }
 
             foreach (var entry in due)
             {
@@ -234,6 +253,17 @@ public sealed class JobScheduler
 
             // 已完成的脱离任务清出列表，避免无限增长
             detached.RemoveAll(t => t.IsCompleted);
+
+            // 日更复盘漏跑自查（2026-11-08 加）：daily-review 一天只跑一次，08:20 那一次
+            // 若因重启错过 tick（InitializeAsync 是「错过不补」），或被 500 通道里连续超时
+            // 的采集任务顶到看不见的地方，当天就永久没有复盘——2026-11-08 早上就是这样，
+            // 11-07 的复盘到 11:00 仍是空的，页面只会说一句「还没写」，不会自己补。
+            // 这里用文件存在性每 5 分钟自查一次，缺了就重新排进队列。
+            if (DateTime.Now - _reviewSweepAt > TimeSpan.FromMinutes(5))
+            {
+                _reviewSweepAt = DateTime.Now;
+                ScheduleMissingReview();
+            }
 
             try
             {
@@ -253,9 +283,46 @@ public sealed class JobScheduler
         }
     }
 
+    /// <summary>上一次做「复盘漏跑」自查的时刻，节流到 5 分钟一次。</summary>
+    private DateTime _reviewSweepAt = DateTime.MinValue;
+
+    /// <summary>已经补排过哪一天的复盘。一天最多补两次——写失败不无限重试，留给人工。</summary>
+    private DateTime? _reviewPatchedFor;
+
+    /// <summary>当天已经补排过几次。</summary>
+    private int _reviewPatchCount;
+
+    /// <summary>
+    /// 该有的复盘文件不存在，就把 daily-review 重新排进队列。
+    ///
+    /// 只在「今天的计划时刻已过」之后动手：否则会在 08:20 之前写出一篇昨天的残缺复盘，
+    /// 而且写完文件就存在了，08:20 的正常那一次反而被当成「已跑过」。
+    /// 目标日固定是「昨天」，与 handler 的取日口径保持一致。
+    /// </summary>
+    private void ScheduleMissingReview()
+    {
+        var entry = _entries.FirstOrDefault(e => e.Job.Name == "daily-review");
+        if (entry is null || !entry.Job.Enabled) return;
+
+        var todayPlan = entry.Schedule.GetNextOccurrence(DateTime.Today);
+        if (DateTime.Now < todayPlan) return;
+
+        var target = DateTime.Today.AddDays(-1);
+        if (_reviewPatchedFor == target && _reviewPatchCount >= 2) return;
+        if (DailyReview.Exists(target)) return;
+
+        lock (_gate)
+        {
+            if (entry.Running) return;
+            entry.Next = DateTime.Now.AddSeconds(60);
+        }
+        if (_reviewPatchedFor != target) { _reviewPatchedFor = target; _reviewPatchCount = 0; }
+        _reviewPatchCount++;
+        _log?.Invoke($"[补跑] {target:yyyy-MM-dd} 的复盘没有落盘，已排进队列（60 秒后执行，今天第 {_reviewPatchCount} 次）");
+    }
+
     /// <summary>500 系列（欧赔 / 必发 / 补数据 / 结算）共用一个通道，串行执行。</summary>
     private readonly SemaphoreSlim _mainLane = new(1, 1);
-
     /// <summary>竞彩官方接口单独一个通道。它和 500 不同源，不该排在必发后面等。</summary>
     private readonly SemaphoreSlim _jcLane = new(1, 1);
 
@@ -352,10 +419,19 @@ public sealed class JobScheduler
         "jc-odds-sample"
     };
 
-    /// <summary>推荐生成类作业类型，走推荐专用通道，不被采集任务阻塞。</summary>
+    /// <summary>
+    /// 纯计算类作业：只读库、不打外部接口，走推荐专用通道，不被采集任务阻塞。
+    ///
+    /// daily-review 必须在这里。它以前和 500 采集挤同一个主通道，而 exchange / odds-sample
+    /// 的超时是 8~15 分钟一条，连续几次超时就能把主通道占一小时以上。
+    /// 2026-11-08 实测：08:20 的复盘进了队列，一直等到超过 25 分钟硬上限被看门狗释放，
+    /// 从头到尾没执行过一次（SyncLog 里连 FAIL 都没有，只有页面上一句「还没写」）。
+    /// 复盘只读 FbMatch / 赔率历史 + 写一个 md 文件，和采集不抢接口，没有任何理由排队。
+    /// </summary>
     private static readonly HashSet<string> RecommendJobTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        "save-recommendations"
+        "save-recommendations",
+        "daily-review"
     };
 
     /// <summary>超时中止后补一条运行记录，方便页面上查。写日志本身失败不再抛出。</summary>
@@ -610,8 +686,11 @@ public sealed class JobScheduler
                     result = CollectionResult.Fail("推荐服务未注入");
                     break;
                 }
-                var now = DateTime.Now;
-                var day = now.Hour < 12 ? now.Date.AddDays(-1) : now.Date;
+                // 复盘固定写「前一天」。原来是 now.Hour<12 ? 昨天 : 今天，
+                // 一旦 08:20 那次被顶到 12 点后（补跑、队列拥塞），就会去写「今天」——
+                // 而今天的比赛还没踢完，写出来是空壳，真正缺的「昨天」永远补不上。
+                // 2026-11-08 实测踩到：11-07 的复盘一直空着，就是因为没人补「昨天」。
+                var day = DateTime.Today.AddDays(-1);
                 var path = await _recommendation.WriteDailyReviewAsync(day, ct);
                 result = CollectionResult.Ok(1, $"复盘已写入 {path}");
                 break;
@@ -637,9 +716,16 @@ public sealed class JobScheduler
                     result = CollectionResult.Fail("逐场跟进服务未注入");
                     break;
                 }
+                // 竞彩受注日跨零点：周六 22:00 之后开球的场次（如周六022-029，01:00-05:00 开球）
+                // 记在「次日」的跟随榜里，白天场才记在当天。旧逻辑 12 点前只结算昨天，
+                // 结果凌晨那批要拖到中午 12:00 才结（2026-11-08 00:10 实测发现，正好撞上今晚这 6 场）。
+                // 结算本身幂等——只处理 SettledAt IS NULL 的行，多扫一天没有副作用。
                 var now = DateTime.Now;
-                var day = now.Hour < 12 ? now.Date.AddDays(-1) : now.Date;
-                result = await _dailyFollow.SettleDailyAsync(day, ct);
+                var primary = now.Hour < 12 ? now.Date.AddDays(-1) : now.Date;
+                var secondary = primary == now.Date ? now.Date.AddDays(-1) : now.Date;
+                var first = await _dailyFollow.SettleDailyAsync(primary, ct);
+                var second = await _dailyFollow.SettleDailyAsync(secondary, ct);
+                result = CollectionResult.Ok(first.Rows + second.Rows, $"{first.Message}；{second.Message}");
                 break;
             }
 

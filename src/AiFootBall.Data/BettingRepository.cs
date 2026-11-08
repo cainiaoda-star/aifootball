@@ -976,6 +976,38 @@ public sealed class BettingRepository
             new { from = DateTime.Today.AddDays(-Math.Abs(days)), board }, cancellationToken: ct))).ToList();
     }
 
+    /// <summary>
+    /// 进球基线：同一批竞彩联赛、近 N 天、已完场的「联赛 × 比分」聚合。
+    ///
+    /// 复盘里那张「2 球 / 3 球 / 4 球该押哪档」的表需要两列：今天一天 + 长期基线。
+    /// 一天只有二十几场，单看它会得出「3 球占 40%」这种次日就失效的结论；
+    /// 基线一定要和受注卡同一批联赛，否则会被低级别联赛和友谊赛稀释
+    /// （全库 2021 年起含大量友谊赛/低级别杯赛，直接当基线会把 3 球档压低）。
+    ///
+    /// 完场判定沿用全库口径：比分齐全 + (Status=3 或 开赛已过 150 分钟)，
+    /// 不信 Status 单独一个字段——500 源当晚重采会把 3 洗回 0。
+    /// </summary>
+    public async Task<List<GoalSampleRow>> GetGoalSamplesAsync(int days, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<GoalSampleRow>(new CommandDefinition(
+            @"SELECT m.LeagueName,
+                     m.HomeScore,
+                     m.AwayScore,
+                     COUNT(*) AS Matches
+              FROM dbo.FbMatch m
+              WHERE m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                AND m.MatchTime >= @from AND m.MatchTime < @until
+                AND m.LeagueName IN (SELECT DISTINCT LeagueName FROM dbo.BettingCard)
+              GROUP BY m.LeagueName, m.HomeScore, m.AwayScore",
+            new
+            {
+                from = DateTime.Today.AddDays(-Math.Abs(days)),
+                until = DateTime.Today
+            },
+            cancellationToken: ct, commandTimeout: 120))).ToList();
+    }
+
     /// <summary>按 fid 批量取比赛时间（胜负彩等板块 MatchTime 缺失时补时间用）。</summary>
     public async Task<Dictionary<long, DateTime>> GetMatchTimesAsync(IEnumerable<long> matchIds, CancellationToken ct = default)
     {

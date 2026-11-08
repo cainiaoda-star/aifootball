@@ -181,7 +181,37 @@ public sealed class RecommendationService
         catch (OperationCanceledException) { throw; }
         catch { teamProfiles = new(); }
 
-        var built = MilkPickEngine.BuildDetailed(recs, odds, snap.Scores, asian, scoreDiags, spfWater, teamProfiles, perMatch);
+        // 竞彩/必发定价背离（2026-11-08，曼城复盘落地）：竞彩客胜被单边砸价而必发不认 → 客胜方向注撤。
+        // 回测见 PriceDivergence。取不到就算了，不能让一个可选信号把整张榜拖死。
+        Dictionary<long, PriceDivergence.PriceSpan> priceSpans;
+        try { priceSpans = _oddsCapture is not null ? await _oddsCapture.GetPriceSpanAsync(fids, ct) : new(); }
+        catch (OperationCanceledException) { throw; }
+        catch { priceSpans = new(); }
+
+        // 体能/状态（2026-11-08，曼城复盘）：休息小时数、上一场是否欧战、最近三场胜负。
+        // 只用于标注 FatigueTag，不参与概率——回测说「累了的强队会输」是反的（见 TeamForm）。
+        // 队名要先解析成全称，和画像同一口径；取不到就算了，不能把一个标注拖死整张榜。
+        Dictionary<string, TeamForm> teamForms;
+        try
+        {
+            var formNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var r in recs)
+                foreach (var n in new[] { r.HomeTeam, r.AwayTeam })
+                {
+                    if (string.IsNullOrWhiteSpace(n)) continue;
+                    var key = snap.Scores.Resolve(r.LeagueName, n!);
+                    if (!string.IsNullOrEmpty(key)) formNames.Add(key);
+                }
+
+            teamForms = _oddsCapture is null || formNames.Count == 0
+                ? new()
+                : await _oddsCapture.GetTeamFormAsync(formNames, DateTime.Now, ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { teamForms = new(); }
+
+        var built = MilkPickEngine.BuildDetailed(
+            recs, odds, snap.Scores, asian, scoreDiags, spfWater, teamProfiles, priceSpans, teamForms, perMatch);
         // 模型没跑起来的时候，空榜必须自己说出原因——否则「空榜」和「今天确实没注」长得一模一样。
         if (!built.Funnel.ScoresReady)
             built.Funnel.ScoresNote = _hit?.LastError ?? "比分模型样本不足（可用样本 < 30 场），本次不出榜";
@@ -622,6 +652,13 @@ public sealed class RecommendationService
         catch (OperationCanceledException) { throw; }
         catch { exRatio = new(); }
 
+        // 定价背离（2026-11-08）：让告警和选注共用同一个判据（PriceDivergence），
+        // 而不是各写一套——上一轮的教训就是「告警在喊、选注不动」，两模块零联动。
+        Dictionary<long, PriceDivergence.PriceSpan> priceSpans;
+        try { priceSpans = await _oddsCapture.GetPriceSpanAsync(matchIds, ct); }
+        catch (OperationCanceledException) { throw; }
+        catch { priceSpans = new(); }
+
         var alerts = new List<TurnAlertRow>();
         foreach (var p in open)
         {
@@ -639,7 +676,11 @@ public sealed class RecommendationService
             if (hasPnl || hasRatio)
                 awayMoney = (hasPnl ? pnl.PnlIdxAway : null, hasRatio ? ratio.Away : null);
 
-            var alert = TurnGuard.Judge(p, pickDir, diag, rangSheng, awayMoney);
+            var divergence = priceSpans.TryGetValue(p.MatchId, out var span)
+                ? PriceDivergence.Judge(span)
+                : null;
+
+            var alert = TurnGuard.Judge(p, pickDir, diag, rangSheng, awayMoney, divergence);
             if (alert is not null) alerts.Add(alert);
         }
 
@@ -663,6 +704,13 @@ public sealed class RecommendationService
         try { await _milkPicks.SaveGateAsync(DateTime.Today, build.Gates, ct); }
         catch (OperationCanceledException) { throw; }
         catch { /* 台账表还没建时不影响出票，下一轮再记 */ }
+
+        // 单列候选判定与榜同批落库（2026-11-08）：判定原因（模型否决 / 比值越界 / 联赛无基线）
+        // 是出榜那一刻的模型算出来的，模型每天重拟合，事后还原不出「当时为什么没选它」。
+        // 候选列表本身仍不落库（赔率+赛果的纯派生视图），只存判据和结论。
+        try { await _milkPicks.SaveCounterCandidatesAsync(DateTime.Today, build.CounterCandidates, ct); }
+        catch (OperationCanceledException) { throw; }
+        catch { /* 同上：判定表写不进去不能挡住出票 */ }
 
         var draft = MilkPickEngine.BuildTicket(build.Picks, DateTime.Today);
         if (draft is null) return;

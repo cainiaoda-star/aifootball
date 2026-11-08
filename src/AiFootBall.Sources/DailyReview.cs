@@ -12,7 +12,21 @@ namespace AiFootBall.Sources;
 /// </summary>
 public static class DailyReview
 {
+    /// <summary>
+    /// 进球基线的回看窗口。两年：够覆盖一个完整赛季循环，又不至于把规则/联赛结构都变了的老数据算进来。
+    /// 样本量约 2.4 万场（同一批竞彩联赛），单档精度足够。
+    /// </summary>
+    public const int GoalBaselineDays = 730;
+
     public static string ReviewRoot() => DeployPaths.Under("reviews");
+
+    /// <summary>
+    /// 当天复盘是否已经落盘。调度器靠它做「漏跑自查」——
+    /// 2026-11-08 实测：08:20 那一次没执行，11-07 的复盘到 11:00 仍是空的，
+    /// 而调度器「错过就不补」的规则不会自己发现。文件是唯一可信的完成标志。
+    /// </summary>
+    public static bool Exists(DateTime day) =>
+        File.Exists(Path.Combine(ReviewRoot(), day.ToString("yyyy-MM-dd") + ".md"));
 
     public static async Task<string> WriteAsync(
         RecommendationService svc, BettingRepository repo, DateTime day, CancellationToken ct = default,
@@ -41,9 +55,14 @@ public static class DailyReview
         rows.AddRange(ToRows(Boards.Bd, bd, scores, exchange, saved, milkMarks, bdPickMarks));
         rows.AddRange(ToRows(Boards.Sfc, sfc, scores, exchange, saved, milkMarks, null));
 
+        // 冷门参考也是可选章节：它要重跑一遍大奶对照，慢查询超时不该把整篇复盘拖没。
         string? milkBody = null;
         if (milk is not null)
-            milkBody = await milk.ReviewBodyAsync(jcCards.Concat(bdCards).ToList(), scores, ct);
+        {
+            try { milkBody = await milk.ReviewBodyAsync(jcCards.Concat(bdCards).ToList(), scores, ct); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { milkBody = $"（本次生成失败：{ex.GetType().Name}，正文不受影响。）"; }
+        }
 
         var dir = ReviewRoot();
         Directory.CreateDirectory(dir);
@@ -53,8 +72,23 @@ public static class DailyReview
 
         // 复盘只写「今天哪场中没中」，看不出「模型说 55% 的那些场到底是不是 55%」。
         // 把近 30 天校准接在后面，才能判断门槛该不该动。
-        var calib = await CalibrationService.BuildAsync(repo, 30, ct);
-        var body = Render(day, DateTime.Now, rows, milkBody) + Environment.NewLine + CalibrationService.ToMarkdown(calib);
+        //
+        // 但它必须是可以缺的：2026-11-08 11:14 自动补跑 11-07 的复盘时，
+        // 某条聚合查询撞上白天采样高峰的锁等待，30 秒 CommandTimeout 抛 SQL 超时，
+        // 整篇复盘一个字都没写出来——而正文（总账、每场对照）其实早就算好了。
+        // 附录要么自己承担失败，要么就不该待在正文的必经路径上。
+        var calib = await OptionalAsync("近 30 天校准", ct,
+            () => CalibrationService.BuildAsync(repo, 30, ct), CalibrationService.ToMarkdown);
+
+        // 进球基线（2026-11-08 加）：复盘要写「2/3/4 球怎么选」，就必须有长期基线做对照，
+        // 否则单日二十几场会写出「3 球占 40%」这种次日就失效的结论。
+        // 取不到就退化成「只出今天一列」，绝不拿单日冒充基线。
+        List<GoalSampleRow>? goalBaseline = null;
+        try { goalBaseline = await repo.GetGoalSamplesAsync(GoalBaselineDays, ct); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception) { goalBaseline = null; }
+
+        var body = Render(day, DateTime.Now, rows, milkBody, goalBaseline) + Environment.NewLine + calib;
 
         // 校准回答「方向准不准」，票面 KPI 回答「这样买票回不回本」。
         // 串关可以经常中奖却长期亏钱，两者必须分开看。
@@ -82,7 +116,26 @@ public static class DailyReview
         return path;
     }
 
-    public static string Render(DateTime day, DateTime writtenAt, IReadOnlyList<ReviewRow> rows, string? milkBody = null)
+    /// <summary>可选章节失败的统一写法：说清楚跳过了什么，不伪造数据。</summary>
+    static string Skip(string name, Exception ex) =>
+        $"## {name}（本次跳过）{Environment.NewLine}{Environment.NewLine}"
+        + $"> 生成时失败：{ex.GetType().Name}：{ex.Message.Trim()}{Environment.NewLine}"
+        + $"> 这一段缺失不影响上面的正文，门槛和参数一律没动。{Environment.NewLine}";
+
+    /// <summary>
+    /// 可选章节：失败就降级成一行说明，绝不把整篇复盘拖没。
+    /// 复盘的价值在「每场对照」，附录（校准 / KPI / 否决台账）是加分项，不该有否决权。
+    /// </summary>
+    static async Task<string> OptionalAsync<T>(
+        string name, CancellationToken ct, Func<Task<T>> work, Func<T, string> render)
+    {
+        try { return render(await work()); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { return Skip(name, ex); }
+    }
+
+    public static string Render(DateTime day, DateTime writtenAt, IReadOnlyList<ReviewRow> rows, string? milkBody = null,
+        IReadOnlyList<GoalSampleRow>? goalBaseline = null)
     {
         var jc = rows.Where(r => r.Board == Boards.Jc).ToList();
         var bd = rows.Where(r => r.Board == Boards.Bd).ToList();
@@ -130,6 +183,14 @@ public static class DailyReview
         sb.AppendLine();
         AppendMilk(sb, milkBody);
         AppendOu(sb, rows);
+        // 进球与比分分布（2026-11-08）：紧挨着大小球放，两者都在讲「这场能进几个」。
+        // 只统计竞彩——竞彩是逐场全写的，北单只写推荐场次，混一起口径就乱了。
+        sb.Append(GoalDistribution.ToMarkdown(jc, goalBaseline, GoalBaselineDays));
+        if (goalBaseline is null || goalBaseline.Count == 0)
+        {
+            sb.AppendLine("> 本节没取到长期基线，只列了今天一列。基线查询失败不影响正文，门槛一律没动。");
+            sb.AppendLine();
+        }
         AppendBoard(sb, "竞彩（全部场次）", jc);
         AppendSfc(sb, sfc);
         AppendBoard(sb, "北单（推荐场次）", bd);

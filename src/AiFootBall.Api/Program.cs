@@ -71,6 +71,7 @@ builder.Services.AddSingleton<OddsCaptureRepository>();
 builder.Services.AddSingleton<SummaryRepository>();
 builder.Services.AddSingleton<MilkRepository>();
 builder.Services.AddSingleton<MilkPickRepository>();
+builder.Services.AddSingleton<HalfDrawRepository>();
 builder.Services.AddSingleton<MilkScanService>();
 builder.Services.AddSingleton<DailyFollowRepository>();
 builder.Services.AddSingleton<DailyFollowService>();
@@ -700,11 +701,13 @@ app.MapPost("/api/jobs/{name}/run", async (string name, JobScheduler scheduler) 
 });
 
 // 补写指定日期的复盘（定时任务错过时手动兜底）。默认写「前一天」，带 date 参数写指定那天。
+// 默认值原来跟着钟点走（12 点后写「今天」），补写时很容易写成一篇比赛还没踢完的空壳，
+// 跟注释也对不上。统一固定「前一天」。
 app.MapPost("/api/review/write", async (RecommendationService svc, string? date, CancellationToken ct) =>
 {
     DateTime day;
     if (!string.IsNullOrWhiteSpace(date) && DateTime.TryParse(date, out var dv)) day = dv;
-    else day = DateTime.Now.Hour < 12 ? DateTime.Now.Date.AddDays(-1) : DateTime.Now.Date;
+    else day = DateTime.Today.AddDays(-1);
     var path = await svc.WriteDailyReviewAsync(day, ct);
     return Results.Ok(new { day = day.ToString("yyyy-MM-dd"), path });
 });
@@ -1468,8 +1471,8 @@ static object ToMilkItem(MilkPick p) => new
     marketDirectionPct = p.MarketDirectionPct,
     // 纯模型标记（2026-11-05 加）：该玩法快照档数不全，概率没掺盘口，EV 会偏高。
     marketPriced = p.MarketPriced,
-    // 高赔反转单列（2026-11-07 加）：这一注不在主榜 3 个半全场名额里竞争，
-    // 是「赔率 ≥12 倍 + 过动态门槛 + 联赛基线准入」的独立名额。
+    // 高赔反转单列（2026-11-07 加，2026-11-08 收窄区间）：这一注不在主榜 3 个半全场名额里竞争，
+    // 是「赔率 30~<40 倍 + 过动态门槛 + 联赛基线准入」的独立名额。
     // 前端必须单独分区并写明「长期负期望」——它的 EV 天花板仍是返奖率 0.797，不能混进主榜装作能赚。
     counterHigh = p.CounterHigh,
     // 基线口径（2026-11-07 夜加）：单列注的可信度来自「这个联赛这个档实测会不会出」，
@@ -1482,7 +1485,24 @@ static object ToMilkItem(MilkPick p) => new
     // 「模型说 X% / 联赛基线 Y%」两个数字并排展示，并标明这注是「模型低估、按联赛基线看」，
     // 不能让模型单方面的低概率把一注有 3000+ 场历史依据的票说成不值。
     // 只标不撤：即使模型很不认同，注照样发，用户自己判断。
-    modelLowConfidence = p.ModelLowConfidence
+    modelLowConfidence = p.ModelLowConfidence,
+    // 模型高估（2026-11-08 加）：名义 EV > 本玩法返奖率×1.05。
+    // 前端必须把 EV 换成「模型高估·天花板 X」口径，不能让 1.138 这种数字裸奔——
+    // 市场把所有注的期望压在返奖率上，任何标到天花板以上的 EV 都只是模型概率给高了。
+    modelOverconfident = p.ModelOverconfident,
+    // 本玩法的 EV 名义天花板（半全场/总进球 0.837、比分 0.745、胜平负 0.922），
+    // 前端拿它做展示和判断，不要在页面里硬编码一份，两处迟早对不上。
+    evCap = MilkPickEngine.EvCapFor(p.PlayType),
+    // 竞彩/必发定价背离（2026-11-08 加）：竞彩单边砸价/抬价、必发不认。
+    // 客胜侧「虚热」的注已经在引擎里撤掉了，能带着标签出来的是：主胜虚热（回测无偏离）、
+    // 某侧被低估（回测正偏离）。两种都只展示，让页面写清「这是市场结构异常，不是推荐理由」。
+    divergenceTag = p.DivergenceTag,
+    divergenceNote = p.DivergenceNote,
+    // 胜平/负平用了 HalfDrawModel 的概率（2026-11-08）：前端据此标「方向模型」，
+    // 让用户知道这一注的概率不是联合分布算的，而是总进球报价反推 + 实测方向率。
+    halfDrawRefined = p.HalfDrawRefined,
+    // 热门方体能/状态标注（2026-11-08）：只标注、不改概率。回测方向是反的，见 TeamForm。
+    fatigueTag = p.FatigueTag
 };
 
 // 大奶票投影（与票面台账同源的一张票）
@@ -1652,7 +1672,212 @@ app.MapGet("/api/milk/picks", async (MilkPickRepository repo, string? date, Canc
         var last = await repo.GetLatestPickDateBeforeAsync(d, ct);
         if (last is DateTime ld) list = await repo.GetDayAsync(ld, ct);
     }
+    // 玩法级 EV 天花板（2026-11-08 加）：不是 DB 列，按 PlayType 现算。
+    // 前端拿它判「模型高估」并与 ev 并排展示，页面不再自己拍一个倍数。
+    foreach (var r in list) r.EvCap = MilkPickEngine.EvCapFor(r.PlayType);
     return Results.Ok(list);
+});
+
+// 单列候选判定（2026-11-08 改版）：优先读引擎落库的判定（FbMilkCounterCandidate），
+// 因为它带「为什么没选它」——模型否决 / 比值越界 / 联赛无基线。这三类事后靠赔率+赛果
+// 还原不出来（模型每天重拟合），而用户最需要的正是这个：不是「还有 4 条候选」，是「这 4 条各自卡在哪」。
+// 表为空（当天还没跑过新版出榜）时回落到旧现算逻辑，此时 engineJudged=false、
+// modelGateChecked=false，页面必须写明「模型闸未校验」。
+app.MapGet("/api/milk/counter-candidates", async (MilkPickRepository repo, string? date, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+    var pay = MilkPickEngine.Payout(JcPlayTypes.Bq);   // 0.797，ratio 的分母必须和引擎同一个数
+
+    var judged = await repo.GetCounterCandidatesAsync(d, ct);
+    var items = new List<object>();
+    var engineJudged = judged.Count > 0;
+
+    if (engineJudged)
+    {
+        var board = await repo.GetDayAsync(d, ct);
+        var onBoard = board.Select(x => x.MatchId).ToHashSet();
+        foreach (var r in judged)
+        {
+            items.Add(new
+            {
+                matchId = r.MatchId,
+                matchNo = r.MatchNo,
+                leagueName = r.LeagueName,
+                homeTeam = r.HomeTeam,
+                awayTeam = r.AwayTeam,
+                matchTime = r.MatchTime,
+                optionCode = r.OptionCode,
+                optionName = r.OptionCode == "3-0" ? "半全场 胜负" : "半全场 负胜",
+                odds = r.Odds,
+                modelProbability = r.ModelProbability,
+                baselinePct = r.BasePct is decimal bp ? Math.Round(bp, 2) : (decimal?)null,
+                baselineEv = r.BasePct is decimal be ? Math.Round(be / 100m * r.Odds, 3) : (decimal?)null,
+                ratio = r.Ratio,
+                // 引擎判定（MilkCounterVerdicts）：admitted / lost-to-rank / model-veto /
+                // ratio-out-of-band / league-below-floor / no-league-baseline / same-match-on-board
+                verdict = r.Verdict,
+                verdictLabel = MilkCounterVerdicts.Label(r.Verdict),
+                reason = r.Reason,
+                chosen = r.Chosen,
+                onMainBoard = onBoard.Contains(r.MatchId),
+                hit = r.Hit,
+                actualHalf = r.HalfHomeScore is null ? null : $"{r.HalfHomeScore}:{r.HalfAwayScore}",
+                actualScore = r.HomeScore is null ? null : $"{r.HomeScore}:{r.AwayScore}"
+            });
+        }
+    }
+    else
+    {
+        var rows = await repo.GetCounterCandidateRowsAsync(d, ct);
+        foreach (var r in rows)
+        {
+            // 与引擎同一套闸（MilkPickEngine.Build 那段 Where 链）：
+            // ① 联赛必须在基线表里（不走兜底均值）；② 该档基线 ≥ 1.2%；③ ratio ∈ [0.95, 1.35]。
+            // 唯一没做的是「模型不得强烈否定该方向」——那需要引擎三向概率，这里拿不到，
+            // 所以返回值带 modelGateChecked=false，页面据此写明「模型若强烈否定，引擎不会选它」。
+            if (!LeagueHalfFullBaseline.Known(r.LeagueName)) continue;
+            if (LeagueHalfFullBaseline.Pct(r.LeagueName, r.OptionCode) is not decimal bp) continue;
+            if (bp < MilkPickEngine.MinCounterHighLeaguePct) continue;
+            if (pay <= 0m) continue;
+            var ratio = Math.Round(bp / 100m * r.Odds / pay, 3);
+            if (ratio < MilkPickEngine.CounterHighBaseEvMinRatio || ratio > MilkPickEngine.CounterHighBaseEvMaxRatio) continue;
+
+            items.Add(new
+            {
+                matchId = r.MatchId,
+                matchNo = r.MatchNo,
+                leagueName = r.LeagueName,
+                homeTeam = r.HomeTeam,
+                awayTeam = r.AwayTeam,
+                matchTime = r.MatchTime,
+                optionCode = r.OptionCode,
+                optionName = r.OptionCode == "3-0" ? "半全场 胜负" : "半全场 负胜",
+                odds = r.Odds,
+                modelProbability = (decimal?)null,
+                baselinePct = Math.Round(bp, 2),
+                baselineEv = Math.Round(bp / 100m * r.Odds, 3),
+                ratio,
+                verdict = "unverified",
+                verdictLabel = "模型闸未校验",
+                reason = "当天没有引擎判定快照（出榜还没跑过新版），这一行只过了联赛/比值闸",
+                chosen = r.Chosen,
+                onMainBoard = r.OnMainBoard,
+                hit = r.Hit,
+                actualHalf = r.HalfHomeScore is null ? null : $"{r.HalfHomeScore}:{r.HalfAwayScore}",
+                actualScore = r.HomeScore is null ? null : $"{r.HomeScore}:{r.AwayScore}"
+            });
+        }
+    }
+
+    // 历史回放（数据截止 2026-11-08 09:20，口径：FbJcOddsHistory 每场每档赛前最大赔率，
+    // 完赛场次，平注 1 元，2026-10-05~11-07 共 35 天）。
+    // 「够格」= 走完上面三道闸，218 注里中 6 条。
+    // 分档是「全部 12 倍以上反转档」1022 注的样本，含被闸拦掉的，用来看赔率越高是不是越难中。
+    // 2026-11-08：单列通道据此锁定 30-39 倍（201 注 / 1.99%），不再「每天取最高赔率」——
+    // 旧策略落在 40 倍以上（197 注 / 1.02%），且每日最高赔那条 35 天 0 命中（均赔 46.7）。
+    // 下次样本翻倍（约 2026-11-22）要重跑并更新这里，别让它变成一段没人维护的陈旧数字。
+    var history = new
+    {
+        qualified = new { samples = 218, hits = 6, hitRatePct = 2.75, roi = 0.849 },
+        all = new { samples = 1022, hits = 30, hitRatePct = 2.94, roi = 0.612 },
+        band = new[]
+        {
+            new { band = "12-20倍", samples = 124, hits = 4, hitRatePct = 3.23 },
+            new { band = "20-29倍", samples = 500, hits = 14, hitRatePct = 2.80 },
+            new { band = "30-39倍", samples = 201, hits = 4, hitRatePct = 1.99 },
+            new { band = "40倍以上", samples = 197, hits = 2, hitRatePct = 1.02 }
+        }
+    };
+
+    return Results.Ok(new
+    {
+        date = d.ToString("yyyy-MM-dd"),
+        count = items.Count,
+        payback = pay,
+        // engineJudged=true 时模型闸已真跑过（判定是出榜那刻算的）；回落分支仍是 false，
+        // 页面文案要跟着切换，不能一律写「模型闸未校验」。
+        engineJudged,
+        modelGateChecked = engineJudged,
+        items,
+        history
+    });
+});
+
+// 半全场「胜平 3-1 / 负平 0-1」公平价参考（2026-11-08 加）。
+//
+// 起因：竞彩对这两档报**同一个价**（今日 live 页面 30/30 同价，库内 552/552 差值为 0）。
+// 曼城主胜 1.10 的场次，胜胜 1.38、负负 23.00，但胜平=负平=28.00——价格里不含方向信息。
+// 要判断这个价贵不贵，只能自己算方向，算法见 HalfDrawModel 的类注释。
+//
+// ⚠ 这一区**不是推荐**：495 场竞彩完场的实测是 EV(胜平) 0.796 ≈ 返奖率本身、EV(负平) 0.740，
+// EV≥1.0 只出现 1 场、EV≥1.1 为 0，按总进球/赔率/实力差三个维度分档全是平的。
+// 挂出来是为了让用户随时查任意一场的公平价，并堵住「负平」这个恒定亏 7~8 个点的坑。
+app.MapGet("/api/milk/halfdraw", async (HalfDrawRepository repo, string? date, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+    var rows = await repo.GetDayAsync(d, ct);
+
+    var items = new List<object>();
+    foreach (var r in rows)
+    {
+        var est = HalfDrawModel.Estimate(r.O3, r.O1, r.O0, r.TotalGoals(), r.B31, r.B01);
+        if (est is null) continue;
+
+        // 完场判定沿用全局口径：比分齐全 + 开赛过 150 分钟（不信 Status，源会把它洗回 0）
+        var done = r.HomeScore is not null && r.HalfHomeScore is not null
+                   && r.MatchTime <= DateTime.Now.AddMinutes(-150);
+        var isDraw = done && r.HomeScore == r.AwayScore;
+        var hit31 = isDraw && r.HalfHomeScore > r.HalfAwayScore;
+        var hit01 = isDraw && r.HalfHomeScore < r.HalfAwayScore;
+
+        items.Add(new
+        {
+            matchId = r.MatchId,
+            matchNo = r.MatchNo,
+            leagueName = r.LeagueName,
+            homeTeam = r.HomeTeam,
+            awayTeam = r.AwayTeam,
+            matchTime = r.MatchTime,
+            odds31 = est.OddsWinDraw,
+            odds01 = est.OddsLoseDraw,
+            modelP31 = est.ProbWinDraw,
+            modelP01 = est.ProbLoseDraw,
+            modelDraw = est.DrawProbability,
+            implied31 = est.ImpliedWinDraw,
+            fairOdds31 = est.FairOddsWinDraw,
+            fairOdds01 = est.FairOddsLoseDraw,
+            ev31 = est.EvWinDraw,
+            ev01 = est.EvLoseDraw,
+            verdict31 = est.VerdictWinDraw,
+            verdict01 = est.VerdictLoseDraw,
+            usedTotalGoalsOdds = est.UsedTotalGoalsOdds,
+            lambdaHome = est.LambdaHome,
+            lambdaAway = est.LambdaAway,
+            done,
+            actualHalf = r.HalfHomeScore is null ? null : $"{r.HalfHomeScore}:{r.HalfAwayScore}",
+            actualScore = r.HomeScore is null ? null : $"{r.HomeScore}:{r.AwayScore}",
+            hit31 = done ? hit31 : (bool?)null,
+            hit01 = done ? hit01 : (bool?)null
+        });
+    }
+
+    return Results.Ok(new
+    {
+        date = d.ToString("yyyy-MM-dd"),
+        count = items.Count,
+        payback = HalfDrawModel.Payback,
+        // 回放口径写死在这里，和页面文案对应，改模型必须同时改这里
+        backtest = new
+        {
+            samples = 495,
+            avgEv31 = 0.796,
+            avgEv01 = 0.740,
+            ev31Over1 = 1,
+            ev31Over11 = 0,
+            note = "竞彩完场 495 场（10-05~11-07）实测"
+        },
+        items
+    });
 });
 
 // 北单胜平负（不让球）推荐：「今日北单推荐」板块（2026-11-06 加）。

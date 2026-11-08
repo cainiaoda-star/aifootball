@@ -13,11 +13,33 @@ public sealed class MilkPickRepository
 
     public MilkPickRepository(SqlConnectionFactory factory) => _factory = factory;
 
+    /// <summary>
+    /// 台账新列自愈（2026-11-08）。此前每次加列都得手工 ALTER，一旦哪次漏了，
+    /// 表现是「INSERT 直接报列不存在，整张榜一行不写」——11-07 已经因为注入缺失踩过一次同类坑，
+    /// 这里改成幂等补列，宁可多一条 DDL 也不要静默失败。
+    /// </summary>
+    private async Task EnsureColumnsAsync(System.Data.Common.DbConnection conn, CancellationToken ct)
+    {
+        if (_columnsReady) return;
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"IF COL_LENGTH('dbo.FbMilkPick','HalfDrawRefined') IS NULL
+                  ALTER TABLE dbo.FbMilkPick ADD HalfDrawRefined bit NOT NULL CONSTRAINT DF_FbMilkPick_HalfDrawRefined DEFAULT(0);
+              IF COL_LENGTH('dbo.FbMilkPick','FatigueTag') IS NULL
+                  ALTER TABLE dbo.FbMilkPick ADD FatigueTag nvarchar(60) NULL;",
+            cancellationToken: ct));
+        _columnsReady = true;
+    }
+
+    private static bool _columnsReady;
+
     /// <summary>重写当日未结算的大奶推荐；已结算的行（含取消终态）不动（重算不冲掉赛果）。</summary>
     public async Task<int> SaveDayAsync(DateTime pickDate, IReadOnlyList<MilkPick> picks, CancellationToken ct = default)
     {
         var d = pickDate.Date;
         await using var conn = await _factory.OpenAsync(ct);
+        // 补列必须在开事务之前：连接一旦进入本地挂起事务，BeginExecuteNonQuery 就要求
+        // 命令自己携带 Transaction，否则直接抛「命令的 Transaction 属性尚未初始化」。
+        await EnsureColumnsAsync(conn, ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
         await conn.ExecuteAsync(new CommandDefinition(
@@ -32,10 +54,12 @@ public sealed class MilkPickRepository
                 @"INSERT INTO dbo.FbMilkPick
                     (PickDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
-                     BaselineProbability, BaselineEv, ModelLowConfidence)
+                     BaselineProbability, BaselineEv, ModelLowConfidence, ModelOverconfident,
+                     DivergenceTag, DivergenceNote, HalfDrawRefined, FatigueTag)
                   VALUES (@d, @mid, @no, @lg, @home, @away, @time,
                           @play, @code, @name, @odds, @prob, @ev, @counterHigh,
-                          @basePct, @baseEv, @lowConf)",
+                          @basePct, @baseEv, @lowConf, @overConf,
+                          @divTag, @divNote, @halfDraw, @fatigue)",
                 new
                 {
                     d, mid, no = p.MatchNo, lg = p.LeagueName, home = p.HomeTeam, away = p.AwayTeam,
@@ -52,7 +76,22 @@ public sealed class MilkPickRepository
                     // 模型低可信标记（2026-11-07 夜）：赛后复盘要能回答
                     // 「这条被模型低估的注，最后到底中没中」——没有这一列，
                     // 标记只活在前端，长期验证就断了。
-                    lowConf = p.ModelLowConfidence
+                    lowConf = p.ModelLowConfidence,
+                    // 模型高估标记（2026-11-08）：名义 EV 超本玩法返奖率 ×1.05。
+                    // 落库的理由和 lowConf 一样——赛后要能回答「被判模型高估的那几注，
+                    // 最后命中率是不是真的只有市场隐含水平」，否则这个标记永远无法被验证。
+                    overConf = p.ModelOverconfident,
+                    // 定价背离标签（2026-11-08）：竞彩单边砸价/抬价、必发不认。
+                    // 不落库的话，「背离闸到底挡掉了哪些场」赛后完全无法复核，
+                    // 而这条闸的全部依据就是 13 场回测，必须让它可被持续验证。
+                    divTag = p.DivergenceTag,
+                    divNote = p.DivergenceNote,
+                    // 胜平/负平换了概率源（2026-11-08）：不落这个标记的话，赛后看到一注 3-1
+                    // 根本分不清它的概率是联合分布算的还是 HalfDraw 算的，模型校准就无从回看。
+                    halfDraw = p.HalfDrawRefined,
+                    // 体能/状态标注（2026-11-08）：只标注不扣分，落库是为了攒样本——
+                    // 等「热门方欧战后 96 小时内」这类场次过百，才能回答该不该真扣概率。
+                    fatigue = p.FatigueTag
                 }, tx, cancellationToken: ct));
         }
 
@@ -139,13 +178,63 @@ public sealed class MilkPickRepository
     {
         var d = pickDate.Date;
         await using var conn = await _factory.OpenAsync(ct);
-        return (await conn.QueryAsync<MilkPickRow>(new CommandDefinition(
+        var rows = (await conn.QueryAsync<MilkPickRow>(new CommandDefinition(
             @"SELECT PickId, PickDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
-                     BaselineProbability, BaselineEv, ModelLowConfidence,
+                     BaselineProbability, BaselineEv, ModelLowConfidence, ModelOverconfident,
+                     DivergenceTag, DivergenceNote,
+                     HalfDrawRefined, FatigueTag,
                      ActualScore, ActualHalfScore, ActualGoals, Hit, SettledAt
               FROM dbo.FbMilkPick WHERE PickDate=@d
               ORDER BY ModelProbability DESC, Ev DESC", new { d }, cancellationToken: ct))).ToList();
+
+        // 当前挂单价（2026-11-08 加）：出榜价和现价的差，决定了「榜上写的赔率还能不能买到」。
+        //
+        // 性能是这里的主要约束：FbJcOddsHistory 505 万行，按 MatchNo 粗筛会把当天 8 场
+        // 的**全部 54 个档位**都拉进来（约 44 万行），第一版实测稳定 1.2~1.4 秒/次，
+        // 页面每次刷新都要等这么久。现在改成逐注三元组精确过滤（每注只留自己那一个档位，
+        // 约 1 万行）+ 窗口函数取最新，实测降到百毫秒级。
+        if (rows.Count > 0)
+        {
+            var keys = rows
+                .Where(r => !string.IsNullOrWhiteSpace(r.MatchNo) && !string.IsNullOrWhiteSpace(r.PlayType)
+                            && !string.IsNullOrWhiteSpace(r.OptionCode))
+                .Select(r => (r.MatchNo, r.PlayType, r.OptionCode))
+                .Distinct()
+                .ToList();
+
+            if (keys.Count > 0)
+            {
+                var dp = new DynamicParameters();
+                var ors = new List<string>(keys.Count);
+                for (var i = 0; i < keys.Count; i++)
+                {
+                    dp.Add($"n{i}", keys[i].MatchNo);
+                    dp.Add($"p{i}", keys[i].PlayType);
+                    dp.Add($"c{i}", keys[i].OptionCode);
+                    ors.Add($"(h.MatchNo=@n{i} AND h.PlayType=@p{i} AND h.OptionCode=@c{i})");
+                }
+
+                var latest = (await conn.QueryAsync<OddsNowRow>(new CommandDefinition(
+                    $@"WITH src AS (
+                           SELECT h.MatchNo, h.PlayType, h.OptionCode, h.Odds,
+                                  ROW_NUMBER() OVER (PARTITION BY h.MatchNo, h.PlayType, h.OptionCode
+                                                     ORDER BY h.CapturedAt DESC) AS rn
+                           FROM dbo.FbJcOddsHistory h
+                           WHERE {string.Join(" OR ", ors)}
+                       )
+                       SELECT MatchNo, PlayType, OptionCode, Odds FROM src WHERE rn = 1",
+                    dp, cancellationToken: ct))).ToList();
+
+                var map = latest
+                    .GroupBy(x => (x.MatchNo, x.PlayType, x.OptionCode))
+                    .ToDictionary(g => g.Key, g => g.First().Odds);
+                foreach (var r in rows)
+                    if (map.TryGetValue((r.MatchNo, r.PlayType, r.OptionCode), out var now)) r.CurrentOdds = now;
+            }
+        }
+
+        return rows;
     }
 
     /// <summary>指定日期之前最近一个有大奶注的日期（跨午夜回退用），没有则 null。</summary>
@@ -226,8 +315,9 @@ public sealed class MilkPickRepository
                      m.HomeScore, m.AwayScore, m.HalfHomeScore, m.HalfAwayScore
               FROM dbo.FbMilkPick p
               JOIN dbo.FbMatch m ON m.MatchId = p.MatchId
-              WHERE p.Hit IS NULL AND m.Status = 3
-                AND m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL",
+              WHERE p.Hit IS NULL
+                AND m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                AND (m.Status = 3 OR m.MatchTime <= DATEADD(minute, -150, GETDATE()))",
             new { }, cancellationToken: ct))).ToList();
 
         var settled = 0;
@@ -354,6 +444,170 @@ public sealed class MilkPickRepository
             cancellationToken: ct))).ToList();
     }
 
+    /// <summary>单列候选判定表的建表脚本（幂等）。Save/Ensure 两处共用一份，避免两边漂移。</summary>
+    private const string CounterCandidateDdl =
+        @"IF OBJECT_ID('dbo.FbMilkCounterCandidate') IS NULL
+          CREATE TABLE dbo.FbMilkCounterCandidate
+          (
+              PickDate          DATE NOT NULL,
+              MatchId           BIGINT NOT NULL,
+              OptionCode        NVARCHAR(10) NOT NULL,
+              MatchNo           NVARCHAR(20) NULL,
+              LeagueName        NVARCHAR(80) NULL,
+              HomeTeam          NVARCHAR(80) NULL,
+              AwayTeam          NVARCHAR(80) NULL,
+              MatchTime         DATETIME2(0) NULL,
+              Odds              DECIMAL(8,2) NOT NULL,
+              ModelProbability  DECIMAL(6,2) NULL,
+              BasePct           DECIMAL(6,3) NULL,
+              Ratio             DECIMAL(6,3) NULL,
+              Verdict           NVARCHAR(24) NOT NULL,
+              Reason            NVARCHAR(300) NULL,
+              CreatedAt         DATETIME2(0) NOT NULL DEFAULT SYSDATETIME(),
+              CONSTRAINT PK_FbMilkCounterCandidate PRIMARY KEY (PickDate, MatchId, OptionCode)
+          );";
+
+    /// <summary>确保单列候选判定表存在（2026-11-08 加）。幂等。</summary>
+    public async Task EnsureCounterCandidateTableAsync(CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(CounterCandidateDdl, cancellationToken: ct));
+    }
+
+    /// <summary>
+    /// 重写当日单列候选判定（2026-11-08 加）。与榜单同批落库。
+    ///
+    /// 为什么这次要落库、而候选列表本身仍不落库：候选列表是「赔率快照 + 赛果」的纯派生视图，
+    /// 任何一天都能重算；但**判定原因**（模型否决 / 比值越界 / 联赛无基线）是出榜那一刻
+    /// 模型算出来的，模型每天重拟合，事后永远还原不出「当时为什么没选它」。
+    /// 所以只把判据和结论存下来，列表仍旧实时派生。
+    /// </summary>
+    public async Task<int> SaveCounterCandidatesAsync(DateTime pickDate, IReadOnlyList<MilkCounterCandidate> rows, CancellationToken ct = default)
+    {
+        var d = pickDate.Date;
+        await using var conn = await _factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // 表不存在就建（幂等）：这条链路由「出榜」触发，不能因为运维忘了建表就整批丢失。
+        await conn.ExecuteAsync(new CommandDefinition(CounterCandidateDdl, transaction: tx, cancellationToken: ct));
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM dbo.FbMilkCounterCandidate WHERE PickDate=@d", new { d }, tx, cancellationToken: ct));
+
+        var n = 0;
+        foreach (var r in rows)
+        {
+            if (r.MatchId <= 0) continue;
+            n += await conn.ExecuteAsync(new CommandDefinition(
+                @"INSERT INTO dbo.FbMilkCounterCandidate
+                    (PickDate, MatchId, OptionCode, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
+                     Odds, ModelProbability, BasePct, Ratio, Verdict, Reason)
+                  VALUES (@d, @mid, @code, @no, @lg, @home, @away, @time,
+                          @odds, @prob, @basePct, @ratio, @verdict, @reason)",
+                new
+                {
+                    d, mid = r.MatchId, code = r.OptionCode, no = r.MatchNo,
+                    lg = r.LeagueName, home = r.HomeTeam, away = r.AwayTeam, time = r.MatchTime,
+                    odds = r.Odds, prob = r.ModelProbability, basePct = r.BasePct, ratio = r.Ratio,
+                    verdict = r.Verdict,
+                    // Reason 列 300 字符，超长直接截断——宁可少一句解释，不能让整批落库失败。
+                    reason = r.Reason is null ? null : (r.Reason.Length > 300 ? r.Reason[..300] : r.Reason)
+                }, tx, cancellationToken: ct));
+        }
+
+        await tx.CommitAsync(ct);
+        return n;
+    }
+
+    /// <summary>
+    /// 读当日单列候选判定（2026-11-08 加）。赛果与「是否已入单列」实时关联，不存进判定表，
+    /// 否则又会出现「快照过期」那类对账问题。
+    /// </summary>
+    public async Task<List<MilkCounterCandidateRow>> GetCounterCandidatesAsync(DateTime pickDate, CancellationToken ct = default)
+    {
+        var d = pickDate.Date;
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<MilkCounterCandidateRow>(new CommandDefinition(
+            @"SELECT c.MatchId,
+                     LTRIM(RTRIM(c.MatchNo))      AS MatchNo,
+                     LTRIM(RTRIM(c.LeagueName))   AS LeagueName,
+                     LTRIM(RTRIM(c.HomeTeam))     AS HomeTeam,
+                     LTRIM(RTRIM(c.AwayTeam))     AS AwayTeam,
+                     c.MatchTime, c.OptionCode, c.Odds, c.ModelProbability,
+                     c.BasePct, c.Ratio, c.Verdict, c.Reason,
+                     m.HalfHomeScore, m.HalfAwayScore, m.HomeScore, m.AwayScore,
+                     CAST(CASE WHEN p.MatchId IS NULL THEN 0 ELSE 1 END AS bit) AS Chosen
+              FROM dbo.FbMilkCounterCandidate c
+              JOIN dbo.FbMatch m ON m.MatchId = c.MatchId
+              LEFT JOIN dbo.FbMilkPick p
+                     ON p.PickDate = c.PickDate AND p.MatchId = c.MatchId
+                    AND p.OptionCode = c.OptionCode AND p.CounterHigh = 1
+              WHERE c.PickDate = @d
+              ORDER BY c.Odds DESC", new { d }, cancellationToken: ct))).ToList();
+    }
+
+    /// <summary>
+    /// 「够格但没上榜」的反转档候选（2026-11-08）。
+    ///
+    /// 单列通道每天只留 1 个名额（MilkPickEngine 里 FirstOrDefault），所以够格的
+    /// 30~40 倍 胜负/负胜 档绝大多数不会出现在榜上——用户看不到的信息，等于不存在。
+    /// 这里把它们原样查出来，只做展示，不参与推荐、不落库。
+    ///
+    /// 为什么能不落库：输入全是历史快照（FbJcOddsHistory 赔率 + FbMatch 半场/全场比分），
+    /// 任何一天都能重算，幂等。落一张表反而会引入「快照过期」这种新的对账问题。
+    ///
+    /// 门槛过滤（联赛基线、比值区间、模型否决）不在这里做——基线表在 Sources 层，
+    /// Data 层不反依赖它。这里只负责把「30~40 倍的 胜负/负胜 档」连赛果一起取出来。
+    ///
+    /// 赔率区间（2026-11-08 修订）：30 ~ &lt;40，必须与 MilkPickEngine.CounterHighMinOdds /
+    /// CounterHighMaxOdds 保持一致。原为 ≥12，那时单列的定义也是「12 倍以上取最高」；
+    /// 两边同时改是因为 40 倍以上 197 注只中 2 条（1.02%），30-39 倍 201 注中 4 条（1.99%）。
+    /// </summary>
+    public async Task<List<CounterCandidateRow>> GetCounterCandidateRowsAsync(DateTime pickDate, CancellationToken ct = default)
+    {
+        var d = pickDate.Date;
+        // 受注日口径（2026-11-08 修）：按 MatchTime 取"当天开赛"会把周六028 罗马(11-08 02:45 开球、
+        // 周六受注) 混进周日候选里。竞彩页面上写的是「周日022」，用户脑子里的"今天"就是编号前缀，
+        // 所以用编号前缀过滤，而不是开赛日期。
+        var wd = "周" + "日一二三四五六"[(int)d.DayOfWeek];
+        await using var conn = await _factory.OpenAsync(ct);
+        return (await conn.QueryAsync<CounterCandidateRow>(new CommandDefinition(
+            @"WITH rev AS (
+                  SELECT h.MatchId, MAX(h.MatchNo) AS MatchNo, h.OptionCode, h.OptionName,
+                         CAST(MAX(h.Odds) AS decimal(7,2)) AS Odds
+                  FROM dbo.FbJcOddsHistory h
+                  WHERE h.PlayType = 'BQ'
+                    AND h.OptionCode IN ('3-0','0-3')
+                    AND h.MatchId IN (SELECT MatchId FROM dbo.FbMatch
+                                      WHERE MatchTime >= DATEADD(day,-1,@d)
+                                        AND MatchTime < DATEADD(day,2,@d))
+                  GROUP BY h.MatchId, h.OptionCode, h.OptionName
+                  HAVING MAX(h.Odds) >= 30 AND MAX(h.Odds) < 40
+              )
+              SELECT r.MatchId,
+                     LTRIM(RTRIM(r.MatchNo))       AS MatchNo,
+                     LTRIM(RTRIM(m.LeagueName))    AS LeagueName,
+                     LTRIM(RTRIM(m.HomeTeamName))  AS HomeTeam,
+                     LTRIM(RTRIM(m.AwayTeamName))  AS AwayTeam,
+                     m.MatchTime, r.OptionCode, r.OptionName, r.Odds,
+                     m.HalfHomeScore, m.HalfAwayScore, m.HomeScore, m.AwayScore,
+                     CAST(CASE WHEN ch.MatchId IS NULL THEN 0 ELSE 1 END AS bit) AS Chosen,
+                     CAST(CASE WHEN mb.MatchId IS NULL THEN 0 ELSE 1 END AS bit) AS OnMainBoard
+              FROM rev r
+              JOIN dbo.FbMatch m ON m.MatchId = r.MatchId
+              LEFT JOIN (SELECT DISTINCT MatchId, OptionCode
+                         FROM dbo.FbMilkPick
+                         WHERE PickDate = @d AND CounterHigh = 1) ch
+                     ON ch.MatchId = r.MatchId AND ch.OptionCode = r.OptionCode
+              LEFT JOIN (SELECT DISTINCT MatchId
+                         FROM dbo.FbMilkPick
+                         WHERE PickDate = @d) mb
+                     ON mb.MatchId = r.MatchId
+              WHERE LTRIM(RTRIM(r.MatchNo)) LIKE @wd + '%'
+              ORDER BY r.Odds DESC",
+            new { d, wd }, cancellationToken: ct))).ToList();
+    }
+
     private sealed class MilkPendingRow
     {
         public long PickId { get; set; }
@@ -398,6 +652,54 @@ public sealed class TurnAlertRow
     public DateTime? CreatedAt { get; set; }
 }
 
+/// <summary>某场某玩法某档当前最新快照价（2026-11-08，GetDayAsync 内部用）。</summary>
+public sealed class OddsNowRow
+{
+    public string MatchNo { get; set; } = "";
+    public string PlayType { get; set; } = "";
+    public string OptionCode { get; set; } = "";
+    public decimal Odds { get; set; }
+}
+
+/// <summary>FbMilkCounterCandidate 读回一行（2026-11-08）：判定 + 实时赛果 + 是否已入单列。</summary>
+public sealed class MilkCounterCandidateRow
+{
+    public long MatchId { get; set; }
+    public string MatchNo { get; set; } = "";
+    public string? LeagueName { get; set; }
+    public string? HomeTeam { get; set; }
+    public string? AwayTeam { get; set; }
+    public DateTime? MatchTime { get; set; }
+    public string OptionCode { get; set; } = "";
+    public decimal Odds { get; set; }
+    public decimal ModelProbability { get; set; }
+    public decimal? BasePct { get; set; }
+    public decimal? Ratio { get; set; }
+    /// <summary>MilkCounterVerdicts 常量。</summary>
+    public string Verdict { get; set; } = "";
+    public string? Reason { get; set; }
+    public int? HalfHomeScore { get; set; }
+    public int? HalfAwayScore { get; set; }
+    public int? HomeScore { get; set; }
+    public int? AwayScore { get; set; }
+    public bool Chosen { get; set; }
+
+    /// <summary>
+    /// 赛后判定：半场领先方与全场胜负方相反才算中；未完赛为 null。
+    ///
+    /// 比旧 <see cref="CounterCandidateRow.Hit"/> 多一道完场闸——旧版只要比分非空就判，
+    /// 比赛中途（半场 1:0、全场此刻 1:2）会被显示成「已中」，而它还会继续进球。
+    /// 这里沿用全库统一口径（比分齐全 + 开赛过 150 分钟），不信 Status。
+    /// </summary>
+    public bool? Hit => HalfHomeScore is null || HalfAwayScore is null || HomeScore is null || AwayScore is null
+        ? null
+        : !(MatchTime is DateTime mt && mt <= DateTime.Now.AddMinutes(-150))
+            ? null
+            : OptionCode == "3-0"
+                ? HalfHomeScore > HalfAwayScore && HomeScore < AwayScore
+                : HalfHomeScore < HalfAwayScore && HomeScore > AwayScore;
+}
+
 /// <summary>FbMilkPick 读回一行。</summary>
 public sealed class MilkPickRow
 {
@@ -423,6 +725,33 @@ public sealed class MilkPickRow
     public decimal? BaselineEv { get; set; }
     /// <summary>模型在该注上概率低可信（2026-11-07 夜加）：模型概率 &lt; 联赛基线×0.70。</summary>
     public bool ModelLowConfidence { get; set; }
+    /// <summary>模型在该注上概率高估（2026-11-08 加）：名义 EV &gt; 本玩法返奖率×1.05。</summary>
+    public bool ModelOverconfident { get; set; }
+    /// <summary>
+    /// 竞彩/必发定价背离标签（2026-11-08 加）：fake-hot-away / fake-hot-home /
+    /// undervalued-home / undervalued-away。判定见 Core.Models.PriceDivergence。
+    /// </summary>
+    public string? DivergenceTag { get; set; }
+    /// <summary>定价背离的中文说明（前端直接显示）。</summary>
+    public string? DivergenceNote { get; set; }
+    /// <summary>胜平/负平的概率来自 HalfDrawModel 而非 HalfFullJoint（2026-11-08 加）。</summary>
+    public bool HalfDrawRefined { get; set; }
+    /// <summary>热门方体能/状态标注（2026-11-08 加）：连败3场 / 欧战后N小时 / 休息N小时。只标注不扣分。</summary>
+    public string? FatigueTag { get; set; }
+    /// <summary>
+    /// 当前挂单价（2026-11-08 加）。不是数据库列——由 <c>GetDayAsync</c> 关联当天最新快照填入。
+    ///
+    /// 用途：出榜价是出榜那一刻的快照，临场会动。单列注还有额外一层风险——它是区间票
+    /// （赔率必须落在 30~&lt;40），价格滑出区间后引擎下一次重算就会换注，但页面上还挂着旧价。
+    /// 页面据此显示「现价」并在滑出区间时打标，避免用户按一个已经不存在的赔率去下单。
+    /// </summary>
+    public decimal? CurrentOdds { get; set; }
+    /// <summary>
+    /// 本玩法的 EV 名义天花板（2026-11-08 加）。不是数据库列——由 API 接口按 PlayType
+    /// 调 <c>MilkPickEngine.EvCapFor</c> 填进来。放在行对象上是因为前端要拿它和 ev 比大小，
+    /// 页面里再硬编码一份「半全场 0.837 / 比分 0.745」，两处迟早对不上。
+    /// </summary>
+    public decimal EvCap { get; set; }
     public string? ActualScore { get; set; }
     public string? ActualHalfScore { get; set; }
     public int? ActualGoals { get; set; }
@@ -454,6 +783,39 @@ public sealed class MilkPlayStat
 
     /// <summary>模型概率 − 实际命中率，正数说明模型高估（大奶最常见的问题）。</summary>
     public decimal OverconfidencePct => Math.Round(AvgProbability - HitRatePct, 1);
+}
+
+/// <summary>
+/// 够格但未上榜的反转档候选（2026-11-08 加）。只做展示，不落库、不进推荐、不占名额。
+/// 来由：单列通道每天只留 1 个名额，够格的 12 倍以上 胜负/负胜 档一天常有 5~6 条，
+/// 全被挤掉，用户看不到就等于不存在。
+/// </summary>
+public sealed class CounterCandidateRow
+{
+    public long MatchId { get; set; }
+    public string MatchNo { get; set; } = "";
+    public string LeagueName { get; set; } = "";
+    public string HomeTeam { get; set; } = "";
+    public string AwayTeam { get; set; } = "";
+    public DateTime MatchTime { get; set; }
+    public string OptionCode { get; set; } = "";
+    public string OptionName { get; set; } = "";
+    public decimal Odds { get; set; }
+    public int? HalfHomeScore { get; set; }
+    public int? HalfAwayScore { get; set; }
+    public int? HomeScore { get; set; }
+    public int? AwayScore { get; set; }
+    /// <summary>这一注是否就是当天入选单列的那一条。</summary>
+    public bool Chosen { get; set; }
+    /// <summary>该场是否已经进了当天主榜（引擎规则：已进主榜的场次不再占单列名额）。</summary>
+    public bool OnMainBoard { get; set; }
+
+    /// <summary>赛后判定：半场领先方与全场胜负方相反才算中。未完赛为 null。</summary>
+    public bool? Hit => HalfHomeScore is null || HomeScore is null
+        ? null
+        : OptionCode == "3-0"
+            ? HalfHomeScore > HalfAwayScore && HomeScore < AwayScore
+            : HalfHomeScore < HalfAwayScore && HomeScore > AwayScore;
 }
 
 /// <summary>某个玩法下具体选项的历史表现（如「半全场 负胜」）。</summary>

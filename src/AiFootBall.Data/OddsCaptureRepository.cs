@@ -131,6 +131,171 @@ public sealed class OddsCaptureRepository
     }
 
     /// <summary>
+    /// 取每场「竞彩 + 必发」两侧首末价，供 <see cref="PriceDivergence"/> 判单边定价背离
+    /// （2026-11-08 加，曼城复盘落地）。
+    ///
+    /// 口径必须与回测严格一致，否则阈值 10%/3% 就是拍脑袋：
+    ///   · 竞彩：dbo.FbJcOddsHistory 的 PlayType='spf'，按 (MatchId, OptionCode) 取最早/最晚 CapturedAt 的赔率。
+    ///     这里**不用** FbMatchTrend 的 OpenWin/CurrWin——回测算的是这张原始表，换表就换了口径。
+    ///   · 必发：dbo.FbExchange 的第一条/最后一条，**且只取开赛前**（CapturedAt &lt;= MatchTime）。
+    ///     必发会记到赛中，不掐这道线等于把比分喂进信号里，回测和生产会得出相反结论。
+    ///
+    /// 任一侧缺价就留 null，由 <see cref="PriceDivergence.Judge"/> 跳过那一侧，不猜。
+    /// </summary>
+    public async Task<Dictionary<long, PriceDivergence.PriceSpan>> GetPriceSpanAsync(
+        IReadOnlyCollection<long> matchIds, CancellationToken ct = default)
+    {
+        if (matchIds.Count == 0) return new();
+        await using var conn = await _factory.OpenAsync(ct);
+        // 显式转数组再传参数：Dapper 只在参数值是数组/List 时才展开 IN @ids，
+        // 传 IReadOnlyCollection 时某些版本会把它当成单个标量、查询静默返回 0 行
+        // （2026-11-08 实测栽过一次：日志 spans=0/30，SQL 单跑却有数据）。
+        var ids = matchIds.Distinct().ToArray();
+
+        var jcRows = (await conn.QueryAsync<PriceSpanRow>(
+            new CommandDefinition(
+                @"SELECT t.MatchId,
+                         MAX(CASE WHEN t.OptionCode='3' AND t.rn_a=1 THEN t.Odds END) AS OpenHome,
+                         MAX(CASE WHEN t.OptionCode='3' AND t.rn_d=1 THEN t.Odds END) AS CurrHome,
+                         MAX(CASE WHEN t.OptionCode='0' AND t.rn_a=1 THEN t.Odds END) AS OpenAway,
+                         MAX(CASE WHEN t.OptionCode='0' AND t.rn_d=1 THEN t.Odds END) AS CurrAway
+                  FROM (
+                      SELECT MatchId, OptionCode, Odds,
+                             ROW_NUMBER() OVER (PARTITION BY MatchId, OptionCode ORDER BY CapturedAt) rn_a,
+                             ROW_NUMBER() OVER (PARTITION BY MatchId, OptionCode ORDER BY CapturedAt DESC) rn_d
+                      FROM dbo.FbJcOddsHistory
+                      WHERE MatchId IN @ids AND PlayType = 'spf' AND Odds > 1
+                  ) t
+                  WHERE t.rn_a = 1 OR t.rn_d = 1
+                  GROUP BY t.MatchId",
+                new { ids }, cancellationToken: ct))).ToList();
+
+        var exRows = (await conn.QueryAsync<PriceSpanRow>(
+            new CommandDefinition(
+                @"SELECT e.MatchId,
+                         MAX(CASE WHEN e.rn_a=1 THEN e.PriceHome END) AS OpenHome,
+                         MAX(CASE WHEN e.rn_d=1 THEN e.PriceHome END) AS CurrHome,
+                         MAX(CASE WHEN e.rn_a=1 THEN e.PriceAway END) AS OpenAway,
+                         MAX(CASE WHEN e.rn_d=1 THEN e.PriceAway END) AS CurrAway
+                  FROM (
+                      SELECT x.MatchId, x.PriceHome, x.PriceAway,
+                             ROW_NUMBER() OVER (PARTITION BY x.MatchId ORDER BY x.CapturedAt) rn_a,
+                             ROW_NUMBER() OVER (PARTITION BY x.MatchId ORDER BY x.CapturedAt DESC) rn_d
+                      FROM dbo.FbExchange x
+                      JOIN dbo.FbMatch m ON m.MatchId = x.MatchId
+                      WHERE x.MatchId IN @ids AND x.TotalVolume > 0
+                        AND x.PriceHome > 1 AND x.PriceAway > 1
+                        AND x.CapturedAt <= m.MatchTime
+                  ) e
+                  GROUP BY e.MatchId",
+                new { ids }, cancellationToken: ct))).ToList();
+
+        var jc = jcRows.ToDictionary(r => r.MatchId, r => r);
+        var ex = exRows.ToDictionary(r => r.MatchId, r => r);
+
+        var result = new Dictionary<long, PriceDivergence.PriceSpan>(jc.Count);
+        foreach (var (mid, j) in jc)
+        {
+            ex.TryGetValue(mid, out var x);
+            result[mid] = new PriceDivergence.PriceSpan(
+                j.OpenHome, j.CurrHome, j.OpenAway, j.CurrAway,
+                x.OpenHome, x.CurrHome, x.OpenAway, x.CurrAway);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// GetPriceSpanAsync 的行类型。用显式 POCO 而不是 ValueTuple——
+    /// Dapper 的 ValueTuple 映射在某些版本上只按位置匹配、且 5 个元素时容易被静默吞掉，
+    /// 而这里外面还套着 try/catch（可选信号不能拖死出榜），映射失败会变成「空字典 + 无报错」，
+    /// 表现就是「这功能上线了但一天都没触发过」。POCO 按列名映射，没有这个坑。
+    /// 用 internal 而不是 private：Dapper 要能反射实例化这个类型。
+    /// </summary>
+    internal sealed class PriceSpanRow
+    {
+        public long MatchId { get; set; }
+        public decimal? OpenHome { get; set; }
+        public decimal? CurrHome { get; set; }
+        public decimal? OpenAway { get; set; }
+        public decimal? CurrAway { get; set; }
+    }
+
+    /// <summary>
+    /// 取各队「本场之前」的近期赛程与状态（2026-11-08 加，曼城复盘的体能项）。
+    ///
+    /// 只回答三个问题：上一场什么时候、上一场是什么赛事、最近三场胜平负。
+    /// 三连败/休息小时数/欧战标记都由 <see cref="TeamForm"/> 自己算，仓储不掺业务判断。
+    ///
+    /// 队名口径与画像一致：键是数据源全称，调用方先用 ScorelineModel.Resolve 解析。
+    /// 回看窗口给 150 天——再久的前一场对「体能」已经没有意义，但用来判三连败够了；
+    /// 窗口太大会把整张 FbMatch 拉进来。
+    /// </summary>
+    public async Task<Dictionary<string, TeamForm>> GetTeamFormAsync(
+        IEnumerable<string> teamNames, DateTime reference, CancellationToken ct = default)
+    {
+        var names = teamNames
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Select(n => n.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (names.Length == 0) return new();
+
+        await using var conn = await _factory.OpenAsync(ct);
+        // 主客两行合并成「该队的比赛」，再由内存按时间倒序取前 4 场。
+        // 不在 SQL 里做窗口函数：球队数不多（每天几十支），内存排序更好读，也不用担心方言。
+        var rows = await conn.QueryAsync<TeamFormRow>(new CommandDefinition(
+            @"SELECT LTRIM(RTRIM(m.HomeTeamName)) AS TeamName,
+                     m.MatchTime, LTRIM(RTRIM(m.LeagueName)) AS LeagueName,
+                     m.HomeScore AS Gf, m.AwayScore AS Ga
+              FROM dbo.FbMatch m
+              WHERE m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                AND m.MatchTime < @reference
+                AND m.MatchTime >= DATEADD(day, -150, @reference)
+                AND LTRIM(RTRIM(m.HomeTeamName)) IN @names
+              UNION ALL
+              SELECT LTRIM(RTRIM(m.AwayTeamName)) AS TeamName,
+                     m.MatchTime, LTRIM(RTRIM(m.LeagueName)) AS LeagueName,
+                     m.AwayScore AS Gf, m.HomeScore AS Ga
+              FROM dbo.FbMatch m
+              WHERE m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                AND m.MatchTime < @reference
+                AND m.MatchTime >= DATEADD(day, -150, @reference)
+                AND LTRIM(RTRIM(m.AwayTeamName)) IN @names",
+            new { reference, names }, cancellationToken: ct));
+
+        var result = new Dictionary<string, TeamForm>(StringComparer.Ordinal);
+        foreach (var g in rows.GroupBy(r => r.TeamName, StringComparer.Ordinal))
+        {
+            var ordered = g.OrderByDescending(r => r.MatchTime).Take(4).ToList();
+            var last = ordered[0];
+            int? Mark(int idx) => idx < ordered.Count
+                ? ordered[idx].Gf > ordered[idx].Ga ? 1 : ordered[idx].Gf == ordered[idx].Ga ? 0 : -1
+                : (int?)null;
+
+            result[g.Key] = new TeamForm
+            {
+                TeamName = g.Key,
+                LastMatchTime = last.MatchTime,
+                LastLeague = last.LeagueName,
+                Last1 = Mark(0),
+                Last2 = Mark(1),
+                Last3 = Mark(2)
+            };
+        }
+        return result;
+    }
+
+    /// <summary>近期赛程的行载体。显式 POCO，不用 ValueTuple——Dapper 对元组的列名映射不可靠。</summary>
+    private sealed class TeamFormRow
+    {
+        public string TeamName { get; set; } = "";
+        public DateTime MatchTime { get; set; }
+        public string? LeagueName { get; set; }
+        public int Gf { get; set; }
+        public int Ga { get; set; }
+    }
+
+    /// <summary>
     /// 按队名取俱乐部画像（2026-11-07，dbo.FbTeamProfile，db/21_team_profile.sql 回填）。
     /// 键 = 数据源全称队名——调用方必须先用 ScorelineModel.Resolve 把竞彩简称解析成全称再查。
     /// minGames 过滤样本太小的队（巴黎全历史才 65 场，画像不可信）。

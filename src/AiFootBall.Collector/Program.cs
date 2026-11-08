@@ -35,7 +35,12 @@ internal static class Program
             // 命令行跑 save-recommendations 只打印「已刷新」却一行都不写台账（落库全靠 Api 常驻进程）。
             // 端到端验证必须在同一进程里跑通「算 → 落库 → 读回」，否则改了等于没改。
             tickets: new TicketRepository(factory),
-            milkPicks: new MilkPickRepository(factory));
+            milkPicks: new MilkPickRepository(factory),
+            // 2026-11-08：OddsCaptureRepository 也一直没注入，于是 CLI 出榜时
+            // 净胜球转向、主胜升水、俱乐部画像、定价背离四个「可选信号」全部为空——
+            // 引擎那几道闸在命令行这一路上等于没开，而它们恰恰是最能改变结果的部分。
+            // 表现极具欺骗性：榜照出、库照写，只是「撤注闸一注都没撤过」。
+            oddsCapture: new OddsCaptureRepository(factory));
         var progress = new Progress<string>(Console.WriteLine);
 
         try

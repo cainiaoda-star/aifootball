@@ -51,7 +51,8 @@ public static class TurnGuard
         char? pickDir,
         ScoreDiagRow? diag,
         (decimal OddsAtIssue, decimal OddsNow)? rangSheng,
-        (decimal? PnlIdxAway, decimal? RatioAway)? awayMoney = null)
+        (decimal? PnlIdxAway, decimal? RatioAway)? awayMoney = null,
+        PriceDivergence.Result? divergence = null)
     {
         if (diag is null) return null;
 
@@ -85,20 +86,43 @@ public static class TurnGuard
         if (awayRatioHot)
             notes.Add($"客胜必发占比 {awayMoney!.Value.RatioAway:0.#}%（异常走高）");
 
+        // 信号 5（定价背离，2026-11-08 加）：竞彩单边砸价、必发不认。
+        // 与信号 1-4 不是一回事——那四条是「市场在转向」，这一条是「这个价本身就是假的」：
+        // 2026-11-08 英超 诺丁汉森林 3:1 曼城，竞彩客胜 1.60→1.43（-10.6%），
+        // 必发 PriceAway 只动 -1.1%。散户在竞彩砸热门，专业资金一个价都不接，结果直接翻车。
+        // 回测见 PriceDivergence：客胜侧该形态 13 场实际 23.1% vs 隐含 40.1%（-17 点），
+        // 主胜侧 9 场 +3.4 点（无偏离，所以主胜侧这里只报 mid，不报 high）。
+        var fakeHotAway = divergence is { AwayFakeHot: true };
+        var fakeHotHome = divergence is { HomeFakeHot: true };
+        if (fakeHotAway)
+            notes.Add($"客胜被竞彩单边砸价（{divergence!.Away!.Value.JcPct:0.#}%），必发只动 {divergence.Away.Value.ExPct:0.#}%");
+        if (fakeHotHome)
+            notes.Add($"主胜被竞彩单边砸价（{divergence!.Home!.Value.JcPct:0.#}%），必发只动 {divergence.Home.Value.ExPct:0.#}%");
+
         if (notes.Count == 0) return null;
 
         // 转向方向：下修期望净胜球 + 客队深档降价 + 客胜资金涌入都指向「主队要走弱」→ 市场转向客队。
         // 与注的方向相反时才值得报警；注没有方向（总进球）则只报告信号。
         var turningAway = gdShrunk || deepDrop || awayPnlDeep || awayRatioHot;   // 指向客队/主队走弱
-        var againstPick = pickDir is char pd && turningAway && pd == '3';
+        // 定价背离的「相反」是另一回事：注押的那一侧，其价格本身是散户堆出来的假价。
+        var priceFakeAgainstPick = pickDir switch
+        {
+            '0' => fakeHotAway,
+            '3' => fakeHotHome,
+            _ => false
+        };
+        var againstPick = (pickDir is char pd && turningAway && pd == '3') || priceFakeAgainstPick;
         if (pickDir is not null && !againstPick && !rangShengUp) return null;
 
         if (gdShrunk && deepDrop) high = true;
         if (awayPnlDeep && (gdShrunk || deepDrop)) high = true;
+        if (fakeHotAway) high = true;
 
         var reason = string.Join("；", notes);
         if (againstPick)
-            reason = $"这一注指{MilkDirectionDiagnosis.DirName(pickDir)}，市场在临场反向转向：" + reason;
+            reason = priceFakeAgainstPick
+                ? $"这一注指{MilkDirectionDiagnosis.DirName(pickDir)}，但该侧价格是竞彩单边砸出来的、必发不认：" + reason
+                : $"这一注指{MilkDirectionDiagnosis.DirName(pickDir)}，市场在临场反向转向：" + reason;
 
         return new TurnAlertRow
         {

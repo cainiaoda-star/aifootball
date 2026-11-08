@@ -159,6 +159,14 @@
   .mk-bar .mk-pass input{accent-color:var(--amber);margin:0}
   .mk-bar .mk-acts{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
   .mk-bar .mk-acts .btn{padding:7px 14px}
+  /* 组合实时测算（2026-11-08 加）：勾够 2 注就出，独占一行 */
+  .mk-bar .mk-combo{flex:0 0 100%;border-top:1px dashed var(--line);padding-top:9px;margin-top:1px;
+    font-size:12.5px;color:var(--dim);line-height:1.75}
+  .mk-bar .mk-combo .cb-row{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline}
+  .mk-bar .mk-combo .cb-play{color:var(--text);font-weight:600}
+  .mk-bar .mk-combo b{color:var(--amber);font-variant-numeric:tabular-nums}
+  .mk-bar .mk-combo b.cb-bad{color:#d4553f}
+  .mk-bar .mk-combo .cb-note{opacity:.72}
   .mk-next{margin:10px 0;padding:10px 14px;border:1px dashed var(--amber);border-radius:10px;
     font-size:13px;display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;color:var(--text)}
   .mk-next .btn{padding:6px 14px}
@@ -373,12 +381,39 @@
   .sd-diff.big{color:#e6c36a}
   .gate-alert{font-size:11.5px;color:#e6c36a}
   .gate-best{font-size:11.5px;color:var(--dim);width:100%}  /* 按场合并：一场一行，比分/半全场/总进球各占一列，同列多个选项竖排 */
-  .milk-merged td{vertical-align:top;padding:13px 18px}
-  .milk-merged th{white-space:nowrap;padding:10px 18px}
-  .milk-merged .opt-line{display:flex;align-items:baseline;gap:11px;white-space:nowrap;padding:6px 0}
+  /* 版面收窄（2026-11-08 用户反馈「页面太宽，横向拉不完」）：这张表 7 列，
+     每注后面挂 4~7 个角标（返奖/高估/逆市场/单列/低可信/体能/现价…），
+     而 .opt-line 原来是 nowrap 的——角标全部挤在同一条不可断的行里，
+     单单一个单元格就能撑到 500px+，整表宽度翻倍，必须左右拖。
+     改法：① 表格固定布局，列宽按视口分配，宽度上限锁死在 100%；
+          ② 角标允许换行（flex-wrap），从「一行到底」变成「两三行」；
+          ③ 内边距 13/18 → 9/10，把省下来的宽度让给内容。
+     信息一条没删，只是不再横向溢出。 */
+  .milk-merged{table-layout:fixed;width:100%;min-width:900px}
+  .milk-merged th:nth-child(1){width:72px}
+  .milk-merged th:nth-child(2){width:18%}
+  .milk-merged th:nth-child(3){width:86px}
+  .milk-merged td{vertical-align:top;padding:9px 10px}
+  .milk-merged th{white-space:nowrap;padding:8px 10px}
+  .milk-merged .teams{white-space:normal;word-break:break-word}
+  /* 队名整体当一个不可拆的块：表格固定布局后「对阵」列只有 ~150px，
+     中文默认「哪都能断」，会把「广岛三箭」拆成「广岛三 / 箭」。
+     两个队名各自 inline-block 后，换行优先发生在 VS 处；只有单边队名本身就超长时，
+     才在队名内部折行。 */
+  .milk-merged .teams .tn{display:inline-block}
+  .milk-merged td.teams-cell{padding-left:10px;padding-right:10px}
+  .milk-merged .opt-line{display:flex;flex-wrap:wrap;align-items:baseline;
+    gap:3px 5px;white-space:normal;padding:5px 0}
+  .milk-merged .opt-line > *{flex:0 0 auto}
+  .milk-merged .opt-name{flex:0 0 auto}
   .milk-merged .opt-line + .opt-line{border-top:1px dashed var(--line);margin-top:6px}
   .milk-merged .opt-name{font-weight:650;min-width:58px}
   .milk-merged .opt-odds{color:var(--dim);font-variant-numeric:tabular-nums}
+  /* 现价（2026-11-08）：出榜价是出榜那一刻的快照，临场会动。单列还额外是「区间票」
+     （赔率必须落在 30~<40），现价滑出去之后引擎下一次重算就会换注——页面不标出来，
+     用户就是拿一个已经不存在的赔率在下单。 */
+  .milk-merged .opt-odds-now{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;margin-left:2px}
+  .milk-merged .opt-odds-now.out{color:var(--red);font-weight:650}
   .milk-merged .opt-prob{color:var(--dim);font-size:13px;font-variant-numeric:tabular-nums}
   .milk-merged .opt-ev{font-size:12px;font-variant-numeric:tabular-nums}
   /* EV 按「离该玩法公平价还差多少」上色：贴近返奖率就是这注能拿到的最好价位（红），否则灰。 */
@@ -401,6 +436,51 @@
   /* 「EV 最高」角标：只标全榜一个，和主排序（命中率）解耦，免得 EV 高的废票当主角 */
   .milk-merged .opt-evtop{font-size:11px;line-height:1.4;padding:2px 8px;border-radius:5px;white-space:nowrap;
     border:1px solid #8a6a2a;color:#e6c36a;background:#2a2418}
+  /* 竞彩/必发定价背离（2026-11-08）：一侧被竞彩单边砸价/抬价、必发不认。
+     紫色系——既不是「危险红」（EV 超天花板那种自相矛盾）、也不是「信息蓝」（模型低估），
+     它是一条市场结构事实：两个市场在讲不同的事。客胜侧的虚热注已在引擎里撤掉，
+     能带上这个标的只剩「主胜虚热（回测无偏离）」和「某侧被低估（回测正偏离）」两种。 */
+  .milk-merged .opt-divg{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
+    background:rgba(140,90,200,.16);color:#a884d8;border:1px solid rgba(140,90,200,.45);font-weight:600}
+  /* 胜平/负平的方向模型（2026-11-08）：这两档价格不含方向，概率是另算的。
+     用青色区分于「定价背离」的紫，避免两个概念混成一个。 */
+  .milk-merged .opt-halfdraw{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
+    background:rgba(56,160,170,.16);color:#5cc4ce;border:1px solid rgba(56,160,170,.45);font-weight:600}
+  /* 体能/状态标注（2026-11-08）：中性灰——它是「事实陈述」不是「风险警告」，
+     因为回测显示这类场次热门方反而更准，标红会误导成「别买」。 */
+  .milk-merged .opt-fatigue{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
+    background:rgba(150,150,150,.13);color:#a9a9a9;border:1px solid rgba(150,150,150,.35)}
+  /* 分组分隔行（2026-11-08）：单列注置顶后，把「高赔单列」和「主榜」两块隔开，
+     否则用户会以为 49 倍那注是新加的第六注主推。 */
+  .milk-merged tbody tr.mk-sep td{background:rgba(255,255,255,.04);color:var(--dim);
+    font-size:11.5px;letter-spacing:.3px;padding:5px 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .milk-merged tbody tr.mk-sep td b{color:#b47814;font-weight:650}
+  /* 够格候选折叠区（2026-11-08）：单列每天只留 1 注，其余够格的挤掉后用户看不到——
+     看不见的信息等于不存在。默认折叠，避免喧宾夺主；展开是「信息」不是「推荐」。 */
+  .milk-merged .mk-cand summary{cursor:pointer;color:var(--dim);font-size:12px;padding:2px 0;user-select:none}
+  .milk-merged .mk-cand summary b{color:#b47814}
+  .milk-merged .mk-cand .cand-note{color:var(--dim);font-size:11.5px;line-height:1.65;margin:6px 0 2px}
+  .milk-merged .mk-cand .cand-tbl{width:100%;border-collapse:collapse;margin-top:4px;font-size:12px}
+  .milk-merged .mk-cand .cand-tbl th{color:var(--dim);font-weight:500;text-align:left;padding:3px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+  .milk-merged .mk-cand .cand-tbl td{padding:3px 8px;border-bottom:1px solid var(--line)}
+  .milk-merged .mk-cand .cand-chosen{color:#b47814;font-weight:650}
+  .milk-merged .mk-cand .cand-hit{color:#e2555f;font-weight:650}
+  .milk-merged .mk-cand .cand-miss{color:var(--dim)}
+  /* 引擎判定签（2026-11-08）：候选区以前只写「未上榜」，看不出是「被赔率挤出」还是
+     「模型否决」——后者是引擎主动毙掉的，用户不该把它当成「只差一个名额」。
+     红=模型否决（引擎明确不认同方向），黄=赔率/基线不匹配，灰=纯信息。 */
+  .milk-merged .mk-cand .cand-v{font-size:11px;padding:1px 5px;border-radius:4px;white-space:nowrap;border:1px solid transparent}
+  .milk-merged .mk-cand .cand-v.cand-v-ok{color:#b47814;border-color:rgba(180,120,20,.45);background:rgba(180,120,20,.12);font-weight:650}
+  .milk-merged .mk-cand .cand-v.cand-v-warn{color:#e2555f;border-color:rgba(226,85,95,.45);background:rgba(226,85,95,.12);font-weight:600}
+  .milk-merged .mk-cand .cand-v.cand-v-note{color:#c99a2e;border-color:rgba(201,154,46,.45);background:rgba(201,154,46,.10)}
+  .milk-merged .mk-cand .cand-v.cand-v-dim{color:var(--dim);border-color:var(--line)}
+  /* 胜平/负平公平价参考（2026-11-08）：竞彩对这两档报**同一个价**（今日 30/30 同价，库内 552/552 差值为 0），
+     价格里完全没有方向信息——曼城主胜 1.10 那场，胜胜 1.38、负负 23.00，但胜平=负平=28.00。
+     要判断贵不贵只能自己算方向，所以给「模型概率 / 公平赔率 / EV」。复用 .mk-cand 的表格样式。 */
+  .milk-merged .mk-fd .fd-ev-ok{color:#b47814;font-weight:650}
+  .milk-merged .mk-fd .fd-ev-mid{color:var(--dim)}
+  .milk-merged .mk-fd .fd-ev-bad{color:#e2555f;font-weight:600}
+  .milk-merged .mk-fd .fd-never{color:#e2555f;font-weight:650}
   /* 逆市场角标（2026-11-05）：这一注方向和市场最强方向相反。用红色实心，比返奖率角标更刺眼——
      周四011 那种「市场客胜 51.4% 却发胜胜、EV 1.106 排第一」的注，不能再让它看起来像价值。 */
   .milk-merged .opt-diverge{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
@@ -409,6 +489,37 @@
      这类注的 EV 天生偏高，不标就是把人往坑里带。 */
   .milk-merged .opt-modelonly{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
     border:1px dashed #4a6076;color:#9db7cc;background:#1b2530;margin-left:4px}
+  /* 角标换行后的间距微调（2026-11-08）：角标一旦分到多行，各自还带 margin-left 就会
+     和 flex gap 叠加，左边参差不齐。间距统一交给 gap，角标自身清零左右外边距；
+     内边距 7px → 5px，一行能多塞半个角标。 */
+  .milk-merged .opt-line > span{margin-left:0;margin-right:0;padding-left:5px;padding-right:5px}
+  .milk-merged .opt-line > .opt-name,
+  .milk-merged .opt-line > .opt-odds,
+  .milk-merged .opt-line > .opt-prob,
+  .milk-merged .opt-line > .opt-ev,
+  .milk-merged .opt-line > .opt-odds-now{padding-left:0;padding-right:0}
+  /* 角标本身压缩到 10.5px / 1px 4px（2026-11-08）：7 列并排时每列只有 ~170px，
+     11px 的角标一行只能塞一个，一注挂 6 个标就要占 6 行，行高翻倍。
+     压小的只是角标字号，概率/赔率/EV 这些数字不动。 */
+  .milk-merged .opt-line > .opt-pay,
+  .milk-merged .opt-line > .opt-divg,
+  .milk-merged .opt-line > .opt-diverge,
+  .milk-merged .opt-line > .opt-halfdraw,
+  .milk-merged .opt-line > .opt-fatigue,
+  .milk-merged .opt-line > .opt-modelonly,
+  .milk-merged .opt-line > .opt-counter,
+  .milk-merged .opt-line > .opt-lowconf,
+  .milk-merged .opt-line > .opt-overpay,
+  .milk-merged .opt-line > .opt-evtop{font-size:10.5px;padding:1px 4px;line-height:1.35}
+  /* 返奖率原来挂在每一注后面（半全场/总进球都是 80%、比分 71%、让球 88%），
+     同一列里每注都重复同一个数字，白白吃掉一小截行宽。挪到列头上，
+     信息没少，每注少一个角标。 */
+  .milk-merged th .th-pay{font-size:10.5px;font-weight:400;color:var(--dim);margin-top:2px;letter-spacing:.2px}
+  .milk-merged th .th-pay.costly{color:#e6c36a}
+  /* 候选区/公平价区是嵌在单元格里的子表，8 列挤在 1/7 宽度里会溢出单元格。
+     让它自己横滚，别再把整张外层表格顶宽。 */
+  .milk-merged .mk-cand{overflow-x:auto}
+  .milk-merged .mk-cand .cand-tbl{min-width:520px}
   .btn-mini{font-size:11px;padding:3px 10px;border-radius:6px;border:1px solid var(--line);
     background:var(--panel2);color:var(--text);cursor:pointer;margin-left:6px}
   .btn-mini:hover{border-color:var(--accent);color:var(--accent)}
@@ -1683,6 +1794,8 @@ function renderBoards(){
   loadWater();
   loadJcWater();
   loadMilkRecord();
+  loadMilkCandidates();
+  loadMilkHalfDraw();
   loadBdSpfPicks();
 }
 
@@ -1755,6 +1868,147 @@ function renderBdSpfGroup(title, list, kind){
 }
 
 /* ---------- 大奶战绩（FbMilkPick 台账） ---------- */
+
+/* ---------- 够格但未上榜的反转档候选（2026-11-08 用户要求） ---------- */
+
+/** 拉当天「够格但没进单列」的 30~40 倍反转档。只读、纯派生、不落库、不进推荐。 */
+async function loadMilkCandidates(){
+  const box = $('#milkCand');
+  if(!box) return;
+  const d = box.getAttribute('data-date') || '';
+  try{
+    const r = await api(`/api/milk/counter-candidates?date=${encodeURIComponent(d)}`);
+    box.innerHTML = milkCandidatesHtml(r);
+  }catch(e){
+    box.innerHTML = `<span class="dim">候选加载失败：${esc(e.message || e)}</span>`;
+  }
+}
+
+/* ---------- 胜平/负平公平价参考（2026-11-08） ----------
+   竞彩对 3-1（胜平）和 0-1（负平）报同一个价，价格里没有方向信息。这里给出模型算的
+   P(胜平)/P(负平) 与公平赔率，让人自己判断这个价贵不贵。
+   ⚠ 这不是推荐：495 场实测 EV(胜平)=0.796（≈返奖率本身）、EV(负平)=0.740，
+   EV≥1.0 只有 1 场。挂出来是为了查价、以及堵住负平这个恒定亏 7~8 个点的坑。 */
+async function loadMilkHalfDraw(){
+  const box = $('#milkFd');
+  if(!box) return;
+  const d = box.getAttribute('data-date') || '';
+  try{
+    const r = await api(`/api/milk/halfdraw?date=${encodeURIComponent(d)}`);
+    box.innerHTML = milkHalfDrawHtml(r);
+  }catch(e){
+    box.innerHTML = `<span class="dim">公平价参考加载失败：${esc(e.message || e)}</span>`;
+  }
+}
+
+function milkHalfDrawHtml(j){
+  const items = (j && j.items) || [];
+  if(!items.length) return '<span class="dim">今天这两档没有报价。</span>';
+  const bt = (j && j.backtest) || {};
+  const rows = items.slice().sort((a, b) => Number(b.ev31 || 0) - Number(a.ev31 || 0));
+  const evs = items.map(x => Number(x.ev31)).filter(v => v > 0);
+  const avg = evs.length ? evs.reduce((s, v) => s + v, 0) / evs.length : 0;
+  const best = rows[0] || {};
+
+  const evCls = v => v >= 0.95 ? 'fd-ev-ok' : (v >= 0.85 ? 'fd-ev-mid' : 'fd-ev-bad');
+  const body = rows.map(it => {
+    const e31 = Number(it.ev31 || 0), e01 = Number(it.ev01 || 0);
+    let st = '<span class="dim">未开赛</span>';
+    if(it.done){
+      const sc = `${esc(it.actualHalf || '')}→${esc(it.actualScore || '')}`;
+      st = it.hit31 ? `<span class="cand-hit">中 胜平 ${sc}</span>`
+         : it.hit01 ? `<span class="cand-hit">中 负平 ${sc}</span>`
+         : `<span class="cand-miss">挂 ${sc}</span>`;
+    }
+    return `<tr>
+      <td>${esc(it.matchNo || '')}</td>
+      <td>${esc(it.homeTeam || '')} VS ${esc(it.awayTeam || '')}<div class="dim" style="font-size:11px">${esc(it.leagueName || '')}</div></td>
+      <td class="mono">@${Number(it.odds31 || 0).toFixed(2)}</td>
+      <td class="mono">${Number(it.modelP31 || 0).toFixed(2)}%</td>
+      <td class="mono">${Number(it.fairOdds31 || 0).toFixed(2)}</td>
+      <td class="mono ${evCls(e31)}">${e31.toFixed(3)}</td>
+      <td class="mono">@${Number(it.odds01 || 0).toFixed(2)}</td>
+      <td class="mono ${evCls(e01)}">${e01.toFixed(3)}</td>
+      <td>${st}</td>
+    </tr>`;
+  }).join('');
+
+  return `<details>
+    <summary>胜平 / 负平 公平价参考 <b>${items.length}</b> 场 · 仅查价，非推荐</summary>
+    <p class="cand-note">
+      竞彩对这两档报<b>同一个价</b>（今日 30/30、库内 552/552 同价），价格里不含方向信息，
+      所以这里给模型算的 P(胜平) 与<b>公平赔率</b>（= 1 ÷ 模型概率）。<b>赔率高于公平赔率才叫便宜</b>，
+      而实测这几乎不会发生：${bt.samples || 495} 场竞彩完场，EV(胜平) 平均 ${Number(bt.avgEv31 || 0.796).toFixed(3)}
+      （≈返奖率 ${Math.round(Number(j.payback || 0.797) * 100)}% 本身）、EV(负平) 平均 ${Number(bt.avgEv01 || 0.740).toFixed(3)}，
+      EV≥1.0 只有 ${bt.ev31Over1 || 0} 场、EV≥1.1 为 ${bt.ev31Over11 || 0} 场。
+      按总进球、赔率、球队实力差三个维度分档全是平的——<b>不存在「找到某个条件就能赚」</b>。
+      <br/>今天 ${items.length} 场平均 EV(胜平) <b>${avg.toFixed(3)}</b>，最好的一条是
+      ${esc(best.matchNo || '')} ${esc(best.homeTeam || '')} vs ${esc(best.awayTeam || '')}
+      @${Number(best.odds31 || 0).toFixed(2)}（EV ${Number(best.ev31 || 0).toFixed(3)}）。
+      <br/><b class="fd-never">负平（0-1）永远不要买</b>：市场把胜平的价格套用到负平上，而负平真实概率比胜平低约 8%，
+      实测 EV 恒定落在 0.74，比胜平再低 7 个点。这是结构性高估，不是概率问题。
+    </p>
+    <table class="cand-tbl"><thead><tr>
+      <th>场次</th><th>对阵</th><th>胜平@</th><th>P(胜平)</th><th>公平价</th><th>EV</th>
+      <th>负平@</th><th>EV</th><th>赛果</th>
+    </tr></thead><tbody>${body}</tbody></table>
+  </details>`;
+}
+
+function milkCandidatesHtml(j){
+  const items = (j && j.items) || [];
+  const h = (j && j.history) || {};
+  if(!items.length) return '<span class="dim">今天没有够格的其他反转档候选。</span>';
+  const q = h.qualified || {};
+  const bandTxt = ((h.band || []).map(b => `${b.band} ${Number(b.hitRatePct).toFixed(2)}%`)).join(' · ');
+  // 判定签配色（2026-11-08）：红=引擎主动毙掉（模型否决），黄=赔率/基线不匹配，灰=纯信息。
+  // 「被赔率挤出」和「模型否决」必须视觉可分——前者是名额问题，后者是引擎不认同这个方向，
+  // 混成一类会让用户以为「这几条都只差一个名额」。
+  const VERDICT_CLS = {
+    'admitted':'cand-v-ok', 'lost-to-rank':'cand-v-dim', 'model-veto':'cand-v-warn',
+    'ratio-out-of-band':'cand-v-note', 'league-below-floor':'cand-v-dim',
+    'no-league-baseline':'cand-v-dim', 'same-match-on-board':'cand-v-dim', 'unverified':'cand-v-dim'
+  };
+  const rows = items.map(it => {
+    const v = it.verdict || 'unverified';
+    const vCls = VERDICT_CLS[v] || 'cand-v-dim';
+    const vLabel = it.verdictLabel || v;
+    const vTag = `<span class="cand-v ${vCls}" title="${esc(it.reason || '')}">${it.chosen ? '★ ' : ''}${esc(vLabel)}</span>`;
+    const res = it.hit === true
+      ? `<span class="cand-hit">中 ${esc(it.actualHalf || '')}→${esc(it.actualScore || '')}</span>`
+      : (it.hit === false
+          ? `<span class="cand-miss">挂 ${esc(it.actualHalf || '')}→${esc(it.actualScore || '')}</span>`
+          : '<span class="dim">待开</span>');
+    return `<tr>
+      <td>${esc(it.matchNo || '')}</td>
+      <td>${esc(it.homeTeam || '')} VS ${esc(it.awayTeam || '')}<div class="dim" style="font-size:11px">${esc(it.leagueName || '')}</div></td>
+      <td>${esc(it.optionName || '')}</td>
+      <td class="mono">${Number(it.odds).toFixed(2)}</td>
+      <td class="mono">${it.baselinePct == null ? '<span class="dim">—</span>' : Number(it.baselinePct).toFixed(2) + '%'}</td>
+      <td class="mono">${it.ratio == null ? '<span class="dim">—</span>' : Number(it.ratio).toFixed(3)}</td>
+      <td>${vTag}</td>
+      <td>${res}</td>
+    </tr>`;
+  }).join('');
+
+  // 模型闸到底跑没跑，必须说清楚（2026-11-08）：engineJudged=false 是回落分支，
+  // 那份清单里「模型否决」这一道闸根本没执行，列出来的注引擎可能压根不会选。
+  const gateNote = j && j.engineJudged
+    ? `判定来自出榜那一刻的引擎快照，<b>含模型否决闸</b>：模型概率低于联赛基线×0.4 的注会被标「模型否决」，把鼠标悬在签上能看到具体数字。`
+    : `⚠ 当天没有引擎判定快照（出榜还没跑过新版），这份清单<b>只过了联赛基线/比值两道闸，不含模型否决闸</b>——列出的注引擎可能不会选。`;
+
+  return `<details>
+    <summary>够格但未上榜的反转档候选 <b>${items.length}</b> 条 · 仅信息，非推荐</summary>
+    <p class="cand-note">单列每天只留 1 个正式名额（今天给了上面那条）。下面这些是 30~40 倍档当天出现过的全部反转档，
+      其中一部分过了「联赛基线 × 赔率」三道闸、只是排在被选中那条后面。<b>它们全部是负期望</b>：半全场返奖率 ${Math.round(Number(j.payback || 0.797) * 100)}%，
+      历史回放够格组 ${q.samples || 0} 注中 ${q.hits || 0} 条（命中率 ${Number(q.hitRatePct || 0).toFixed(2)}%，
+      平注回报 ${Number(q.roi || 0).toFixed(3)}，即每投 100 元长期回收 ${Math.round(Number(q.roi || 0) * 100)} 元）。
+      按赔率分段命中率：${bandTxt} —— <b>赔率越高不是越划算，是越难中</b>。${gateNote}</p>
+    <table class="cand-tbl"><thead><tr>
+      <th>场次</th><th>对阵</th><th>档位</th><th>赔率</th><th>联赛基线</th><th>基线EV/返奖</th><th>引擎判定</th><th>赛果</th>
+    </tr></thead><tbody>${rows}</tbody></table>
+  </details>`;
+}
 
 async function loadMilkRecord(days){
   const box = $('#milkRecord');
@@ -1934,6 +2188,54 @@ function milkGroupBetCount(items){
   return total;
 }
 
+/** 该注「页面上展示的那个概率」（0~1）。与 opt-prob 的展示口径必须一致：
+ *  单列注 / 模型低可信注走联赛基线，其余走模型概率。组合测算若用另一套口径，
+ *  会出现「行里写 2.7%、组合算 1.8%」这种自相矛盾。 */
+function milkShowProb(it){
+  const hasBase = it.baselineProbability != null && it.baselineEv != null;
+  const p = (hasBase && (it.counterHigh || it.modelLowConfidence))
+    ? Number(it.baselineProbability) : Number(it.modelProbability);
+  return (isFinite(p) && p > 0) ? p / 100 : 0;
+}
+
+/** 勾选注的串关实时测算（2026-11-08 加）：中奖概率、中奖回报、期望回收。
+ *
+ *  为什么一定要把「期望回收」摆出来：串关的期望回收只等于各玩法返奖率的乘积，
+ *  与模型准不准**完全无关**——3 注半全场串起来，每 100 元的长期期望就是 100×0.797³ = 50.6 元。
+ *  用户以为串关在放大收益，实际是被连乘抽水。这个数字不摆在勾选框旁边，
+ *  前面那些算法改得再准也白搭：注选对了，结构仍然亏。
+ */
+function renderMilkCombo(bar, groups){
+  let box = bar.querySelector('.mk-combo');
+  const total = groups.reduce((s, g) => s + g.items.length, 0);
+  if(total < 2){ if(box) box.remove(); return; }
+  if(!box){ box = document.createElement('div'); box.className = 'mk-combo'; bar.appendChild(box); }
+
+  const rows = groups.map(g => {
+    const n = g.items.length;
+    let hit = 1, odds = 1, pay = 1;
+    for(const it of g.items){
+      hit *= milkShowProb(it);
+      odds *= (Number(it.odds) || 0);
+      pay *= (MILK_PAYOUT[g.play] || 0);
+    }
+    const back = pay * 100;                       // 每 100 元长期回收
+    const oneIn = hit > 0 ? Math.round(1 / hit) : 0;
+    const hitPct = hit * 100;
+    return `<div class="cb-row"><span class="cb-play">${esc(milkPlayCn(g.play))} ${n} 串 1</span>`
+      + `<span>中奖概率 <b>${hitPct.toFixed(hitPct < 1 ? 3 : 2)}%</b>`
+      + (oneIn ? `<span class="cb-note">（≈${oneIn.toLocaleString()} 局中 1 次）</span>` : '')
+      + `</span>`
+      + `<span>中奖回 <b>${odds.toFixed(1)}</b> 倍</span>`
+      + `<span>期望回收 <b class="${back < 85 ? 'cb-bad' : ''}">${back.toFixed(1)}</b> 元 / 100 元</span>`
+      + `</div>`;
+  }).join('');
+
+  box.innerHTML = rows
+    + `<div class="cb-note">「期望回收」是长期平均值，只由各玩法返奖率连乘决定（半全场/总进球 79.7%、比分 70.9%），`
+    + `与预测准不准无关；「中奖回 X 倍」是运气上限，期望回收才是常态。串得越多，这个数字掉得越快。</div>`;
+}
+
 /** 勾选变化后只更新工具条与行高亮，不重渲染整张榜 */
 function updateMilkPickBar(){
   const bar = document.querySelector('#milkPickBar');
@@ -1963,6 +2265,7 @@ function updateMilkPickBar(){
     fill.disabled = picks === 0;
     fill.textContent = picks ? `把 ${picks} 注填入投注单` : '填入投注单';
   }
+  renderMilkCombo(bar, groups);
 }
 
 function bindMilkPicks(){
@@ -2653,8 +2956,10 @@ function renderMilkBoard(b, strongOnly){
     const key = it.matchId != null ? String(it.matchId) : `${it.matchNo}|${it.homeTeam}`;
     let g = byMatch.get(key);
     if(!g){
-      g = { matchNo: it.matchNo, homeTeam: it.homeTeam, awayTeam: it.awayTeam,
-            leagueName: it.leagueName, matchTime: it.matchTime, plays: {}, bestEv: 0, bestProb: 0 };
+      // 库里 matchNo / leagueName 带前导空格（" 周日013"、" 意甲"），直接渲染会在单元格里留个坑，
+      // 按场次号排序时也要多绕一层。统一在这里 trim 一次，后面排序和展示都用干净的。
+      g = { matchNo: String(it.matchNo || '').trim(), homeTeam: it.homeTeam, awayTeam: it.awayTeam,
+            leagueName: String(it.leagueName || '').trim(), matchTime: it.matchTime, plays: {}, bestEv: 0, bestProb: 0 };
       byMatch.set(key, g);
     }
     (g.plays[it.playType] = g.plays[it.playType] || []).push(it);
@@ -2665,8 +2970,15 @@ function renderMilkBoard(b, strongOnly){
   // 2026-11-06：排序口径改成按竞彩官方场次号从小到大（周五001→002→…），
   // 不再按命中率降序——命中率排序会把高概率注堆在最上面，但用户要看的是
   // 官方赛程顺序，便于对照官方场次逐场下注。命中率信息仍在每注角标里保留。
-  const rows = [...byMatch.values()].sort((x, y) =>
-    officialMatchSort({ matchNo: x.matchNo }, { matchNo: y.matchNo }));
+  // 2026-11-08：单列注（CounterHigh，30~40 倍反转档）永久置顶，与主榜之间插一条分隔行。
+  // 它一天最多 1 注，混在按场次号排的中间行里根本翻不到——用户 2026-11-08 09:03 明确要求「49 倍那注再往上面」。
+  // 置顶只改展示顺序，不改榜单内容和名额（引擎侧 CounterHigh 仍然是独立名额，不占主榜半全场名额）。
+  const isCounterRow = g => Object.keys(g.plays).some(k => (g.plays[k] || []).some(it => it.counterHigh));
+  const rows = [...byMatch.values()].sort((x, y) => {
+    const cx = isCounterRow(x) ? 0 : 1, cy = isCounterRow(y) ? 0 : 1;
+    if(cx !== cy) return cx - cy;
+    return officialMatchSort({ matchNo: x.matchNo }, { matchNo: y.matchNo });
+  });
   for(const g of rows)
     for(const k in g.plays) g.plays[k].sort((x, y) => Number(y.modelProbability) - Number(x.modelProbability));
 
@@ -2722,7 +3034,12 @@ function renderMilkBoard(b, strongOnly){
         // 出现这种数字要么模型概率算高了、要么快照没掺市场，两种都不能当价值看。
         // 所以一旦越线，直接压掉「EV 最高」卖点，改挂红色警示（2026-11-07，用户抓出 EV 1.44/2.25 配「返奖 80%」）。
         const _pay0 = MILK_PAYOUT[play] || 0;
-        const evOverPay = _pay0 > 0 && ev > _pay0 * 1.2;
+        // 本玩法 EV 的名义天花板（2026-11-08）：后端 EvCapFor = 返奖率 × 1.05，由 API 直接给。
+        // 页面不再自己拍一个「1.2 倍」，两处各写一套迟早对不上。
+        // 越过这条线只有一个含义：模型把这注概率算高了——市场把所有注的期望压在返奖率上，
+        // 没有任何模型能靠「算得准」把它抬到返奖率之上。
+        const evCap = Number(it.evCap) || (_pay0 > 0 ? _pay0 * 1.05 : 0);
+        const evOverPay = _pay0 > 0 && evCap > 0 && ev > evCap;
         // 「EV 最高」不能发给走基线口径的注（counterHigh / modelLowConfidence）：
         // 它们的 EV 是「联赛基线×赔率」，跟其余注的「模型×赔率」不是同一把尺子，
         // 放在一起比大小是拿苹果比橘子，标出来等于骗人。
@@ -2733,21 +3050,13 @@ function renderMilkBoard(b, strongOnly){
         aliveKeys.add(mk);
         _milkPickData.set(mk, it);
         const on = _milkPickSet.has(mk);
-        // 返奖率直接标在每一注旁边：比分 71%、半全场/总进球 80%。
-        // 以前只有 EV，用户看到 0.79 会以为是「算错了」；其实是这注已经接近该玩法的公平价了，
-        // 天花板就是返奖率本身。EV 也在，但改成按「离公平价还差多少」上色。
+        // 返奖率（2026-11-08 挪到列头）：比分 71%、半全场/总进球 80%、让球 88% 是「每个玩法一个常数」，
+        // 挂在每一注后面等于同一列重复印同样的字，还把每行撑宽。现在只在表头上标一次（见 thPay）。
         const pay = MILK_PAYOUT[play] || 0;
-        const payTag = pay
-          ? `<span class="opt-pay${pay < 0.75 ? ' costly' : ''}" title="竞彩${esc(MILK_PLAY_NAME[play] || play)}固定返奖率：每投 100 元，长期期望回收 ${Math.round(pay * 100)} 元。这是任何一注的天花板，EV 不可能到 1。">返奖 ${Math.round(pay * 100)}%</span>`
-          : '';
         // 上色按「离公平价还差多少」判。注意先按模型 EV 给个初值，
         // 后面如果这注改走基线口径展示，会按基线 EV 重算一次——否则会出现
         // 「显示 EV 0.78（基线）、颜色却是红的（模型 EV 0.66）」这种自相矛盾。
         let evCls = pay && ev >= pay * 0.97 ? 'ev-fair' : 'ev-poor';
-        // EV 越过返奖率上限的红色警示（2026-11-07）：这个数字本身就是「模型概率算高了」的证据。
-        const overPayTag = evOverPay
-          ? `<span class="opt-overpay" title="EV ${ev.toFixed(2)} 已经超过该玩法返奖率 ${Math.round(pay * 100)}%：EV 的天花板就是返奖率，超出说明模型把这注的概率估高了（90% 是模型算错，不是市场给错了价）。这类注别当主推，更别串关。">EV 超上限·概率存疑</span>`
-          : '';
         // 逆市场角标（2026-11-05）：这注方向和竞彩市场最强方向相反，等于模型在跟整个市场对赌。
         // 市场方向占比过半的已经被引擎撤掉了，能留在这里的都是「市场没那么坚决」的弱背离。
         // 但该说的还得说：周四011 阿尔克马 vs 尤文图斯就是市场客胜 1.71、模型发「胜胜」，
@@ -2760,11 +3069,13 @@ function renderMilkBoard(b, strongOnly){
         const modelOnlyTag = it.marketPriced === false
           ? `<span class="opt-modelonly" title="这场${esc(MILK_PLAY_NAME[play] || play)}的快照档数不全（比分 31 档 / 半全场 9 档 / 总进球 8 档），概率完全来自模型、没有掺盘口。这类 EV 天生偏高，别当成价值。">纯模型</span>`
           : '';
-        // 高赔反转单列（2026-11-07）：12 倍以上的独立名额票，不参与主榜 3 个半全场名额的竞争。
-        // 它解决的正是「大奶榜连 10 倍档都出不来」——但必须写明长期负期望：
-        // 半全场返奖率 79.7%，这注 EV 天花板就到 0.797，中了是运气好，不是它能赚钱。
+        // 高赔反转单列（2026-11-07 加，2026-11-08 收窄赔率区间）：30~<40 倍的独立名额票，
+        // 不参与主榜 3 个半全场名额的竞争。它解决的正是「大奶榜连 10 倍档都出不来」——
+        // 但必须写明长期负期望：半全场返奖率 79.7%，这注 EV 天花板就到 0.797。
+        // 区间为什么是 30-39 而不是「挑最高」：35 天回放 40 倍以上 197 注只中 2 条（1.02%），
+        // 30-39 倍 201 注中 4 条（1.99%）；且 40+ 的价位不稳定（49.00 这个精确值 35 天只出现 1 次）。
         const counterTag = it.counterHigh
-          ? `<span class="opt-counter" title="高赔反转单列：赔率≥12 倍且该联赛该档实测基线达标（英冠胜负 2.56% / 英超 2.68% / 苏超 3.20%）。它是单列名额，不进主榜排序。长期负期望——半全场返奖率 79.7%，EV 天花板 0.80，平均几十期才中一次，只适合小注。">高赔单列·长期负期望</span>`
+          ? `<span class="opt-counter" title="高赔反转单列：赔率锁定 30~40 倍（不含 40）且该联赛该档实测基线达标（英冠胜负 2.56% / 英超 2.68% / 苏超 3.20%）。它是单列名额，不进主榜排序。长期负期望——半全场返奖率 79.7%，EV 天花板 0.80，平均几十期才中一次，只适合小注。⚠ 2026-10-05~11-07 回放（1022 注）：30-39 倍这一档 201 注中 4 条（1.99%），是这条通道里命中率最好的一档；40 倍以上 197 注只中 2 条（1.02%），旧策略「每天取最高赔率」就是站在最差那一档，每日最高赔那条 35 天 0 命中。">高赔单列·长期负期望</span>`
           : '';
         // 单列注改展示「基线口径」（2026-11-07 夜）：模型在 30 倍档系统性低估 30%
         // （周六007 英冠 胜负@32：模型 1.76%、英冠实测 2.56%、市场去水 2.50%），
@@ -2792,24 +3103,68 @@ function renderMilkBoard(b, strongOnly){
         const lowConfTag = it.modelLowConfidence
           ? `<span class="opt-lowconf" title="模型低估：模型只给 ${Number(it.modelProbability).toFixed(2)}%，而${esc(g.leagueName || '该联赛')}这一档的实测基线是 ${Number(it.baselineProbability).toFixed(2)}%（模型仅为基线的 ${(Number(it.modelProbability)/Number(it.baselineProbability)*100).toFixed(0)}%）。这不是模型算错一个数字，是泊松 λ 在这类长尾档系统性偏低（模型 λ 误差 1.53 球，市场反推 1.33）。概率与 EV 已按联赛基线展示。">模型低估·按联赛基线看</span>`
           : '';
+        // EV 越过本玩法天花板的警示（2026-11-08 重写，原为「超返奖率 20% 才提示」）。
+        // 判据改到 1.05 倍：返奖率本身就是任何一注的数学上限，超过 5% 就足以说明
+        // 「这个数字不是价值，是模型把概率算高了」。旧阈值 1.2 太宽，
+        // 今天周日007 埃尔切 半全场胜胜 EV 1.138（模型 19.8%、市场反推 13.9%）就从缝里过去了。
+        // 走基线口径的注（单列/模型低估）按展示的那个 EV 判，否则又会出现「数字低、标红」的矛盾。
+        const showOver = evCap > 0 && showEv > evCap;
+        const overPayTag = showOver
+          ? `<span class="opt-overpay" title="EV ${showEv.toFixed(2)} 超过本玩法天花板 ${evCap.toFixed(2)}（返奖率 ${Math.round(pay * 100)}% × 1.05）。EV 的物理上限就是返奖率，超出只说明模型把这注概率估高了：模型给 ${Number(it.modelProbability).toFixed(2)}%，而按赔率反推市场只给 ${(100 / Number(it.odds)).toFixed(1)}%。别当主推，更别串关。">模型高估·天花板 ${evCap.toFixed(2)}</span>`
+          : '';
+        // 现价（2026-11-08）：it.odds 是出榜那一刻的固定奖金，it.currentOdds 是当前最新快照。
+        // 只在这里显示「现 X」而不是替换掉原价——用户要对比的是「榜上写着多少 / 现在多少」。
+        // 单列还要判区间：滑出 30~<40 就说明下一次重算会换注，这一注已经不作数了。
+        // 竞彩/必发定价背离（2026-11-08 加，曼城复盘落地）：一侧被竞彩单边砸价/抬价、必发不认。
+        // fake-hot-* = 虚热（客胜侧已在引擎里撤注，能出现在榜上的只有主胜侧）；
+        // undervalued-* = 该侧被市场低估（回测正偏离，但样本 58 场，不当买卖依据）。
+        // 标签只说明形态，不给买卖建议——它回答的是「这个价是谁定的」，不是「该不该买」。
+        const divgTag = it.divergenceTag
+          ? `<span class="opt-divg" title="${esc(it.divergenceNote || '')}">${
+              String(it.divergenceTag).indexOf('fake-hot') === 0 ? '定价背离·虚热' : '定价背离·被低估'}</span>`
+          : '';
+        // 胜平/负平的方向模型标记（2026-11-08）：这两档竞彩报同一个价，价格里没有方向信息，
+        // 概率由 HalfDrawModel 用总进球报价反推 + 10340 场实测方向率算出，不是泊松两段。
+        const halfDrawTag = it.halfDrawRefined
+          ? `<span class="opt-halfdraw" title="胜平/负平两档竞彩报同一个价，价格不含方向。这一注的概率用竞彩总进球报价反推平局分布、再乘实测半场方向率算出（495 场校准：模型 5.06% / 市场 5.07% / 实际 4.90%），未掺盘口。">方向模型</span>`
+          : '';
+        // 体能/状态标注（2026-11-08）：热门方连败3场 / 欧战后N小时 / 休息N小时。
+        // 只提示不改概率——回测显示这类场次热门方反而比市场定价更准（+4.8 点），扣分会亏更多。
+        const fatigueTag = it.fatigueTag
+          ? `<span class="opt-fatigue" title="只标注、不扣概率。回测（热门赔率≤2.5）：欧战后96小时内热门方实际兑现 63.9% vs 市场隐含 59.1%，三连败组 +6.3 点——「累了的强队会输」在数据上不成立，所以这里不做概率惩罚，只留痕迹供人工复核。">${esc(it.fatigueTag)}</span>`
+          : '';
+        const curOdds = it.currentOdds == null ? null : Number(it.currentOdds);
+        const oddsDrift = curOdds != null && Math.abs(curOdds - Number(it.odds)) >= 0.01;
+        const oddsOutBand = !!it.counterHigh && curOdds != null && (curOdds < 30 || curOdds >= 40);
+        const oddsNowTag = oddsDrift
+          ? `<span class="opt-odds-now${oddsOutBand ? ' out' : ''}" title="${oddsOutBand
+              ? `现价 ${curOdds.toFixed(2)} 已滑出单列区间 30~40（榜上 ${Number(it.odds).toFixed(2)}），引擎下一次重算会换注——别按这个赔率下单。`
+              : `当前挂单价 ${curOdds.toFixed(2)}（出榜时 ${Number(it.odds).toFixed(2)}）。冷门档临场变动幅度通常不大，但这才是现在能买到的价。`}">现 ${curOdds.toFixed(2)}${oddsOutBand ? ' 滑出区间' : ''}</span>`
+          : '';
         return `<div class="opt-line${on ? ' mk-on' : ''}">
           <input type="checkbox" class="milk-pick" data-mk="${esc(mk)}" ${on ? 'checked' : ''} title="勾选这一注" />
           <b class="opt-name">${esc(it.option || '')}</b>
-          <span class="opt-odds">@${Number(it.odds).toFixed(2)}</span>
+          <span class="opt-odds">@${Number(it.odds).toFixed(2)}</span>${oddsNowTag}
           <span class="opt-prob"${probTitle ? ` title="${esc(probTitle)}"` : ''}>${showProb.toFixed(1)}%</span>
-          <span class="opt-ev ${evCls}" title="${esc(evTitle)}">EV ${showEv.toFixed(2)}</span>${payTag}${overPayTag}${divTag}${modelOnlyTag}${counterTag}${lowConfTag}${evTopTag}
+          <span class="opt-ev ${evCls}" title="${esc(evTitle)}">EV ${showEv.toFixed(2)}</span>${overPayTag}${divTag}${divgTag}${halfDrawTag}${fatigueTag}${modelOnlyTag}${counterTag}${lowConfTag}${evTopTag}
         </div>`;
       }).join('');
     };
 
+    // 列头带该玩法返奖率（2026-11-08）。返奖率是「一个玩法一个常数」，放列头只印一次，
+    // 顺带给整列定调：这些注的 EV 天花板就是它，EV 永远到不了 1。
+    const thPay = p => {
+      const pay = MILK_PAYOUT[p] || 0;
+      if(!pay) return '';
+      return `<div class="th-pay${pay < 0.75 ? ' costly' : ''}" title="竞彩${esc(MILK_PLAY_NAME[p] || p)}固定返奖率：每投 100 元；长期期望回收 ${Math.round(pay * 100)} 元。这一列所有注的 EV 天花板都是它，不可能到 1。">返奖 ${Math.round(pay * 100)}%</div>`;
+    };
     html += `<div class="board-scroll"><table class="tbl rec-tbl milk-merged"><thead><tr>
         <th>场次</th><th>对阵</th><th>开赛</th>
-        <th>${esc(MILK_PLAY_NAME.BQ)}</th><th>${esc(MILK_PLAY_NAME.JQ)}</th><th>${esc(MILK_PLAY_NAME.BF)}</th><th>让球</th>
+        <th>${esc(MILK_PLAY_NAME.BQ)}${thPay('BQ')}</th><th>${esc(MILK_PLAY_NAME.JQ)}${thPay('JQ')}</th><th>${esc(MILK_PLAY_NAME.BF)}${thPay('BF')}</th><th>让球${thPay('NSPF')}</th>
       </tr></thead><tbody>`;
-    for(const g of rows){
-      html += `<tr class="match-row">
+    const rowHtml = g => `<tr class="match-row">
         <td class="match-no">${esc(g.matchNo || '')}</td>
-        <td class="teams-cell"><div class="teams">${esc(g.homeTeam || '')}<span class="vs">VS</span>${esc(g.awayTeam || '')}</div>
+        <td class="teams-cell"><div class="teams"><span class="tn">${esc(g.homeTeam || '')}</span><span class="vs">VS</span><span class="tn">${esc(g.awayTeam || '')}</span></div>
           <div class="league">${esc(g.leagueName || '')}</div></td>
         <td>${esc(tm(g.matchTime))}</td>
         <td>${cell(g, 'BQ')}</td>
@@ -2817,8 +3172,26 @@ function renderMilkBoard(b, strongOnly){
         <td>${cell(g, 'BF')}</td>
         <td>${cell(g, 'NSPF')}</td>
       </tr>`;
+    // 单列注与主榜分两块渲染（2026-11-08）：单列在最上面，主榜按场次号。
+    // 分隔行不是装饰——不隔开的话，单列那注会被当成「今天第六注主推」，而它其实只占 1 个独立名额。
+    const counterRows = rows.filter(isCounterRow);
+    const mainRows = rows.filter(g => !isCounterRow(g));
+    if(counterRows.length){
+      html += `<tr class="mk-sep"><td colspan="7"><b>高赔单列</b> · 30~40 倍反转档（不含 40）· 一天最多 1 注 · 不占主榜名额 · 长期负期望，只适合小注</td></tr>`;
+      for(const g of counterRows) html += rowHtml(g);
+    }
+    // 够格候选区（2026-11-08）：单列每天只留 1 注，其余够格的被赔率排序挤掉。
+    // 占位 + 异步填充，不阻塞首屏；内容由 loadMilkCandidates 拉 /api/milk/counter-candidates。
+    const _candDate = (picks[0] && picks[0].pickDate) ? String(picks[0].pickDate).slice(0, 10) : '';
+    html += `<tr class="mk-cand-row"><td colspan="7"><div class="mk-cand" id="milkCand" data-date="${esc(_candDate)}"><span class="dim">够格候选加载中…</span></div></td></tr>`;
+    if(mainRows.length){
+      html += `<tr class="mk-sep"><td colspan="7">主榜 · 按竞彩场次号排序 · 勾选 ≥2 注可在上方工具条看串关回本率</td></tr>`;
+      for(const g of mainRows) html += rowHtml(g);
     }
     html += `</tbody></table></div>`;
+    // 胜平/负平公平价参考（2026-11-08）：独立板块，在榜单下面。不塞进推荐表——
+    // 它和「今天买什么」无关，是查价工具，混进推荐表会让人以为又是一批可选注。
+    html += `<div class="mk-cand mk-fd" id="milkFd" data-date="${esc(_candDate)}"><span class="dim">胜平/负平公平价加载中…</span></div>`;
     // 换日期/换筛选后旧勾选要清掉，否则会拿昨天的注往今天填
     for(const k of [..._milkPickSet]) if(!aliveKeys.has(k)) _milkPickSet.delete(k);
   }

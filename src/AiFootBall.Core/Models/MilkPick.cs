@@ -142,6 +142,44 @@ public sealed class MilkPick
     public bool ModelLowConfidence { get; set; }
 
     /// <summary>
+    /// 「模型高估」标记（2026-11-08 加，落库到 FbMilkPick.ModelOverconfident）：
+    /// 该注名义 <see cref="Ev"/> 超过本玩法返奖率 × 1.05。
+    ///
+    /// 判据见 <see cref="Sources.MilkPickEngine.MarkOverconfident"/>。只标不撤。
+    /// 前端看到这个标记要把 EV 显示换成「模型高估·天花板 X」口径——
+    /// 半全场/总进球 0.837、比分 0.745、胜平负 0.922，超过就是模型把概率算高了，
+    /// 不是发现了价值。与 <see cref="ModelLowConfidence"/> 方向相反但本质同源：
+    /// 前者说「模型给低了」，后者说「模型给高了」，两者都是「模型这个数字别当真」。
+    /// </summary>
+    public bool ModelOverconfident { get; set; }
+
+    /// <summary>
+    /// 半全场 胜平(3-1) / 负平(0-1) 的概率来自 <c>HalfDrawModel</c> 而不是引擎的 HalfFullJoint
+    /// （2026-11-08 接入选注，落库到 FbMilkPick.HalfDrawRefined）。
+    ///
+    /// 为什么这两档要单独换概率源：竞彩对胜平和负平**报同一个价**（库内 552/552 差值为 0），
+    /// 价格里不含方向信息，而 HalfFullJoint 只是泊松两段，对「半场领先被追平」和
+    /// 「半场落后追平」的方向差分辨不足。HalfDrawModel 用竞彩总进球报价反推平局分布、
+    /// 再乘 10340 场实测的方向率，495 场校准后 P(胜平) 5.06%（市场 5.07%、实际 4.90%）。
+    ///
+    /// 这两档**不掺盘口**（其余档照旧 Blend）：市场对两档给的价格一模一样，
+    /// 掺进去就是把模型刚算出来的方向差重新抹平，等于白算。
+    /// </summary>
+    public bool HalfDrawRefined { get; set; }
+
+    /// <summary>
+    /// 热门方「体能/状态风险」标注（2026-11-08 加，落库到 FbMilkPick.FatigueTag）。
+    /// 空 = 无风险标记。
+    ///
+    /// ⚠ 只标注、**不扣概率**。原因写在 <c>MilkPickEngine.FatigueRisk</c> 的注释里：
+    /// 回测（2025-08 起，热门赔率≤2.50）显示「上一场欧战 + 96 小时内再战」的热门方
+    /// 实际兑现 63.9% vs 市场隐含 59.1%（+4.8 点），三连败组同样偏正。
+    /// 也就是说「累了的强队会输」在数据上不成立，扣分会是负 alpha。
+    /// 保留标注是为了让每注都能被人工复核，以及等样本够了再回来复算。
+    /// </summary>
+    public string? FatigueTag { get; set; }
+
+    /// <summary>
     /// 竞彩主胜「早盘→临场」升水幅度（%，2026-11-07 加，技能11）。null = 没有可用的开盘对照。
     /// ≥12% 时主胜方向注（胜胜/平胜/主胜比分）被 <see cref="MilkPickEngine"/> 整类撤下：
     /// 9758 场平均盘回测，升水≥12% 的主胜 ROI 33 vs 平盘基准 54——资金放弃主队是最可信的利空；
@@ -184,4 +222,75 @@ public sealed class MilkPick
     /// 显著高于让胜的 0.78。此前 NSPF 从来不出注，这是全引擎最大的价值缺口。
     /// </summary>
     public bool HandicapDrawSetup { get; set; }
+
+    /// <summary>
+    /// 竞彩/必发定价背离标签（2026-11-08 加，落库到 FbMilkPick.DivergenceTag）。
+    /// fake-hot-away = 客胜被竞彩单边砸价、必发不认（该形态回测 -17 点，客胜注已撤）；
+    /// fake-hot-home = 主胜同形态（回测 +3.4 点，仅标记不撤）；
+    /// undervalued-home / undervalued-away = 该侧被竞彩单边抬价、必发不跟（回测被低估，仅标记）。
+    /// 判定见 <see cref="PriceDivergence"/>。
+    /// </summary>
+    public string? DivergenceTag { get; set; }
+
+    /// <summary>定价背离的中文说明（前端直接显示），没有背离形态时为 null。</summary>
+    public string? DivergenceNote { get; set; }
+}
+
+/// <summary>
+/// 单列候选的引擎判定结果（2026-11-08 加，只做展示，不参与选注）。
+///
+/// 起因：候选区接口原先在 API 层重新跑三道闸，唯一漏掉的是「模型不得强烈否定」——
+/// 那道闸需要模型的三向概率，API 层拿不到。结果页面上「被模型否决」和「被赔率挤出」
+/// 长得一模一样（11-08 热那亚 负胜@36 就是被模型否决的，但页面只显示「未上榜」）。
+///
+/// 现在由引擎在出榜时把每条候选的落点算出来落库（FbMilkCounterCandidate），
+/// 接口直接读，原因可追溯。判定顺序与选注链严格一致，见 MilkPickEngine 里的诊断块。
+/// </summary>
+public static class MilkCounterVerdicts
+{
+    /// <summary>采纳入单列。</summary>
+    public const string Admitted = "admitted";
+    /// <summary>过了全部闸，但同档有更优的注被选中（每天只留 1 注）。</summary>
+    public const string LostToRank = "lost-to-rank";
+    /// <summary>模型概率 &lt; 联赛基线×0.40，引擎认为模型连方向都不认同。</summary>
+    public const string ModelVeto = "model-veto";
+    /// <summary>基线 EV / 返奖率 不在 [0.95, 1.35]。</summary>
+    public const string RatioOutOfBand = "ratio-out-of-band";
+    /// <summary>该联赛该档实测概率 &lt; 1.20%（如友谊赛 0.05%）。</summary>
+    public const string LeagueBelowFloor = "league-below-floor";
+    /// <summary>联赛不在基线表里，拿不到可信频率。</summary>
+    public const string NoLeagueBaseline = "no-league-baseline";
+    /// <summary>该场已经占了主榜名额，同一场不重复出注。</summary>
+    public const string SameMatchOnBoard = "same-match-on-board";
+
+    /// <summary>给前端直接用的中文说明。</summary>
+    public static string Label(string verdict) => verdict switch
+    {
+        Admitted => "已入单列",
+        LostToRank => "同档被更优注挤出",
+        ModelVeto => "模型否决",
+        RatioOutOfBand => "赔率/基线不匹配",
+        LeagueBelowFloor => "联赛基线过低",
+        NoLeagueBaseline => "联赛无基线",
+        SameMatchOnBoard => "该场已在主榜",
+        _ => verdict
+    };
+}
+
+/// <summary>单列候选一行（FbMilkCounterCandidate）：引擎出榜时的判据快照。</summary>
+public sealed class MilkCounterCandidate
+{
+    public long MatchId { get; init; }
+    public string MatchNo { get; init; } = "";
+    public string? LeagueName { get; init; }
+    public string? HomeTeam { get; init; }
+    public string? AwayTeam { get; init; }
+    public DateTime? MatchTime { get; init; }
+    public string OptionCode { get; init; } = "";
+    public decimal Odds { get; init; }
+    public decimal ModelProbability { get; init; }
+    public decimal? BasePct { get; init; }
+    public decimal? Ratio { get; init; }
+    public string Verdict { get; init; } = MilkCounterVerdicts.LostToRank;
+    public string? Reason { get; init; }
 }

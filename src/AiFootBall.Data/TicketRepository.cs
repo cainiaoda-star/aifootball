@@ -138,7 +138,8 @@ public sealed class TicketRepository
                      CASE
                        WHEN l.LineHit IS NOT NULL THEN l.LineHit
                        WHEN m.Status = 2 THEN 1
-                       WHEN l.PlayType = 'BF' AND m.Status = 3 AND m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL THEN
+                       WHEN l.PlayType = 'BF' AND m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                            AND (m.Status = 3 OR m.MatchTime <= DATEADD(minute, -150, GETDATE())) THEN
                          -- 比分档有两类：具体比分（3:0 这种）和三个「其它」（胜其它/平其它/负其它）。
                          -- 只比对具体比分的话，「胜其它」会被判成永远不中——而这档赔率 90 倍，
                          -- 恰恰是最容易进大奶票的选项，判错了票面 KPI 就全歪了。
@@ -158,11 +159,13 @@ public sealed class TicketRepository
                            WHEN l.PickCode = CONCAT(m.HomeScore, ':', m.AwayScore) THEN 1
                            ELSE 0
                          END
-                       WHEN l.PlayType = 'JQ' AND m.Status = 3 AND m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL THEN
+                       WHEN l.PlayType = 'JQ' AND m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                            AND (m.Status = 3 OR m.MatchTime <= DATEADD(minute, -150, GETDATE())) THEN
                          CASE WHEN l.PickCode = '7' AND m.HomeScore + m.AwayScore >= 7 THEN 1
                               WHEN l.PickCode <> '7' AND m.HomeScore + m.AwayScore = TRY_CAST(l.PickCode AS INT) THEN 1
                               ELSE 0 END
-                       WHEN l.PlayType = 'BQ' AND m.Status = 3 AND m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                       WHEN l.PlayType = 'BQ' AND m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                            AND (m.Status = 3 OR m.MatchTime <= DATEADD(minute, -150, GETDATE()))
                             AND m.HalfHomeScore IS NOT NULL AND m.HalfAwayScore IS NOT NULL THEN
                          CASE WHEN l.PickCode = CONCAT(
                                   CASE WHEN m.HalfHomeScore > m.HalfAwayScore THEN '3'
@@ -170,7 +173,8 @@ public sealed class TicketRepository
                                   '-',
                                   CASE WHEN m.HomeScore > m.AwayScore THEN '3'
                                        WHEN m.HomeScore = m.AwayScore THEN '1' ELSE '0' END) THEN 1 ELSE 0 END
-                       WHEN m.Status = 3 AND m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                       WHEN m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                            AND (m.Status = 3 OR m.MatchTime <= DATEADD(minute, -150, GETDATE()))
                             AND l.Handicap IS NOT NULL AND l.PickSide IS NOT NULL THEN
                          CASE
                            WHEN m.HomeScore + l.Handicap - m.AwayScore > 0.001
