@@ -25,7 +25,27 @@ public sealed class MilkPickRepository
             @"IF COL_LENGTH('dbo.FbMilkPick','HalfDrawRefined') IS NULL
                   ALTER TABLE dbo.FbMilkPick ADD HalfDrawRefined bit NOT NULL CONSTRAINT DF_FbMilkPick_HalfDrawRefined DEFAULT(0);
               IF COL_LENGTH('dbo.FbMilkPick','FatigueTag') IS NULL
-                  ALTER TABLE dbo.FbMilkPick ADD FatigueTag nvarchar(60) NULL;",
+                  ALTER TABLE dbo.FbMilkPick ADD FatigueTag nvarchar(60) NULL;
+              -- 临场告警回写列（2026-11-08）：告警必须落在注单上，推荐页才看得见。
+              IF COL_LENGTH('dbo.FbMilkPick','AlertSeverity') IS NULL
+                  ALTER TABLE dbo.FbMilkPick ADD AlertSeverity nvarchar(8) NULL;
+              IF COL_LENGTH('dbo.FbMilkPick','AlertReason') IS NULL
+                  ALTER TABLE dbo.FbMilkPick ADD AlertReason nvarchar(400) NULL;
+              IF COL_LENGTH('dbo.FbMilkPick','Voided') IS NULL
+                  ALTER TABLE dbo.FbMilkPick ADD Voided bit NOT NULL CONSTRAINT DF_FbMilkPick_Voided DEFAULT(0);
+              IF COL_LENGTH('dbo.FbMilkPick','VoidedAt') IS NULL
+                  ALTER TABLE dbo.FbMilkPick ADD VoidedAt datetime2 NULL;
+              -- 告警去重键（2026-11-08）：Reason 带实时数值，拿它去重等于不去重。
+              IF COL_LENGTH('dbo.FbTurnAlert','SignalCode') IS NULL
+                  ALTER TABLE dbo.FbTurnAlert ADD SignalCode nvarchar(80) NULL;
+              IF COL_LENGTH('dbo.FbTurnAlert','LastSeenAt') IS NULL
+                  ALTER TABLE dbo.FbTurnAlert ADD LastSeenAt datetime2 NULL;
+              IF COL_LENGTH('dbo.FbTurnAlert','PickId') IS NULL
+                  ALTER TABLE dbo.FbTurnAlert ADD PickId bigint NULL;
+              IF COL_LENGTH('dbo.FbTurnAlert','PlayType') IS NULL
+                  ALTER TABLE dbo.FbTurnAlert ADD PlayType varchar(10) NULL;
+              IF COL_LENGTH('dbo.FbTurnAlert','OptionCode') IS NULL
+                  ALTER TABLE dbo.FbTurnAlert ADD OptionCode varchar(20) NULL;",
             cancellationToken: ct));
         _columnsReady = true;
     }
@@ -55,11 +75,11 @@ public sealed class MilkPickRepository
                     (PickDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
                      BaselineProbability, BaselineEv, ModelLowConfidence, ModelOverconfident,
-                     DivergenceTag, DivergenceNote, HalfDrawRefined, FatigueTag)
+                     DivergenceTag, DivergenceNote, HalfDrawRefined, FatigueTag, ModelVsMarketRatio)
                   VALUES (@d, @mid, @no, @lg, @home, @away, @time,
                           @play, @code, @name, @odds, @prob, @ev, @counterHigh,
                           @basePct, @baseEv, @lowConf, @overConf,
-                          @divTag, @divNote, @halfDraw, @fatigue)",
+                          @divTag, @divNote, @halfDraw, @fatigue, @vsMarket)",
                 new
                 {
                     d, mid, no = p.MatchNo, lg = p.LeagueName, home = p.HomeTeam, away = p.AwayTeam,
@@ -91,7 +111,11 @@ public sealed class MilkPickRepository
                     halfDraw = p.HalfDrawRefined,
                     // 体能/状态标注（2026-11-08）：只标注不扣分，落库是为了攒样本——
                     // 等「热门方欧战后 96 小时内」这类场次过百，才能回答该不该真扣概率。
-                    fatigue = p.FatigueTag
+                    fatigue = p.FatigueTag,
+                    // 模型纯值 ÷ 市场隐含（2026-11-08）：唯一一个「模型自己怎么看这注」的数字。
+                    // 不落库的话，「模型说这价高估」只能活在前端角标里，赛后无法复核
+                    // 这条判据到底拦对了还是拦错了——而它恰恰是唯一一条没经过回测的闸。
+                    vsMarket = p.ModelVsMarketRatio
                 }, tx, cancellationToken: ct));
         }
 
@@ -178,12 +202,16 @@ public sealed class MilkPickRepository
     {
         var d = pickDate.Date;
         await using var conn = await _factory.OpenAsync(ct);
+        // 榜面要读 AlertSeverity/Voided 两列，老库第一次跑时它们还不存在——
+        // 补列放在查询前，读榜不能因为「还没人跑过出榜作业」而整页 500。
+        await EnsureColumnsAsync(conn, ct);
         var rows = (await conn.QueryAsync<MilkPickRow>(new CommandDefinition(
             @"SELECT PickId, PickDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
                      BaselineProbability, BaselineEv, ModelLowConfidence, ModelOverconfident,
                      DivergenceTag, DivergenceNote,
-                     HalfDrawRefined, FatigueTag,
+                     HalfDrawRefined, FatigueTag, ModelVsMarketRatio,
+                     AlertSeverity, AlertReason, Voided, VoidedAt,
                      ActualScore, ActualHalfScore, ActualGoals, Hit, SettledAt
               FROM dbo.FbMilkPick WHERE PickDate=@d
               ORDER BY ModelProbability DESC, Ev DESC", new { d }, cancellationToken: ct))).ToList();
@@ -377,48 +405,172 @@ public sealed class MilkPickRepository
     ///
     /// 本方法由 turn-guard 定时任务调用，扫描当天未开赛、已发出、未告警过的大奶注。
     /// </summary>
-    public async Task<int> SaveTurnAlertsAsync(
+    public async Task<TurnAlertSaveResult> SaveTurnAlertsAsync(
         DateTime alertDate, IReadOnlyList<TurnAlertRow> alerts, CancellationToken ct = default)
     {
         var d = alertDate.Date;
         await using var conn = await _factory.OpenAsync(ct);
+        // 补列必须在开事务之前（否则命令要自带 Transaction，见 SaveDayAsync 注释）。
+        await EnsureColumnsAsync(conn, ct);
+
+        var existing = (await conn.QueryAsync<TurnAlertRow>(new CommandDefinition(
+            @"SELECT AlertId, AlertDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
+                     PickOption, Reason, Severity, ScoreDiagTag, ExpGdOpen, ExpGdNow, ExpGdMove, CreatedAt,
+                     ISNULL(PickId,0) AS PickId, ISNULL(PlayType,'') AS PlayType,
+                     ISNULL(OptionCode,'') AS OptionCode, SignalCode, LastSeenAt
+              FROM dbo.FbTurnAlert WHERE AlertDate=@d",
+            new { d }, cancellationToken: ct))).ToList();
+
+        // 键 = (MatchId, PlayType, OptionCode)：只认「哪一注」，不认 Reason 文案。
+        static string KeyOf(long mid, string? pt, string? oc) => $"{mid}|{pt}|{oc}";
+        var byKey = existing
+            .GroupBy(x => KeyOf(x.MatchId, x.PlayType, x.OptionCode))
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.AlertId).First());
+
         await using var tx = await conn.BeginTransactionAsync(ct);
 
-        var rows = 0;
+        var inserted = 0;
+        var updated = 0;
+        var newHigh = 0;
+        var keep = new HashSet<string>(StringComparer.Ordinal);
+
         foreach (var a in alerts)
         {
             if (a.MatchId <= 0) continue;
-            rows += await conn.ExecuteAsync(new CommandDefinition(
-                @"IF NOT EXISTS (SELECT 1 FROM dbo.FbTurnAlert WHERE AlertDate=@d AND MatchId=@mid AND Reason=@reason)
-                  INSERT INTO dbo.FbTurnAlert
-                    (AlertDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
-                     PickOption, Reason, Severity, ScoreDiagTag, ExpGdOpen, ExpGdNow, ExpGdMove,
-                     CreatedAt)
-                  VALUES (@d, @mid, @no, @lg, @home, @away, @time,
-                          @pick, @reason, @sev, @tag, @open, @now, @move, SYSDATETIME())",
+            var key = KeyOf(a.MatchId, a.PlayType, a.OptionCode);
+            keep.Add(key);
+
+            if (byKey.TryGetValue(key, out var old))
+            {
+                updated += await conn.ExecuteAsync(new CommandDefinition(
+                    @"UPDATE dbo.FbTurnAlert
+                      SET Reason=@reason, Severity=@sev, SignalCode=@sig, ScoreDiagTag=@tag,
+                          ExpGdOpen=@open, ExpGdNow=@now, ExpGdMove=@move, PickId=@pid,
+                          PickOption=@pick, MatchTime=@time, LastSeenAt=SYSDATETIME()
+                      WHERE AlertId=@id",
+                    new
+                    {
+                        reason = a.Reason, sev = a.Severity, sig = a.SignalCode, tag = a.ScoreDiagTag,
+                        open = a.ExpGdOpen, now = a.ExpGdNow, move = a.ExpGdMove, pid = a.PickId,
+                        pick = a.PickOption, time = a.MatchTime, id = old.AlertId
+                    }, tx, cancellationToken: ct));
+
+                // 只有「从无到有」或「mid→high」才算新增高危，避免每 10 分钟重复触发重算。
+                if (a.Severity == "high" && old.Severity != "high") newHigh++;
+                continue;
+            }
+
+            inserted += await conn.ExecuteAsync(new CommandDefinition(
+                @"INSERT INTO dbo.FbTurnAlert
+                    (AlertDate, MatchId, PickId, PlayType, OptionCode, MatchNo, LeagueName,
+                     HomeTeam, AwayTeam, MatchTime, PickOption, Reason, Severity, SignalCode,
+                     ScoreDiagTag, ExpGdOpen, ExpGdNow, ExpGdMove, CreatedAt, LastSeenAt)
+                  VALUES (@d, @mid, @pid, @play, @code, @no, @lg,
+                          @home, @away, @time, @pick, @reason, @sev, @sig,
+                          @tag, @open, @now, @move, SYSDATETIME(), SYSDATETIME())",
                 new
                 {
-                    d, mid = a.MatchId, no = a.MatchNo, lg = a.LeagueName,
+                    d, mid = a.MatchId, pid = a.PickId, play = a.PlayType, code = a.OptionCode,
+                    no = a.MatchNo, lg = a.LeagueName,
                     home = a.HomeTeam, away = a.AwayTeam, time = a.MatchTime,
-                    pick = a.PickOption, reason = a.Reason, sev = a.Severity,
+                    pick = a.PickOption, reason = a.Reason, sev = a.Severity, sig = a.SignalCode,
                     tag = a.ScoreDiagTag, open = a.ExpGdOpen, now = a.ExpGdNow, move = a.ExpGdMove
                 }, tx, cancellationToken: ct));
+            if (a.Severity == "high") newHigh++;
         }
 
+        // 信号消失就撤掉告警行——否则「早上的高危」会一直挂在榜上，用户以为现在还是高危。
+        // 只清「还没开赛」的场次：已开赛的场次不再重算，保留告警作为事后凭证。
+        var stale = existing
+            .Where(x => !keep.Contains(KeyOf(x.MatchId, x.PlayType, x.OptionCode)))
+            .Where(x => x.MatchTime is null || x.MatchTime > DateTime.Now)
+            .Select(x => x.AlertId)
+            .ToList();
+        foreach (var id in stale)
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM dbo.FbTurnAlert WHERE AlertId=@id", new { id }, tx, cancellationToken: ct));
+
         await tx.CommitAsync(ct);
-        return rows;
+        return new TurnAlertSaveResult
+        {
+            Inserted = inserted, Updated = updated, Cleared = stale.Count, NewHigh = newHigh
+        };
     }
 
-    /// <summary>当日未解决的临场转向告警，按严重度降序、开赛时间正序。</summary>
+    /// <summary>
+    /// 把当日告警**回写到注单本身**（2026-11-08 加）。这是「监控 → 榜单」闭环的最后一环。
+    ///
+    /// 之前断在这一环：turn-guard 每 10 分钟把告警写进 FbTurnAlert，推荐页那张卡片一个字都不变。
+    /// 用户看到的是「这注还在榜上、还是那个 EV」，于是照买——而系统在他背后已经喊了十几次。
+    /// 2026-11-08 诺丁汉森林 3:1 曼城 就是这么丢的：16:45 起十几条 high 告警，选注照旧押曼城。
+    ///
+    /// 回写规则：
+    ///   high → 上榜红标 + **撤注**（Voided=1，不可逆，重算也不会把它放回主榜）
+    ///   mid  → 只上榜红标，不撤注（单信号不足以下撤注决心，见 TurnGuard 高危判据）
+    /// 已无告警的注清空红标，但**不解除已发生的撤注**——撤了就是撤了，不因为市场暂时回摆又放回榜上。
+    /// </summary>
+    public async Task<(int Marked, int Voided)> ApplyTurnAlertsToPicksAsync(
+        DateTime pickDate, CancellationToken ct = default)
+    {
+        var d = pickDate.Date;
+        await using var conn = await _factory.OpenAsync(ct);
+        await EnsureColumnsAsync(conn, ct);
+
+        // 同一注可能有多行历史告警（早期无去重的数据），取最新一行。
+        var marked = await conn.ExecuteAsync(new CommandDefinition(
+            @"WITH latest AS (
+                  SELECT MatchId, PlayType, OptionCode, Severity, Reason,
+                         ROW_NUMBER() OVER (PARTITION BY MatchId, PlayType, OptionCode
+                                            ORDER BY AlertId DESC) AS rn
+                  FROM dbo.FbTurnAlert
+                  WHERE AlertDate=@d
+              )
+              UPDATE p
+                 SET p.AlertSeverity = a.Severity,
+                     p.AlertReason   = a.Reason,
+                     p.Voided        = CASE WHEN a.Severity='high' THEN 1 ELSE p.Voided END,
+                     p.VoidedAt      = CASE WHEN a.Severity='high' AND p.Voided=0 THEN SYSDATETIME()
+                                            ELSE p.VoidedAt END
+                FROM dbo.FbMilkPick p
+                JOIN latest a
+                  ON a.MatchId = p.MatchId AND a.PlayType = p.PlayType
+                 AND a.OptionCode = p.OptionCode AND a.rn = 1
+               WHERE p.PickDate = @d AND p.SettledAt IS NULL",
+            new { d }, cancellationToken: ct));
+
+        // 告警消失 → 清红标（撤注不解除）。
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"UPDATE p SET p.AlertSeverity=NULL, p.AlertReason=NULL
+                FROM dbo.FbMilkPick p
+               WHERE p.PickDate=@d AND p.SettledAt IS NULL AND p.AlertSeverity IS NOT NULL
+                 AND NOT EXISTS (SELECT 1 FROM dbo.FbTurnAlert a
+                                  WHERE a.AlertDate=@d AND a.MatchId=p.MatchId
+                                    AND a.PlayType=p.PlayType AND a.OptionCode=p.OptionCode)",
+            new { d }, cancellationToken: ct));
+
+        var voided = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate=@d AND Voided=1 AND SettledAt IS NULL",
+            new { d }, cancellationToken: ct));
+
+        return (marked, voided);
+    }
+
+    /// <summary>
+    /// 当日仍在生效的临场转向告警，按严重度降序、开赛时间正序。
+    /// 2026-11-08 改：只返回**还没开赛**的场次——已开赛的场次榜单已不再展示，
+    /// 继续挂在监控页只会让人以为「现在还有风险」。
+    /// </summary>
     public async Task<List<TurnAlertRow>> GetTurnAlertsAsync(DateTime alertDate, CancellationToken ct = default)
     {
         var d = alertDate.Date;
         await using var conn = await _factory.OpenAsync(ct);
         return (await conn.QueryAsync<TurnAlertRow>(new CommandDefinition(
             @"SELECT AlertId, AlertDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
-                     PickOption, Reason, Severity, ScoreDiagTag, ExpGdOpen, ExpGdNow, ExpGdMove, CreatedAt
+                     PickOption, Reason, Severity, ScoreDiagTag, ExpGdOpen, ExpGdNow, ExpGdMove, CreatedAt,
+                     ISNULL(PickId,0) AS PickId, ISNULL(PlayType,'') AS PlayType,
+                     ISNULL(OptionCode,'') AS OptionCode, SignalCode, LastSeenAt
               FROM dbo.FbTurnAlert
-              WHERE AlertDate=@d
+              WHERE AlertDate=@d AND (MatchTime IS NULL OR MatchTime > SYSDATETIME())
               ORDER BY CASE WHEN Severity='high' THEN 0 ELSE 1 END, MatchTime, MatchNo",
             new { d }, cancellationToken: ct))).ToList();
     }
@@ -433,8 +585,13 @@ public sealed class MilkPickRepository
     {
         await using var conn = await _factory.OpenAsync(ct);
         return (await conn.QueryAsync<MilkPickRow>(new CommandDefinition(
+            // ★ 必须带上 BaselineProbability / BaselineEv（2026-11-08 修）。
+            // 少了这两列，TurnGuard 的「实证 EV 跌破返奖率」判据拿到的永远是 null，
+            // 于是 EV 破线的注一路被判成「无告警」——判据写了、字段没读，等于没写。
             @"SELECT p.PickId, p.PickDate, p.MatchId, p.MatchNo, p.LeagueName, p.HomeTeam, p.AwayTeam,
                      p.MatchTime, p.PlayType, p.OptionCode, p.OptionName, p.Odds, p.ModelProbability, p.Ev,
+                     p.BaselineProbability, p.BaselineEv, p.ModelVsMarketRatio,
+                     p.AlertSeverity, p.Voided,
                      p.ActualScore, p.ActualHalfScore, p.ActualGoals, p.Hit, p.SettledAt
               FROM dbo.FbMilkPick p
               JOIN dbo.FbMatch m ON m.MatchId = p.MatchId
@@ -638,6 +795,24 @@ public sealed class TurnAlertRow
     /// <summary>这一注的玩法+选项显示名，如「半全场 胜胜」。</summary>
     public string PickOption { get; set; } = "";
 
+    /// <summary>出告警时那一注的 PickId（仅供追溯，不用于关联——重算会换 Id）。</summary>
+    public long PickId { get; set; }
+
+    /// <summary>玩法（BQ/BF/JQ），与 MatchId+OptionCode 一起构成告警回写到榜面的稳定键（2026-11-08）。</summary>
+    public string PlayType { get; set; } = "";
+
+    /// <summary>选项代码（如 0-0 / 1:0 / 2），告警回写键的一部分。</summary>
+    public string OptionCode { get; set; } = "";
+
+    /// <summary>
+    /// 命中的信号码（逗号分隔，2026-11-08 加）。这是去重键，也是「哪几条信号对注不利」的凭证：
+    /// 没有它就只能拿带实时数值的 Reason 去重，数值一动就是新记录（11-08 一天刷了 57 条告警）。
+    /// </summary>
+    public string? SignalCode { get; set; }
+
+    /// <summary>最后一次仍在触发的时刻（告警会随信号消失被删除，本列用于判断新鲜度）。</summary>
+    public DateTime? LastSeenAt { get; set; }
+
     /// <summary>一句话说明为什么报警。</summary>
     public string Reason { get; set; } = "";
 
@@ -650,6 +825,21 @@ public sealed class TurnAlertRow
     public decimal? ExpGdNow { get; set; }
     public decimal? ExpGdMove { get; set; }
     public DateTime? CreatedAt { get; set; }
+}
+
+/// <summary>
+/// 一轮告警落库的结果（2026-11-08 加）。<see cref="NewHigh"/> 是「新出现的高危」条数，
+/// 调用方据此决定要不要立刻重算当天的榜——不是每次都重算，否则每 10 分钟跑一遍全量。
+/// </summary>
+public sealed class TurnAlertSaveResult
+{
+    public int Inserted { get; set; }
+    public int Updated { get; set; }
+    /// <summary>信号已消失、被删掉的告警行数。</summary>
+    public int Cleared { get; set; }
+    /// <summary>本轮新出现（或由 mid 升级为 high）的高危告警条数。</summary>
+    public int NewHigh { get; set; }
+    public int Total => Inserted + Updated;
 }
 
 /// <summary>某场某玩法某档当前最新快照价（2026-11-08，GetDayAsync 内部用）。</summary>
@@ -717,6 +907,11 @@ public sealed class MilkPickRow
     public decimal Odds { get; set; }
     public decimal ModelProbability { get; set; }
     public decimal Ev { get; set; }
+    /// <summary>
+    /// 模型自证口径的 EV，API 层把 <see cref="Ev"/> 覆盖成 BaselineEv 时存进来（2026-11-08）。
+    /// 只用于「模型有多乐观」的对比展示，不参与排序。
+    /// </summary>
+    public decimal? ModelEv { get; set; }
     /// <summary>高赔反转单列（2026-11-07）。true = 12 倍以上的次名额，不在主榜 3 个半全场名额里。</summary>
     public bool CounterHigh { get; set; }
     /// <summary>联赛基线的实测概率（%，2026-11-07 夜加）。单列注必有；主榜反转档被标记时也会补。</summary>
@@ -739,6 +934,11 @@ public sealed class MilkPickRow
     /// <summary>热门方体能/状态标注（2026-11-08 加）：连败3场 / 欧战后N小时 / 休息N小时。只标注不扣分。</summary>
     public string? FatigueTag { get; set; }
     /// <summary>
+    /// 模型纯值 ÷ 市场去水隐含（2026-11-08 加）。&lt; 0.70 = 模型认为市场高估 30% 以上。
+    /// 与 <see cref="MilkPick.ModelVsMarketRatio"/> 同口径，落库是为了赛后能复核这条闸。
+    /// </summary>
+    public decimal? ModelVsMarketRatio { get; set; }
+    /// <summary>
     /// 当前挂单价（2026-11-08 加）。不是数据库列——由 <c>GetDayAsync</c> 关联当天最新快照填入。
     ///
     /// 用途：出榜价是出榜那一刻的快照，临场会动。单列注还有额外一层风险——它是区间票
@@ -746,6 +946,22 @@ public sealed class MilkPickRow
     /// 页面据此显示「现价」并在滑出区间时打标，避免用户按一个已经不存在的赔率去下单。
     /// </summary>
     public decimal? CurrentOdds { get; set; }
+    /// <summary>
+    /// 临场告警严重度（2026-11-08 加）：high / mid / null（无告警）。
+    /// 由 turn-guard 扫描后**回写到注单本身**——这才是闭环的关键一步：
+    /// 以前告警只落在 FbTurnAlert，推荐页那张卡片上什么都不显示，
+    /// 用户照着榜下单，而系统在他背后喊了十几次「这注危险」。
+    /// </summary>
+    public string? AlertSeverity { get; set; }
+    /// <summary>告警原因（一句话，前端直接显示在注单行上）。</summary>
+    public string? AlertReason { get; set; }
+    /// <summary>
+    /// 是否已被临场撤注（2026-11-08 加）。high 告警自动置位。
+    /// 撤注**不删行**，理由有两条：① 用户必须看得见「这注被撤了」，静默消失等于假装没推过；
+    /// ② 撤注对错必须能回测——留着行才能在结算后回答「撤掉的注最后中没中」。
+    /// </summary>
+    public bool Voided { get; set; }
+    public DateTime? VoidedAt { get; set; }
     /// <summary>
     /// 本玩法的 EV 名义天花板（2026-11-08 加）。不是数据库列——由 API 接口按 PlayType
     /// 调 <c>MilkPickEngine.EvCapFor</c> 填进来。放在行对象上是因为前端要拿它和 ev 比大小，

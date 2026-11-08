@@ -39,12 +39,14 @@ public static class HalfDrawModel
 
     /// <summary>
     /// 平局各比分下「半场主队领先」的实测占比（下标 = 比分 n:n 的 n）。
-    /// 来源：2023-01~2025-12 主流可信联赛 10340 场平局。n=0（0:0）恒为 0——半场必平，两档都不可能中。
+    /// 来源：2026-11-08 重算，FbMatch 2024-08 起真半场（半场 ≤ 全场），平局 42,384 场。
+    /// n=0（0:0）恒为 0——半场必平，两档都不可能中。n=1:23608 / 2:10494 / 3:2291 / 4:285。
+    /// 旧值（0.2563/0.3373/0.3573/0.3600）是用「半场=全场」的副本数据算的，已作废。
     /// </summary>
-    private static readonly double[] QHomeLead = { 0d, 0.2563, 0.3373, 0.3573, 0.3600 };
+    private static readonly double[] QHomeLead = { 0d, 0.2527, 0.3134, 0.3400, 0.3719 };
 
-    /// <summary>同上，「半场客队领先」。不对称只有约 8%，且与实力差无关（分 5 档比值 1.03/1.18/1.10/1.06/0.99）。</summary>
-    private static readonly double[] QAwayLead = { 0d, 0.2342, 0.3140, 0.3486, 0.3500 };
+    /// <summary>同上，「半场客队领先」。两侧不对称只有 1~5 个点（比旧表算出的「约 8%」更小）。</summary>
+    private static readonly double[] QAwayLead = { 0d, 0.2414, 0.3158, 0.3326, 0.3228 };
 
     // 网格预算：SPF 三项概率 → (λh, λa) 的最小二乘查找表。
     private static readonly double[] PW = new double[W * W];

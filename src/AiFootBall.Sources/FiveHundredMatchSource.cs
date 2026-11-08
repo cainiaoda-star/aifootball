@@ -136,9 +136,9 @@ public sealed class FiveHundredMatchSource : IMatchSource
         var idAttr = tr.GetAttributeValue("id", "");
         if (!long.TryParse(idAttr.TrimStart('a'), out var fid)) return null;
 
-        var texts = (tr.SelectNodes("./td") ?? Enumerable.Empty<HtmlNode>())
-            .Select(td => PinbleLotterySource.CleanText(td.InnerText))
-            .ToList();
+        // 保留 td 节点本身：判定「哪一格是半场」必须靠单元格结构，不能靠数值。
+        var tdNodes = (tr.SelectNodes("./td") ?? Enumerable.Empty<HtmlNode>()).ToList();
+        var texts = tdNodes.Select(td => PinbleLotterySource.CleanText(td.InnerText)).ToList();
         if (texts.Count < 5) return null;
 
         // 时间
@@ -202,21 +202,60 @@ public sealed class FiveHundredMatchSource : IMatchSource
             }
         }
 
-        // 比分/半场兜底（如竞彩页日期列为 "1 - 2" 的纯文本行）
-        var scoreTexts = texts.Where(t => ScoreRegex.IsMatch(t)).ToList();
-        int? halfHome = null, halfAway = null;
-        if (homeScore is null && scoreTexts.Count > 0)
+        // 比分兜底（如竞彩页日期列为 "1 - 2" 的纯文本行）与半场采集。
+        //
+        // ★ 2026-11-08 事故修复。旧代码在拿到结构化比分（div.pk）之后，**无条件**把
+        //   scoreTexts[0] 当作半场。但 div.pk 那格的 innerText 本身就会被清成 "4-0"，
+        //   同样匹配比分正则、还排在最前面，于是半场永远等于全场：
+        //     全库 84% 的场次「半场 == 全场」；半场场均 2.58（全场 2.90 的 89%，真实约 43%）；
+        //     全场 1:0 的比赛里 82.8% 被记成「半场 1:0」（真实页面实测约 20% 同分、38% 反转）。
+        //   结果是所有半全场实证基线全部建立在垃圾上。
+        //
+        // 正确做法：**按单元格结构判定**。500 完场页的行结构是
+        //   <td><div class="pk">…全场…</div></td> … <td class="red">1 - 0</td>
+        // 半场在独立的一格里，且那一格不装 div.pk。所以「是比分文本、且不是装 pk 的那一格」才是半场。
+        //   · 不能按「数值与全场不同」筛：真实比赛约 20% 半场就等于全场，那样会把真样本也丢掉
+        //     （第一版就是这么错的，11-07 同分率被压到 0%、只剩 960 场）。
+        //   · 仍然校验「半场 ≤ 全场」，越界的一律不采（页面残行会给出这种事）。
+        var scoreIdx = Enumerable.Range(0, texts.Count)
+            .Where(i => ScoreRegex.IsMatch(texts[i]))
+            .ToList();
+        int? pkIdx = null;
+        foreach (var i in scoreIdx)
         {
-            var m = ScoreRegex.Match(scoreTexts[0]);
+            if (tdNodes[i].SelectSingleNode(".//div[@class='pk']") is null) continue;
+            pkIdx = i;
+            break;
+        }
+
+        // 装 pk 的那一格必须单独找：它的 innerText 会混进盘口文字（如 "1两球/两球半0"），
+        // 于是不匹配比分正则、进不了 scoreIdx。若只在 scoreIdx 里找 pk，
+        // 就会把「真正的半场格」当成全场格跳过——2026-11-07 实测因此漏掉 446 场（占 27%）。
+        int? pkCellIdx = null;
+        for (var i = 0; i < tdNodes.Count; i++)
+        {
+            if (tdNodes[i].SelectSingleNode(".//div[@class='pk']") is null) continue;
+            pkCellIdx = i;
+            break;
+        }
+
+        int? halfHome = null, halfAway = null;
+        if (homeScore is null && scoreIdx.Count > 0)
+        {
+            var m = ScoreRegex.Match(texts[scoreIdx[0]]);
             homeScore = int.Parse(m.Groups[1].Value);
             awayScore = int.Parse(m.Groups[2].Value);
-            scoreTexts.RemoveAt(0);
         }
-        if (scoreTexts.Count > 0)
+
+        if (homeScore is int fh && awayScore is int fa)
         {
-            var m = ScoreRegex.Match(scoreTexts[0]);
-            halfHome = int.Parse(m.Groups[1].Value);
-            halfAway = int.Parse(m.Groups[2].Value);
+            // 全场比分占用的那一格：优先用装 pk 的格（不管它的文本能否匹配正则），否则用第一个比分格
+            var fullCellIdx = pkCellIdx ?? pkIdx ?? (scoreIdx.Count > 0 ? scoreIdx[0] : -1);
+            if (PickHalfScore(texts, fullCellIdx, fh, fa) is var (hh, ha))
+            {
+                halfHome = hh;
+                halfAway = ha;
+            }
         }
 
         // 状态
@@ -255,6 +294,33 @@ public sealed class FiveHundredMatchSource : IMatchSource
         };
 
         return (record, league, home, away);
+    }
+
+    /// <summary>
+    /// 从一行的单元格文本里挑出半场比分；挑不到返回 null。
+    ///
+    /// 三条硬规则（都是 2026-11-08 那次事故换来的）：
+    ///   1. **跳过全场那一格**（<paramref name="fullCellIdx"/>）。旧代码不跳，而装全场的
+    ///      div.pk 那格 innerText 会被清成 "4-0"，同样匹配比分正则还排在最前，
+    ///      于是半场永远等于全场——全库 84% 的场次被写成「半场 = 全场」。
+    ///   2. **不能按「数值与全场不同」来筛**。真实比赛约 20% 半场就等于全场，
+    ///      按数值筛会把真样本一起丢掉（第一版修法就是这么错的，11-07 同分率被压到 0%）。
+    ///   3. 半场不得超过全场，越界说明是残行或别的数字，一律不要。
+    /// </summary>
+    internal static (int H, int A)? PickHalfScore(
+        IReadOnlyList<string> texts, int fullCellIdx, int fullHome, int fullAway)
+    {
+        for (var i = 0; i < texts.Count; i++)
+        {
+            if (i == fullCellIdx) continue;
+            var m = ScoreRegex.Match(texts[i]);
+            if (!m.Success) continue;
+            var hh = int.Parse(m.Groups[1].Value);
+            var ha = int.Parse(m.Groups[2].Value);
+            if (hh > fullHome || ha > fullAway) continue;
+            return (hh, ha);
+        }
+        return null;
     }
 
     private static TeamRecord? BuildTeam(HtmlNode a, int? leagueId)

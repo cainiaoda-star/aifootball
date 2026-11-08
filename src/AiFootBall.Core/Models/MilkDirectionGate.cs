@@ -9,14 +9,18 @@ namespace AiFootBall.Core.Models;
 ///   · 欧赔隐含方向 61.0%、必发大额方向 74.4%；
 ///   · 三层一致 84.4%，三层背离时跟亚盘只有 26.3%（亚盘在背离时几乎是反向指标）。
 /// 结论：方向这件事不能听模型的，也不能听亚盘的，只能听市场（欧赔/竞彩去水）。
-/// 于是加这道闸——模型方向和市场方向背离的场次，整场不发。
+/// 于是加这道闸——模型方向和市场方向背离的场次，**标记并降权诊断**。
+///
+/// 注意（2026-11-08 修正）：`EnforceDirectionVeto=false`，这道闸实际**不砍注**，只标注。
+/// 原因是硬砍回测为负 alpha（444 场 3745 注，前四档「反向」命中/回报优于「同向」）。
+/// 原文档写「整场不发」与真实行为不符，已改。
 /// </summary>
 public static class MilkGateVerdicts
 {
     /// <summary>模型方向与市场方向一致（或市场无明确方向但差距极小），放行。</summary>
     public const string Pass = "pass";
 
-    /// <summary>模型方向与市场方向背离，整场不发。</summary>
+    /// <summary>模型方向与市场方向背离。默认只标注不砍注（见 EnforceDirectionVeto）。</summary>
     public const string Diverge = "diverge";
 
     /// <summary>市场方向算不出来（快照不完整），闸不生效——宁可不管，也不用残缺数据瞎判。</summary>
@@ -222,6 +226,15 @@ public sealed class MilkFunnel
 
     /// <summary>主客队名齐全的场次。</summary>
     public int Named { get; set; }
+
+    /// <summary>
+    /// 竞彩联赛名与数据源不一致、已自动对齐的场次（2026-11-08 加）。
+    /// 典型：竞彩「韩职」→ 数据源「K1联赛」。不做这一步，整类联赛会被判成「模型从没见过的队」。
+    /// </summary>
+    public int LeagueAliased { get; set; }
+
+    /// <summary>对齐明细（最多留 20 条，形如「周日002 韩职→K1联赛」），空了说明今天没有对不上的名字。</summary>
+    public List<string> AliasNotes { get; set; } = new();
 
     /// <summary>模型认识的场次（模型 Ready 且两队都有历史样本）。</summary>
     public int Known { get; set; }

@@ -56,6 +56,13 @@ public sealed class ScorelineModel
     private readonly double _rho;
 
     /// <summary>
+    /// 队名 → 它踢过的联赛及场次。用于「联赛名对不上时按队名反查联赛」，
+    /// 见 <see cref="ResolveLeague"/>。2026-11-08 加：竞彩叫「韩职」、数据源叫「K1联赛」，
+    /// 名字一错整场被判「样本 0/0」，而这两支队在库里明明各有一百多场。
+    /// </summary>
+    private readonly Dictionary<string, List<(string League, int Games)>> _leaguesByTeam;
+
+    /// <summary>
     /// 本联赛样本不足时，是否允许退到跨联赛累计。true = 混合口径（默认）；
     /// false = 旧口径（只在同联赛找，不够就用先验），仅保留给回测台做 A/B 对照——
     /// 同一个进程、同一份数据里跑两遍，才能证明改动到底是好是坏。
@@ -81,6 +88,7 @@ public sealed class ScorelineModel
         _teams = teams;
         _teamTotals = teamTotals;
         _globalNames = new HashSet<string>(teamTotals.Keys, StringComparer.Ordinal);
+        _leaguesByTeam = BuildTeamLeagueIndex(teams);
         _namesByLeague = namesByLeague;
         _rho = rho;
         _crossLeague = crossLeague;
@@ -90,6 +98,86 @@ public sealed class ScorelineModel
     public static ScorelineModel Empty { get; } = new(false, 1.45, 1.15, new(), new(), new(), new(), -0.1);
 
     public bool Ready { get; }
+
+    /// <summary>
+    /// 把竞彩的联赛名对齐到训练集里的联赛名，返回「该用哪个联赛的场均和名单来算这场」。
+    ///
+    /// 三级判据（2026-11-08 加，起因：竞彩「韩职」vs 数据源「K1联赛」，整类联赛永不出注）：
+    /// 1. <see cref="LeagueNames"/> 人工表命中且该联赛在训练集里 → 用它；
+    /// 2. 表里的映射在训练集里查不到、而原名查得到 → 尊重原名（防手工表写错把好联赛改坏）；
+    /// 3. 都不成立 → 用两队各自的「踢过哪些联赛」取交集，挑两队共同出场最多的那个联赛。
+    ///    这一步是自愈的：以后新联赛再出现两套叫法，不用改表也能认出来。
+    /// 任何一步都不成立就原样返回，行为和改动之前一致（宁可丢场，也不挂到别的联赛均值上）。
+    /// </summary>
+    public string ResolveLeague(string? league, string? home, string? away)
+    {
+        var raw = league?.Trim() ?? "";
+        var mapped = LeagueNames.Resolve(raw);
+        if (HasLeague(mapped)) return mapped;
+        if (mapped != raw && HasLeague(raw)) return raw;
+
+        return LeagueByTeams(raw, home, away) ?? mapped;
+    }
+
+    /// <summary>训练集里是否存在这个联赛（有任何一场样本即可，不要求达到联赛均值门槛）。</summary>
+    public bool HasLeague(string? league)
+        => !string.IsNullOrWhiteSpace(league)
+           && _leagues.TryGetValue(league.Trim(), out var x) && x.N > 0;
+
+    /// <summary>
+    /// 按两队共同出场的联赛反查。评分 = min(主队在该联赛的场次, 客队在该联赛的场次)，
+    /// 同分取联赛总样本更大的那个（跨联赛杯赛里，两队可能既在各自联赛又在杯赛同场过，
+    /// 取共同出场多的那个才是真正在打的那项赛事）。交集为空返回 null。
+    /// </summary>
+    private string? LeagueByTeams(string league, string? home, string? away)
+    {
+        if (string.IsNullOrWhiteSpace(home) || string.IsNullOrWhiteSpace(away)) return null;
+        var h = Resolve(league, home);
+        var a = Resolve(league, away);
+        if (h is null || a is null) return null;
+        if (!_leaguesByTeam.TryGetValue(h, out var hls) || !_leaguesByTeam.TryGetValue(a, out var als))
+            return null;
+
+        string? best = null;
+        var bestScore = 0;
+        var bestLeagueN = 0;
+        foreach (var (lg, hg) in hls)
+        {
+            var ag = 0;
+            foreach (var (lg2, g2) in als)
+            {
+                if (lg2 != lg) continue;
+                ag = g2;
+                break;
+            }
+            if (ag <= 0) continue;
+            var score = Math.Min(hg, ag);
+            var leagueN = _leagues.TryGetValue(lg, out var x) ? x.N : 0;
+            if (score < bestScore) continue;
+            if (score == bestScore && leagueN <= bestLeagueN) continue;
+            best = lg;
+            bestScore = score;
+            bestLeagueN = leagueN;
+        }
+        return best;
+    }
+
+    /// <summary>队名 → 该队踢过的联赛（含场次），供 <see cref="LeagueByTeams"/> 使用。</summary>
+    private static Dictionary<string, List<(string League, int Games)>> BuildTeamLeagueIndex(
+        Dictionary<string, (double For, double Against, int Games)> teams)
+    {
+        var map = new Dictionary<string, List<(string League, int Games)>>(StringComparer.Ordinal);
+        foreach (var (key, val) in teams)
+        {
+            var i = key.IndexOf('\n');
+            if (i <= 0) continue;
+            var lg = key[..i];
+            var nm = key[(i + 1)..];
+            if (!map.TryGetValue(nm, out var list)) map[nm] = list = new List<(string, int)>(2);
+            list.Add((lg, val.Games));
+        }
+        return map;
+    }
 
     /// <summary>
     /// 模型是否见过这支队（有历史样本）。没见过的队回退全局均值，算出的比分概率是噪声，调用方据此跳过该场。
@@ -140,7 +228,7 @@ public sealed class ScorelineModel
         if (_globalNames.Contains(n)) return n;
 
         // 人工确认过的别名：中文译名完全不同，规则推不出来（圣吉联合 = 圣吉罗斯）
-        if (KnownAliases.TryGetValue(n, out var known) && _globalNames.Contains(known)) return known;
+        if (TeamAliases.Map.TryGetValue(n, out var known) && _globalNames.Contains(known)) return known;
 
         // 联赛内子序列：竞彩缩的是中间字（布斯巴达 ← 布拉格斯巴达）
         if (_namesByLeague.TryGetValue(lg, out var all))
@@ -161,86 +249,10 @@ public sealed class ScorelineModel
     }
 
     /// <summary>
-    /// 人工确认过的别名（竞彩简称 → 数据源全称）。只在子序列匹配不到时才用。
-    ///
-    /// 只收「中文译名完全不同、任何字符串规则都推不出来」的：圣吉联合 vs 圣吉罗斯（Union Saint-Gilloise）。
-    /// 能从规则推出来的一律不入表——硬编码越多，越难发现规则本身失效。
+    /// 人工确认过的队名别名表已搬到 <see cref="TeamAliases"/>（2026-11-08）。
+    /// 搬家原因：原来只在「精确匹配失败」时才查这张表，而「索尔纳」「AIK索尔纳」两个写法都在库里有样本时
+    /// 精确匹配先命中，别名永远不生效——模型把一支队当成两支。现在 Fit 会先归一，样本才真正合并。
     /// </summary>
-    private static readonly Dictionary<string, string> KnownAliases = new(StringComparer.Ordinal)
-    {
-        ["圣吉联合"] = "圣吉罗斯",
-        ["圣吉罗斯联合"] = "圣吉罗斯",
-
-        // 北单译名 vs 数据源译名差异（2026-11-05 逐条人工核实，目标名在 FbMatch 里真实存在）。
-        // 只收「字符串规则推不出来」的同音/形近译名差异；前后缀、子序列能推的一律不入表。
-        ["上海上港"] = "上海海港",
-        ["中岸水手"] = "中央海岸水手",
-        ["云达不来梅"] = "云达不莱梅",
-        ["伊韦尔东体育"] = "伊韦尔顿",
-        ["休斯敦迪纳摩"] = "休斯顿迪纳摩",
-        ["佩纳菲耶尔"] = "佩纳菲尔",
-        ["兰斯克鲁纳"] = "兰斯科罗纳",
-        ["兰黑姆"] = "兰赫姆",
-        ["利文斯顿"] = "利云斯顿",
-        ["北安普顿"] = "北安普敦",
-        ["南安普顿"] = "南安普敦",
-        ["卡坦扎罗"] = "卡坦萨罗",
-        ["卡萨皮亚"] = "卡萨匹亚",
-        ["吉尔维森特"] = "吉维森特",
-        ["吉林汉姆"] = "吉灵汉姆",
-        ["圣塔克拉拉"] = "圣克拉拉",
-        ["圣特赖登"] = "圣图尔登",
-        ["埃克塞特城"] = "埃克赛特城",
-        ["埃格尔松"] = "埃格尔森德",
-        ["基马诺克"] = "基尔马诺克",
-        ["大田韩亚市民"] = "大田市民",
-        ["奥利韦伦斯"] = "奥利维伦斯",
-        ["奥洛穆茨"] = "奥洛莫茨",
-        ["奥达克斯意大利人"] = "奥达科斯意大利人",
-        ["富恩拉夫拉达"] = "富恩拉布雷达",
-        ["布杰约维采迪纳摩"] = "布德约维茨迪纳摩",
-        ["布莱顿"] = "布赖顿",
-        ["帕尔杜比采"] = "帕尔杜比斯",
-        ["弗罗西诺内"] = "弗洛西诺内",
-        ["摩雷伦塞"] = "摩雷伦斯",
-        ["斯托姆加斯特"] = "斯特罗姆加斯特",
-        ["斯洛瓦茨科"] = "斯洛瓦科",
-        ["斯蒂夫尼奇"] = "斯蒂文尼奇",
-        ["格兰纳达"] = "格拉纳达CF",
-        ["桑讷菲尤尔"] = "桑纳菲尤尔",
-        ["法尔肯贝里"] = "法尔肯堡",
-        ["波代诺内"] = "波德诺内",
-        ["波尔蒂芒斯"] = "波尔蒂芒尼斯",
-        ["波特兰伐木者"] = "波特兰伐木工",
-        ["浦项铁人"] = "浦项制铁",
-        ["海尔蒙德体育"] = "海尔蒙特",
-        ["清水心跳"] = "清水鼓动",
-        ["温哥华白浪"] = "温哥华白帽",
-        ["湘南比马"] = "湘南海洋",
-        ["特普利采"] = "特普利斯",
-        ["磐田山叶"] = "磐田喜悦",
-        ["福塔莱萨"] = "福塔雷萨",
-        ["科切斯特联"] = "科尔切斯特联",
-        ["科森扎"] = "科森察",
-        ["米涅罗竞技"] = "米内罗竞技",
-        ["米涅罗美洲"] = "米内罗美洲",
-        ["索非亚中央陆军"] = "索菲亚中央陆军",
-        ["索非亚列夫斯基"] = "索菲亚利夫斯基",
-        ["纽布莱恩斯"] = "纽夫莱恩斯",
-        ["聚尔特瓦勒海姆"] = "聚尔特瓦雷赫姆",
-        ["莱斯特城"] = "莱切斯特城",
-        ["蔚山HD"] = "蔚山现代",
-        ["西布朗维奇"] = "西布罗姆维奇",
-        ["西悉尼流浪者"] = "西悉尼漫步者",
-        ["赫塔菲"] = "赫塔费",
-        ["金泽萨维根"] = "金泽塞维根",
-        ["防卫与正义"] = "防御与正义",
-        ["阿尔梅利亚"] = "阿尔梅里亚",
-        ["阿莫雷维耶塔"] = "阿莫雷别塔",
-        ["韦斯特洛"] = "韦斯特鲁",
-        ["马略卡"] = "马洛卡",
-        ["鸟栖砂岩"] = "鸟栖沙岩",
-    };
 
     /// <summary>
     /// 在候选名单里按子序列找唯一命中。长度差上限 4 个字，防止「米兰」把一堆队吸进来。
@@ -322,7 +334,20 @@ public sealed class ScorelineModel
             !string.IsNullOrWhiteSpace(s.HomeTeam)
             && !string.IsNullOrWhiteSpace(s.AwayTeam)
             && s.HomeScore >= 0 && s.AwayScore >= 0
-            && s.HomeScore <= 12 && s.AwayScore <= 12).ToList();
+            && s.HomeScore <= 12 && s.AwayScore <= 12)
+            // 队名先归一，再统计（2026-11-08）。同一支球队在库里有两个写法时（索尔纳 / AIK索尔纳），
+            // 不归一就会各算各的攻防样本：一支 176 场的瑞典超球队被拆成 55 + 121 场，
+            // 两队样本都被噪声主导，λ 会随机抖动。归一放在这里而不是 Resolve 里，是因为
+            // Resolve 只能解决「查询时找不到」，解决不了「训练时被拆开」。
+            .Select(s => new ScoreSample
+            {
+                LeagueName = s.LeagueName,
+                HomeTeam = TeamAliases.Canonical(s.HomeTeam),
+                AwayTeam = TeamAliases.Canonical(s.AwayTeam),
+                HomeScore = s.HomeScore,
+                AwayScore = s.AwayScore
+            })
+            .ToList();
         if (usable.Count < 30) return Empty;
 
         double homeSum = 0, awaySum = 0;
@@ -393,6 +418,19 @@ public sealed class ScorelineModel
     public static Dictionary<string, double> EstimateLeagueStrength(
         IReadOnlyList<ScoreSample> samples, int minGames = 30)
     {
+        // 队名先归一（2026-11-08）：同一队两个写法会被判成两支不同球队，各自算「主联赛」，
+        // 跨联赛交手里就会出现「AIK索尔纳 vs 索尔纳」这种自己打自己的场次，强度解会被带偏。
+        samples = samples
+            .Select(s => new ScoreSample
+            {
+                LeagueName = s.LeagueName,
+                HomeTeam = TeamAliases.Canonical(s.HomeTeam),
+                AwayTeam = TeamAliases.Canonical(s.AwayTeam),
+                HomeScore = s.HomeScore,
+                AwayScore = s.AwayScore
+            })
+            .ToList();
+
         // 第一步：判定每队的「主联赛」= 出现场次最多的联赛（剔除友谊赛/杯赛噪声）。
         // 一支队踢本国联赛 + 欧战，主联赛是本国联赛。
         var teamLeagueCount = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);

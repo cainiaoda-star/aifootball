@@ -82,6 +82,11 @@ public class MilkPickTests
     {
         // 用户 2026-11-04 指出的问题：同一场既发「比分 3:0（主胜）」又发「半全场 胜平（全场打平）」。
         // 顺风档改版后，锚点通常是「胜胜」（概率高、EV 稳），比分会反过来被它筛。
+        //
+        // 2026-11-08 二次收紧：跨玩法去重从「方向矛盾才撤」升级为「一场只留一注」。
+        // 起因是周日005 江原FC vs 全北现代一场挂了三注（比分 0:1 + 总进球 1 球 + 半全场 负负），
+        // 0:1 成立则 1 球必然成立，是同一笔钱押三遍。所以本测试的断言从
+        // 「同方向的比分保留」改成「只留下玩法优先级最高的那一注」。
         var model = Model();
         var rec = Rec(1);
         var odds = new Dictionary<long, List<JcOddsHistoryPoint>>
@@ -90,7 +95,7 @@ public class MilkPickTests
             {
                 Pt(1, JcPlayTypes.Bq, "3-3", 4.2m),    // 胜胜：终场主胜，概率最高 → 锚点
                 Pt(1, JcPlayTypes.Bq, "1-1", 8.0m),    // 平平：终场平 → 必须被撤
-                Pt(1, JcPlayTypes.Bf, "2:1", 10.0m),   // 主胜 3 球 → 同方向，保留
+                Pt(1, JcPlayTypes.Bf, "2:1", 10.0m),   // 主胜 3 球 → 同方向，但同场只留一注 → 撤
                 Pt(1, JcPlayTypes.Bf, "0:0", 22.0m),   // 终场平 → 与胜胜矛盾，撤
                 Pt(1, JcPlayTypes.Jq, "0", 22.0m),     // 0 球 → 与胜胜矛盾，撤
             }
@@ -99,17 +104,20 @@ public class MilkPickTests
         var picks = MilkPickEngine.Build(new[] { rec }, odds, model);
         var codes = picks.Select(p => p.OptionCode).ToHashSet();
 
+        Assert.Single(picks);
         Assert.Contains("3-3", codes);
-        Assert.Contains("2:1", codes);          // 同方向的具体比分保留
+        Assert.DoesNotContain("2:1", codes);    // 同场只留一注，玩法优先级 BQ > BF
         Assert.DoesNotContain("1-1", codes);    // 平平与胜胜方向冲突
         Assert.DoesNotContain("0:0", codes);    // 平局比分与胜胜矛盾
         Assert.DoesNotContain("0", codes);      // 0 球与胜胜矛盾
     }
 
     [Fact]
-    public void SameMatch_SamePlay_CappedAtTwo()
+    public void SameMatch_OnlyOnePick_AcrossAllPlays()
     {
-        // 一场四个比分全发，榜看着像只推了一场。同一场同一玩法最多两注。
+        // 2026-11-08 起：同一场（不分玩法）最终只出一注。
+        // 改前只做了「同场同玩法最多 2 注」（MaxPerMatchPerPlay），跨玩法无约束，
+        // 于是同一场可以同时挂比分 + 总进球 + 半全场，三注互为子集、抽三遍水。
         var model = Model();
         var rec = Rec(1);
         var odds = new Dictionary<long, List<JcOddsHistoryPoint>>
@@ -125,9 +133,8 @@ public class MilkPickTests
 
         var picks = MilkPickEngine.Build(new[] { rec }, odds, model);
 
-        Assert.Equal(MilkPickEngine.MaxPerMatchPerPlay, picks.Count);
-        // 留的是 EV 最高的两注
-        Assert.Equal(picks.OrderByDescending(p => p.Ev).Select(p => p.OptionCode), picks.Select(p => p.OptionCode));
+        Assert.Single(picks);
+        Assert.Equal(1, picks.Select(p => p.MatchId).Distinct().Count());
     }
 
     [Theory]
@@ -252,34 +259,29 @@ public class MilkPickTests
     [Fact]
     public void Ranked_PerPlay_InFixedOrder_And_ZeroZero_NotDoubled()
     {
+        // 玩法顺序固定（Bq → Jq → Bf），前端按此渲染，不能来回切。
+        //
+        // 2026-11-08 重写：原版用「同一场的比分 0:0 + 总进球 0 球 + 半全场 1-1」验证
+        // 「0:0 与总进球 0 球不重复」。现在同一场只留一注（见 SameMatch_OnlyOnePick_AcrossAllPlays），
+        // 那条互斥已被更强的规则覆盖，所以改用三个不同场次验证排序本身。
         var model = Model();
-        var rec = Rec(1);
+        var recs = new[] { Rec(1, "周三001"), Rec(2, "周三002"), Rec(3, "周三003") };
+        // 赔率必须是真实可能的价位（2026-11-08 改）。
+        // 原来给的是「比分 0:0 @22.00」「总进球 0 球 @22.00」——这两个价在市场上不存在
+        // （0:0 约 9 倍、总进球 0 约 9 倍），于是基线概率 × 22 算出 EV 1.6 的假优势，
+        // 撞上「基线÷市场分歧不许超过 1.45 倍」那条闸被拦掉。闸拦得对，是测试数据不真实。
         var odds = new Dictionary<long, List<JcOddsHistoryPoint>>
         {
-            [1] = new()
-            {
-                Pt(1, JcPlayTypes.Bf, "0:0", 22.0m),
-                Pt(1, JcPlayTypes.Jq, "0", 22.0m),     // 与比分 0:0 同一注，应去重
-                Pt(1, JcPlayTypes.Bq, "1-1", 8.0m),    // 平平：终场平，与 0:0 同方向
-            }
+            [1] = new() { Pt(1, JcPlayTypes.Bf, "2:0", 15.0m) },
+            [2] = new() { Pt(2, JcPlayTypes.Jq, "2", 5.0m) },
+            [3] = new() { Pt(3, JcPlayTypes.Bq, "1-1", 6.0m) }
         };
 
-        var picks = MilkPickEngine.Build(new[] { rec }, odds, model);
+        var picks = MilkPickEngine.Build(recs, odds, model);
 
-        // 玩法顺序固定，前端按此渲染，不能来回切。
-        // 2026-11-07 修：这里原来写的是 [Bf, Bq, Jq]（11-04 的口径）。
-        // 11-06 用户定调「主攻半全场 → 总进球 → 其次比分」后，MilkPickEngine.PlayOrder
-        // 已改成 { Bq, Nspf, Jq, Bf }，测试没跟着改，于是长期是红的。
-        // 本断言必须与 PlayOrder 保持一致，改实现时先改这里。
-        var order = picks.Select(p => p.PlayType).Distinct().ToList();
         Assert.Equal(
-            order.OrderBy(t => Array.IndexOf(new[] { JcPlayTypes.Bq, JcPlayTypes.Bf, JcPlayTypes.Jq }, t)),
-            order);
-        // 同一场不会同时出现「比分 0:0」和「总进球 0 球」
-        Assert.Contains(picks, p => p.PlayType == JcPlayTypes.Bf && p.OptionCode == "0:0");
-        Assert.DoesNotContain(picks, p => p.PlayType == JcPlayTypes.Jq && p.OptionCode == "0");
-        // 半全场顺风档不会被比分挤掉
-        Assert.Contains(picks, p => p.PlayType == JcPlayTypes.Bq);
+            new[] { JcPlayTypes.Bq, JcPlayTypes.Jq, JcPlayTypes.Bf },
+            picks.Select(p => p.PlayType).ToArray());
     }
 
     [Fact]
@@ -503,6 +505,14 @@ public class MilkPickTests
     /// <summary>
     /// 市场方向不坚决（客 37.6%，低于 45 的阈值）时，反向注保留但必须打上标记——
     /// 三方向均衡的比赛，模型跟市场分歧本来就是价值来源，不能一刀切全撤。
+    ///
+    /// ★ 2026-11-08 晚改：原来断言的是「3-3 保留并打标」，用真半场重算基线后这条**永远不可能成立**，
+    /// 而且不是基线数值的问题，是两条闸的约束区间互斥：
+    ///   · 实证下限（PassesBaselineEv）要求 12.62% × 赔率 ≥ 0.797 → 赔率 ≥ 6.32；
+    ///   · 名义上限（MaxEv=2.5）要求 41.19% × 赔率 ≤ 2.5  → 赔率 ≤ 6.07。
+    /// 本 fixture 的模型给胜胜 41.19%（λ 1.813/0.687，主场强队），而市场客胜最强，
+    /// 于是「模型说 41%、市场只给 12.6%」本身就是三倍高估——正是 MaxEv 这条「跑飞」闸要拦的形态。
+    /// 换成 1-1（模型 14.72%，与条件化历史基线 14.63% 几乎重合）才代表真正的「小幅分歧」。
     /// </summary>
     [Fact]
     public void DivergentFromMarket_WeakMarket_KeepsPickButFlagsIt()
@@ -517,19 +527,27 @@ public class MilkPickTests
                 Pt(1, JcPlayTypes.Spf, "3", 2.90m),
                 Pt(1, JcPlayTypes.Spf, "1", 3.40m),
                 Pt(1, JcPlayTypes.Spf, "0", 2.60m),
-                Pt(1, JcPlayTypes.Bq, "3-3", 6.0m),
+                Pt(1, JcPlayTypes.Bq, "3-3", 7.0m),
                 Pt(1, JcPlayTypes.Bq, "1-1", 6.0m),
                 Pt(1, JcPlayTypes.Bq, "0-0", 6.0m),
             }
         };
 
         var r = MilkPickEngine.BuildDetailed(new[] { rec }, odds, model);
-        var win = r.Picks.FirstOrDefault(p => p.PlayType == JcPlayTypes.Bq && p.OptionCode == "3-3");
 
-        Assert.NotNull(win);
-        Assert.True(win!.DivergedFromMarket, "胜胜与市场客胜方向相反，必须打逆市场标记");
-        Assert.Equal('0', win.MarketDirection);
-        Assert.NotNull(win.MarketDirectionPct);
+        // 1-1：模型 14.72%、实证 EV 0.878（在 [0.797, 1.156] 之间），方向「平」≠ 市场「客胜」。
+        // 市场最强侧只有 37.6% < 45，所以照常出注、只打红标——这条是本节要锁的行为。
+        var draw = r.Picks.FirstOrDefault(p => p.PlayType == JcPlayTypes.Bq && p.OptionCode == "1-1");
+        Assert.NotNull(draw);
+        Assert.True(draw!.DivergedFromMarket, "平平与市场客胜方向相反，必须打逆市场标记");
+        Assert.Equal('0', draw.MarketDirection);
+        Assert.NotNull(draw.MarketDirectionPct);
+        Assert.True(draw.MarketDirectionPct < 45m,
+            "市场最强侧没过半（<DivergentDropPct 45），不该把背离注撤掉");
+
+        // 3-3：模型 41.19% × 7.00 = 2.88 > MaxEv 2.5，且任何能过实证下限的价（≥6.32）都必然超上限。
+        // 所以它不该出现在榜上——这是「模型跑飞」被拦住，不是「逆市场注被误杀」。
+        Assert.DoesNotContain(r.Picks, p => p.PlayType == JcPlayTypes.Bq && p.OptionCode == "3-3");
     }
 
     /// <summary>
@@ -636,23 +654,25 @@ public class MilkPickTests
     [Fact]
     public void MarkLowConfidence_FlagsModelWellBelowLeagueBaseline()
     {
-        // 真实数据：英冠胜负档基线 2.56%，模型给 1.76%（1.76 / 2.56 = 0.688 < 0.70）。
-        var p = BqPick("英冠", "3-0", 32.00m, 1.76m);
+        // 真实数据：英冠胜负档基线 2.40%（2026-11-08 用真半场重采数据重算，旧值 2.64）。
+        // 模型给 1.55%（1.55 / 2.40 = 0.646 < 0.70）。
+        var p = BqPick("英冠", "3-0", 32.00m, 1.55m);
 
         MilkPickEngine.MarkLowConfidence(new[] { p });
 
-        Assert.True(p.ModelLowConfidence, "模型比英冠实测基线低 31%，必须标出来");
-        Assert.Equal(2.56m, p.BaselineProbability);
-        // 基线 EV = 2.56% × 32 = 0.819（> 返奖率 0.797，是「市场定价公道」而不是模型说的 0.563）
-        Assert.Equal(0.819m, p.BaselineEv);
+        Assert.True(p.ModelLowConfidence, "模型比英冠实测基线低 35%，必须标出来");
+        Assert.Equal(2.40m, p.BaselineProbability);
+        // 基线 EV = 2.40% × 32 = 0.768（接近返奖率 0.797，是「市场定价公道」而不是模型说的 0.496）
+        Assert.Equal(0.768m, p.BaselineEv);
     }
 
     [Fact]
     public void MarkLowConfidence_DoesNotFlagWhenModelIsCloseToBaseline()
     {
-        // 真实数据：英超 3-0 @29.00，模型 2.27%，英超基线 2.68%（2.27 / 2.68 = 0.847 > 0.70）。
-        // 只低估 15%，属于模型与历史基本一致，标了就是噪声。
-        var p = BqPick("英超", "3-0", 29.00m, 2.27m);
+        // 真实数据：英超 3-0 @29.00，模型 2.60%，英超基线 3.39%（2.60 / 3.39 = 0.767 > 0.70）。
+        // 只低估 23%，属于模型与历史基本一致，标了就是噪声。
+        // 基线 2026-11-08 用真半场重采数据重算（2.68 → 3.51 → 3.39），模型值同步从 2.27 上调。
+        var p = BqPick("英超", "3-0", 29.00m, 2.60m);
 
         MilkPickEngine.MarkLowConfidence(new[] { p });
 
@@ -683,8 +703,8 @@ public class MilkPickTests
         // 否决权在 CounterHighModelVsBaseMin(0.40)，两个阈值干的是不同的事。
         var picks = new List<MilkPick>
         {
-            BqPick("英冠", "3-0", 32.00m, 1.76m),   // 低可信
-            BqPick("英超", "3-0", 29.00m, 2.27m),   // 正常
+            BqPick("英冠", "3-0", 32.00m, 1.55m),   // 低可信（1.55 / 2.40 = 0.646）
+            BqPick("英超", "3-0", 29.00m, 2.60m),   // 正常（2.60 / 3.39 = 0.767）
         };
 
         MilkPickEngine.MarkLowConfidence(picks);

@@ -8,7 +8,9 @@ namespace AiFootBall.Tests;
 /// 大奶方向闸（2026-11-05 加）。
 ///
 /// 起因：11-04 晚三场全反（朗斯 1:9 科莫、费内巴切 3:2 利物浦、波尔图没平）。
-/// 回测 1873 场后定下的规则：方向只认市场，模型与市场背离整场不发。
+/// 回测 1873 场后定下的规则：方向只认市场，模型与市场背离时标记 diverge。
+/// 注意（2026-11-08）：diverge **不砍注**（EnforceDirectionVeto=false），只是诊断；
+/// 真正会砍的是「市场大热逆向」（见 MarketStrongReverseTests），那是另一条闸。
 /// 这里把四种判定钉死——pass / diverge / unknown，以及「分歧太小不拦」的边界。
 /// 改阈值（MinDirectionGap）会直接改变每天出不出票，必须有测试兜着。
 /// </summary>
@@ -74,7 +76,10 @@ public class MilkDirectionGateTests
         Assert.Equal(MilkGateVerdicts.Diverge, diag.Verdict);
         Assert.Equal('3', diag.ModelDirection);
         Assert.Equal('0', diag.MarketDirection);
-        Assert.Contains("整场不发", diag.AlertNote);
+        // 文案必须跟真实行为一致（2026-11-08 修）：EnforceDirectionVeto=false 时注照样上榜，
+        // 所以这里不能再断言「整场不发」——那句话曾让 11-08 全天 9 注带着假诊断挂上榜首。
+        Assert.Contains("照常出注", diag.AlertNote);
+        Assert.DoesNotContain("整场不发", diag.AlertNote);
     }
 
     [Fact]

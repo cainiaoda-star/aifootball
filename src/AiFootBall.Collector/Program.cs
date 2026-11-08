@@ -40,7 +40,8 @@ internal static class Program
             // 净胜球转向、主胜升水、俱乐部画像、定价背离四个「可选信号」全部为空——
             // 引擎那几道闸在命令行这一路上等于没开，而它们恰恰是最能改变结果的部分。
             // 表现极具欺骗性：榜照出、库照写，只是「撤注闸一注都没撤过」。
-            oddsCapture: new OddsCaptureRepository(factory));
+            oddsCapture: new OddsCaptureRepository(factory),
+            standings: new StandingRepository(factory));
         var progress = new Progress<string>(Console.WriteLine);
 
         try
@@ -58,6 +59,18 @@ internal static class Program
                 case "lotto":
                     await service.CollectLotteryAsync(opts.GetValueOrDefault("code"), !opts.ContainsKey("no-backfill"), progress);
                     return 0;
+
+                case "rebuild-standings":
+                {
+                    // 从历史比分回算每场赛前排名 + 今日积分榜快照。幂等，可随时重跑。
+                    // --from 2021-01-01 指定回算起点（默认全量）。
+                    var svc = new StandingService(new StandingRepository(factory));
+                    var from = DateTime.TryParse(opts.GetValueOrDefault("from"), out var f)
+                        ? f : new DateTime(2021, 1, 1);
+                    var r = await svc.RebuildAsync(from);
+                    Console.WriteLine($"积分榜回算完成：{r}");
+                    return 0;
+                }
 
                 case "football":
                     // --future N 同时采集未来 N 天赛程（赛前赔率/必发采样依赖场次记录）
@@ -140,7 +153,9 @@ internal static class Program
                 {
                     var purchaseRepo = new PurchaseRepository(factory);
                     var purchaseSettle = new PurchaseSettlementService(purchaseRepo, fbRepo, cardSource);
-                    var scheduler = new JobScheduler(jobsOptions, service, syncRepo, recService, purchaseSettle, Console.WriteLine);
+                    var scheduler = new JobScheduler(jobsOptions, service, syncRepo, recService, purchaseSettle, Console.WriteLine,
+                        standing: new StandingService(new StandingRepository(factory)),
+                        paper: new PaperTradeRepository(factory));
                     await scheduler.InitializeAsync();
                     if (opts.TryGetValue("once", out var once))
                     {

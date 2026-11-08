@@ -72,6 +72,45 @@ public static class Program
             .FirstOrDefault(v => v > 0.3 && v < 0.95, 0.67);
 
         var factory = new SqlConnectionFactory(connStr);
+
+        // 半全场「下半场 λ 按排名条件化」的专项验证（2026-11-08）。
+        // 独立入口，不改变本回测台原有的任何一节，也不碰线上引擎。
+        if (args.Any(a => a.Equals("hf-lambda", StringComparison.OrdinalIgnoreCase)))
+            return await HalfFullLambdaStudy.RunAsync(connStr);
+
+        // 单场 λ 诊断（2026-11-08，埃尔切 vs 贝蒂斯「胜胜 19.7%」事件后加）：
+        // 只打印「认不认得这支队 / 多少样本 / λ 是否退回了联赛均值」，不参与任何计算。
+        if (args.Any(a => a.Equals("team-check", StringComparison.OrdinalIgnoreCase)))
+        {
+            var rest = args.SkipWhile(a => !a.Equals("team-check", StringComparison.OrdinalIgnoreCase)).Skip(1).ToArray();
+            var h = rest.ElementAtOrDefault(0) ?? "埃尔切";
+            var a2 = rest.ElementAtOrDefault(1) ?? "贝蒂斯";
+            var lg2 = rest.ElementAtOrDefault(2) ?? "西甲";
+            return await TeamLambdaStudy.RunAsync(connStr, h, a2, lg2);
+        }
+
+        // 「模型纯值 / 市场隐含」单列闸的阈值校准（2026-11-08，热那亚负胜@36 事件后补）。
+        // 只读，不改线上任何阈值；产出是「比值分箱 → 命中率/回报」，用来判断 0.70 该不该动。
+        if (args.Any(a => a.Equals("counter-gate", StringComparison.OrdinalIgnoreCase)))
+        {
+            var startArg = args.SkipWhile(a => !a.Equals("counter-gate", StringComparison.OrdinalIgnoreCase))
+                               .Skip(1)
+                               .FirstOrDefault(a => DateTime.TryParse(a, out _));
+            var testStart = DateTime.TryParse(startArg, out var ts) ? ts : new DateTime(2026, 7, 1);
+            return await CounterGateStudy.RunAsync(connStr, testStart);
+        }
+
+        // 「赔率档 × 档位」条件化基线值不值得建（2026-11-08，江原负负 EV 报错事件后补）。
+        // 只读；产出三个数：条件化前后的 Brier 差、各赔率箱的真实 ROI、边际基线的高估方向。
+        if (args.Any(a => a.Equals("odds-cond", StringComparison.OrdinalIgnoreCase)))
+        {
+            var startArg = args.SkipWhile(a => !a.Equals("odds-cond", StringComparison.OrdinalIgnoreCase))
+                               .Skip(1)
+                               .FirstOrDefault(a => DateTime.TryParse(a, out _));
+            var testStart = DateTime.TryParse(startArg, out var ts) ? ts : new DateTime(2026, 5, 1);
+            return await OddsConditionStudy.RunAsync(connStr, testStart);
+        }
+
         await using var conn = await factory.OpenAsync();
 
         var allSamples = (await conn.QueryAsync<Sample>(

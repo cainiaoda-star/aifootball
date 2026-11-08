@@ -9,7 +9,9 @@ public static class TeamNames
     {
         if (string.IsNullOrWhiteSpace(name)) return "";
 
-        var s = name.Trim().ToLowerInvariant();
+        // 先过别名表（2026-11-08）：竞彩写「索尔纳」、数据源写「AIK索尔纳」时，
+        // 这层键不一致会让同一场球配不上比分、同一支球队被拆成两队统计。
+        var s = TeamAliases.Canonical(name).ToLowerInvariant();
         s = s.Replace(" ", "").Replace("　", "").Replace("\t", "");
         s = s.Replace(".", "").Replace("·", "").Replace("・", "");
 

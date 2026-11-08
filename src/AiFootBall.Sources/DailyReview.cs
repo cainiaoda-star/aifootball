@@ -30,7 +30,7 @@ public static class DailyReview
 
     public static async Task<string> WriteAsync(
         RecommendationService svc, BettingRepository repo, DateTime day, CancellationToken ct = default,
-        MilkScanService? milk = null, TicketRepository? tickets = null)
+        MilkScanService? milk = null, TicketRepository? tickets = null, StandingRepository? standings = null)
     {
         var jcCards = await repo.GetCardsBySaleDayAsync(Boards.Jc, day, ct);
         // 北单全量受注几十场没必要每场都分析：只写「今日北单推荐」（FbBdSpfPick）出现过的场次。
@@ -88,7 +88,14 @@ public static class DailyReview
         catch (OperationCanceledException) { throw; }
         catch (Exception) { goalBaseline = null; }
 
-        var body = Render(day, DateTime.Now, rows, milkBody, goalBaseline) + Environment.NewLine + calib;
+        // 排名与先进球（2026-11-08 加）：用户要求把「排名靠后一方先进球」这个现象长期记录。
+        // 依赖 FbMatchRank（每日 rebuild-standings 回算）；取不到就整节跳过，不伪造排名。
+        List<LeadOutcomeRow>? leadRows = null;
+        try { leadRows = await standings.GetLeadOutcomesAsync(day, ct); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception) { leadRows = null; }
+
+        var body = Render(day, DateTime.Now, rows, milkBody, goalBaseline, leadRows) + Environment.NewLine + calib;
 
         // 校准回答「方向准不准」，票面 KPI 回答「这样买票回不回本」。
         // 串关可以经常中奖却长期亏钱，两者必须分开看。
@@ -135,7 +142,7 @@ public static class DailyReview
     }
 
     public static string Render(DateTime day, DateTime writtenAt, IReadOnlyList<ReviewRow> rows, string? milkBody = null,
-        IReadOnlyList<GoalSampleRow>? goalBaseline = null)
+        IReadOnlyList<GoalSampleRow>? goalBaseline = null, IReadOnlyList<LeadOutcomeRow>? leadRows = null)
     {
         var jc = rows.Where(r => r.Board == Boards.Jc).ToList();
         var bd = rows.Where(r => r.Board == Boards.Bd).ToList();
@@ -189,6 +196,22 @@ public static class DailyReview
         if (goalBaseline is null || goalBaseline.Count == 0)
         {
             sb.AppendLine("> 本节没取到长期基线，只列了今天一列。基线查询失败不影响正文，门槛一律没动。");
+            sb.AppendLine();
+        }
+        // 排名与先进球（2026-11-08）：紧接进球分布。两者都在回答「这场会怎么走」，
+        // 但这一节讲的是「谁先得分、领先之后守不守得住」，跟净胜球/比分是不同维度。
+        if (leadRows is { Count: > 0 })
+        {
+            sb.Append(LeadStandingStudy.ToMarkdown(day, leadRows));
+        }
+        else if (leadRows is not null)
+        {
+            sb.AppendLine("> 排名与先进球：当天没有竞彩场次，跳过。");
+            sb.AppendLine();
+        }
+        else
+        {
+            sb.AppendLine("> 排名与先进球：本节需要 FbMatchRank（每日 08:10 回算），本次没取到，已跳过。");
             sb.AppendLine();
         }
         AppendBoard(sb, "竞彩（全部场次）", jc);

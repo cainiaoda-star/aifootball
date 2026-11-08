@@ -10,7 +10,12 @@ namespace AiFootBall.Sources;
 ///   亚盘水位 47.7%（≈ 抛硬币）、欧赔隐含 61.0%、必发大额 74.4%、
 ///   三层一致 84.4%、背离时跟亚盘 26.3%。
 /// 所以方向只认市场（竞彩胜平负去水，缺则比分盘反推），模型自己算出来的方向只当参考；
-/// 两者背离时整场不发，并落一条诊断——否则「模型哪来的自信」这件事赛后无从追查。
+/// 两者背离时落一条诊断（**默认不砍注**，见下方 EnforceDirectionVeto 说明）——否则「模型哪来的自信」这件事赛后无从追查。
+///
+/// 2026-11-08 修正：构造函数里的 EnforceDirectionVeto 默认 false，即这道闸实际是**诊断闸**，
+/// 注照样上榜。原文案写「整场不发」，与真实行为相反，11-08 当天榜上 10 注里 9 注来自 diverge 场次，
+/// 每一条诊断都在撒谎。硬砍回测为负 alpha（444 场 3745 注，前四档反向命中优于同向），留注是对的，
+/// 错的是那行字——现在 AlertNote 按 EnforceDirectionVeto 的真实取值生成。
 ///
 /// 三条刻意的保守设计：
 ///   1. 市场快照不完整（档数不够、去水分母跑出合理区间）→ Verdict=unknown，闸不生效。
@@ -123,8 +128,16 @@ public static class MilkDirectionGate
             else
             {
                 diag.Verdict = MilkGateVerdicts.Diverge;
+                // 文案必须跟着真实行为走（2026-11-08 修）。原来这里写死「整场不发」，
+                // 而 EnforceDirectionVeto=false 时引擎只标注、照常出注——11-08 榜上 10 注里
+                // 9 注来自 diverge 场次，每一条诊断都在说「整场不发」，等于系统性对用户撒谎。
+                // 硬砍是负 alpha（444 场 3745 注回测：前四档「反向」命中/回报优于「同向」），
+                // 所以留注是对的，错的只是这行字。
                 diag.AlertNote = $"这一注指{Diag(jd)}、市场指{Diag(md)}"
-                               + $"（{diag.MarketSource} 去水：主 {diag.MarketHomePct:0.0}% / 平 {diag.MarketDrawPct:0.0}% / 客 {diag.MarketAwayPct:0.0}%），整场不发";
+                               + $"（{diag.MarketSource} 去水：主 {diag.MarketHomePct:0.0}% / 平 {diag.MarketDrawPct:0.0}% / 客 {diag.MarketAwayPct:0.0}%），"
+                               + (MilkPickEngine.EnforceDirectionVeto
+                                   ? "整场不发"
+                                   : $"背离 {gap * 100m:0.0} 个点，照常出注（硬砍是负 alpha，只标注不否决）");
             }
         }
 

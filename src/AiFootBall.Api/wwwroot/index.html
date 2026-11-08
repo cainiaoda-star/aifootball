@@ -433,6 +433,34 @@
     background:rgba(45,110,190,.15);color:#3d82c8;border:1px solid rgba(45,110,190,.45);font-weight:600}
   .milk-merged .opt-overpay{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
     border:1px solid #a33;color:#fff;background:#a33;margin-left:4px;font-weight:650}
+  /* 模型不认这个价（2026-11-08）：模型纯值 < 市场隐含×0.70，红色。
+     和上面「模型低估」的蓝色是两个相反方向，千万别混：
+       蓝 = 模型保守、联赛历史上就是会出（信息不对称，让你看基线那个数）；
+       红 = 模型连市场定价都撑不住，这注是替高估买单（危险信号，别买）。 */
+  .milk-merged .opt-doubt{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
+    border:1px solid #c0392b;color:#fff;background:#c0392b;margin-left:4px;font-weight:700}
+  /* 临场告警回写榜面（2026-11-08）：turn-guard 扫出来的告警直接打在注单行上。
+     以前告警只躺在「数据监控」tab，推荐页那张卡片一个字都不变——用户照着买了，
+     系统却在背后喊了十几次。高危=红实心且整行划掉（已撤注），关注=橙描边（仍可买，但要知道）。 */
+  .milk-merged .opt-lalert{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
+    border:1px solid #c0392b;color:#fff;background:#c0392b;margin-left:4px;font-weight:700}
+  .milk-merged .opt-lalert.mid{border-color:rgba(255,150,60,.55);color:#d2801f;background:rgba(255,150,60,.14);font-weight:600}
+  .milk-merged .opt-void{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
+    background:#3a1414;color:#ff8f8f;border:1px solid #a33;font-weight:700;margin-left:4px}
+  .milk-merged tr.row-voided td{opacity:.55}
+  .milk-merged tr.row-voided .opt-odds,
+  .milk-merged tr.row-voided .opt-prob,
+  .milk-merged tr.row-voided .opt-ev{text-decoration:line-through}
+  .milk-void-bar{margin:10px 0 0;padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.65;
+    border:1px solid rgba(255,90,90,.55);background:rgba(255,90,90,.12);color:var(--text)}
+  .milk-void-bar b{color:#ff8f8f}
+  .milk-void-bar .void-item{display:block;color:var(--dim);font-size:12px;margin-top:3px}
+  /* 实证基线角标（2026-11-08）：主榜注现在也落了 BaselineProbability（见 OptionBaseline）。
+     中性灰，不是警告——它只是把「模型 X%」和「联赛历史 Y%」两个数并排摆出来。
+     为什么不直接替换成基线口径（单列注那样）：模型是分场次的，联赛均值不是这一场的地板，
+     强强对话的胜胜概率本来就高于联赛平均，替换反而会误导。并排展示让用户自己看差多少。 */
+  .milk-merged .opt-base{font-size:11px;line-height:1.4;padding:1px 6px;border-radius:5px;white-space:nowrap;
+    background:rgba(120,120,120,.10);color:#8a8a8a;border:1px solid rgba(120,120,120,.38);margin-left:4px}
   /* 「EV 最高」角标：只标全榜一个，和主排序（命中率）解耦，免得 EV 高的废票当主角 */
   .milk-merged .opt-evtop{font-size:11px;line-height:1.4;padding:2px 8px;border-radius:5px;white-space:nowrap;
     border:1px solid #8a6a2a;color:#e6c36a;background:#2a2418}
@@ -508,6 +536,7 @@
   .milk-merged .opt-line > .opt-fatigue,
   .milk-merged .opt-line > .opt-modelonly,
   .milk-merged .opt-line > .opt-counter,
+  .milk-merged .opt-line > .opt-doubt,
   .milk-merged .opt-line > .opt-lowconf,
   .milk-merged .opt-line > .opt-overpay,
   .milk-merged .opt-line > .opt-evtop{font-size:10.5px;padding:1px 4px;line-height:1.35}
@@ -2880,6 +2909,12 @@ function milkFunnelHtml(g, hasPicks){
   const dropHtml = Number(f.divergentDropped || 0) > 0
     ? `<div class="fn-warn">逆市场撤注 <b>${f.divergentDropped}</b> 注：这一注的方向和市场最强方向相反，且市场方向占比 ≥45%，按规则撤下（周四011 那种「市场客胜 51% 却发胜胜」的注就死在这一层）</div>`
     : '';
+  // 联赛名对齐（2026-11-08）：竞彩叫「韩职」、比分库叫「K1联赛」。不对齐的话整类联赛
+  // 会被判成「模型没见过的队」而静默消失，页面必须说清楚是对齐过、不是没算。
+  const aliasNotes = (f.aliasNotes || []).slice(0, 6);
+  const aliasHtml = Number(f.leagueAliased || 0) > 0
+    ? `<div class="fn-warn fn-alias">联赛名对齐 <b>${f.leagueAliased}</b> 场：竞彩叫法与比分库不一致，已按库内名字取样本（${aliasNotes.map(esc).join('、')}${(f.aliasNotes || []).length > 6 ? ' …' : ''}）。不对齐这些场次会被判成「模型不认识这支队」而整类不出注。</div>`
+    : '';
   const skipHtml = skipped.length
     ? `<div class="fn-skip">${skipped.map(s => `<span>· ${esc(s)}</span>`).join('')}</div>` : '';
   // 样本熔断（2026-11-05）：回测台 2405 场实测，两队样本都少时模型 Brier 比市场差 0.119，
@@ -2893,7 +2928,7 @@ function milkFunnelHtml(g, hasPicks){
       <span class="dim">· 每场都要过这几层；被砍的场次会列出原因，不是「没算出来」四个字</span>
     </div>
     <div class="fn-flow">${cells}</div>
-    ${noteHtml}${dropHtml}${thinHtml}${skipHtml}
+    ${noteHtml}${dropHtml}${thinHtml}${aliasHtml}${skipHtml}
   </div>`;
 }
 
@@ -3093,7 +3128,7 @@ function renderMilkBoard(b, strongOnly){
           ? `联赛实测基线概率（不是模型概率）：这一档在同类联赛的历史发生频率。模型在这个量级的档位会系统性低估约 30%，所以这里不用模型口径（模型给的是 ${Number(it.modelProbability).toFixed(2)}%）。`
           : '';
         const evTitle = isCounterBaseline
-          ? `基线 EV = 联赛实测概率 × 赔率 = ${showEv.toFixed(3)}。天花板仍是该玩法返奖率（半全场 0.797），长期负期望，只适合小注。`
+          ? `基线 EV = 实测频率 × 赔率 = ${showEv.toFixed(3)}。\n\n★ 这是「约等于」，不是精确值：这张条件化表每档样本只有 186~707 场，95% 置信区间 ±3~7 个百分点，换算成 EV 误差约 ±0.25。\n也就是说 EV 1.03 和 EV 0.80 在统计上分不出来——别把小数点当预测能力。\n天花板仍是该玩法返奖率（半全场 0.797），长期期望跑不到 1 以上。`
           : 'EV = 模型概率 × 赔率，也就是这注的长期回报。竞彩有水位，EV 最高只能到该玩法的返奖率，到不了 1。';
         // 走基线口径时，颜色跟着展示的那个数字走（见上面 evCls 的注释）。
         if (isCounterBaseline) evCls = pay && showEv >= pay * 0.97 ? 'ev-fair' : 'ev-poor';
@@ -3103,6 +3138,23 @@ function renderMilkBoard(b, strongOnly){
         const lowConfTag = it.modelLowConfidence
           ? `<span class="opt-lowconf" title="模型低估：模型只给 ${Number(it.modelProbability).toFixed(2)}%，而${esc(g.leagueName || '该联赛')}这一档的实测基线是 ${Number(it.baselineProbability).toFixed(2)}%（模型仅为基线的 ${(Number(it.modelProbability)/Number(it.baselineProbability)*100).toFixed(0)}%）。这不是模型算错一个数字，是泊松 λ 在这类长尾档系统性偏低（模型 λ 误差 1.53 球，市场反推 1.33）。概率与 EV 已按联赛基线展示。">模型低估·按联赛基线看</span>`
           : '';
+        // 实证基线角标（2026-11-08）：主榜注也落了 BaselineProbability，但展示口径仍走模型。
+        // 原因：联赛均值是「这一档在这类联赛的历史频率」，不是这一场的地板——
+        // 强强对话的胜胜概率本来高于联赛平均，直接替换成基线会误导。
+        // 所以并排展示，让用户自己看「模型 20.27% vs 联赛实证 17.37%」差多少。
+        //
+        // 2026-11-08 二次修：基线 EV 超过返奖率时显示「基线不适用」而不是那个数字。
+        // 起因：周日006 那不勒斯 vs 拉齐奥 比分 0:0 @15.50，全库 0:0 平均 7.35% → 基线EV 1.139，
+        // 而比分返奖率只有 0.710。没有任何一注能到 1.14，这不可能是价值，是**基线口径不适用**：
+        // 全库平均忽略了赔率信息，0:0 赔到 15.5 的场次实际概率远低于平均（市场只给 6.4%）。
+        // 把 1.139 显示出来等于告诉用户「这注赚 14%」，恰恰是这次改版要消灭的东西。
+        const baseEvNum = hasBaseline ? Number(it.baselineEv) : 0;
+        const baseOnlyTag = (hasBaseline && !isCounterBaseline)
+          ? (evCap > 0 && baseEvNum > evCap
+            ? `<span class="opt-base" title="基线不适用：这一档的联赛平均概率是 ${Number(it.baselineProbability).toFixed(2)}%，按它算期望 ${baseEvNum.toFixed(3)} 已经超过本玩法返奖率 ${Math.round(pay * 100)}%——没有任何一注能到那个数。说明全库平均忽略了这个价的信息（赔率 ${Number(it.odds).toFixed(2)} 隐含 ${(100 / Number(it.odds)).toFixed(1)}%），这套基线不适合这一场，别拿它当依据。">基线不适用</span>`
+            : `<span class="opt-base" title="联赛历史实证：${esc(g.leagueName || '该联赛')}这一档实测 ${Number(it.baselineProbability).toFixed(2)}%，按此算的期望是 ${baseEvNum.toFixed(3)}。本玩法返奖率 ${Math.round(pay * 100)}% 才是任何一注的数学上限。模型给 ${Number(it.modelProbability).toFixed(2)}%、报 EV ${Number(ev).toFixed(2)}——差多少就是模型有多乐观。">实证 ${Number(it.baselineProbability).toFixed(1)}% · 基线EV ${baseEvNum.toFixed(2)}</span>`)
+          : '';
+
         // EV 越过本玩法天花板的警示（2026-11-08 重写，原为「超返奖率 20% 才提示」）。
         // 判据改到 1.05 倍：返奖率本身就是任何一注的数学上限，超过 5% 就足以说明
         // 「这个数字不是价值，是模型把概率算高了」。旧阈值 1.2 太宽，
@@ -3141,12 +3193,42 @@ function renderMilkBoard(b, strongOnly){
               ? `现价 ${curOdds.toFixed(2)} 已滑出单列区间 30~40（榜上 ${Number(it.odds).toFixed(2)}），引擎下一次重算会换注——别按这个赔率下单。`
               : `当前挂单价 ${curOdds.toFixed(2)}（出榜时 ${Number(it.odds).toFixed(2)}）。冷门档临场变动幅度通常不大，但这才是现在能买到的价。`}">现 ${curOdds.toFixed(2)}${oddsOutBand ? ' 滑出区间' : ''}</span>`
           : '';
+        // 模型不认这个价（2026-11-08 加）：模型纯值 < 市场去水隐含 × 0.70，即模型认为市场高估 30%+。
+        //
+        // 为什么必须单独立一个**红色**角标，而不是并进「模型低估」：
+        //   「模型低估」（低于基线×0.70）说的是「模型保守、联赛历史会出」，是中性甚至偏好的信号；
+        //   「模型不认这个价」说的是相反的——模型给的概率连市场定价都撑不住，这注是替高估买单。
+        //   两者方向相反，页面绝不能混成一句话。2026-11-08 周日015 热那亚 vs AC米兰 负胜@36 就是
+        //   只挂了前一个（模型 1.51% < 意甲基线 2.64%），看起来像「模型太保守」，实际是模型
+        //   认为市场高估近一半（纯模型 1.21% vs 市场 2.22%）。这一注就是这么被漏过去的。
+        const doubtTag = it.modelDoubt
+          ? (() => {
+              // 纯模型% = 比值 × 市场去水隐含%；市场隐含 = (1/赔率)/返奖率，半全场返奖率 0.797。
+              const mkPct = 100 / Number(it.odds) / 1.254;
+              const purePct = mkPct * Number(it.modelVsMarketRatio);
+              return `<span class="opt-doubt" title="模型不认这个价：落库的 ${Number(it.modelProbability).toFixed(2)}% 是掺了 30% 市场的混合值，剔掉市场之后模型只给 ${purePct.toFixed(2)}%，而市场去水隐含 ${mkPct.toFixed(2)}%——比值 ${Number(it.modelVsMarketRatio).toFixed(2)}，低于 0.70。也就是模型认为这个赔率至少高估 ${Math.round((1 - Number(it.modelVsMarketRatio)) * 100)}%。⚠ 这条判据没有回测支撑（152 注只中 4 注，分不出好坏），它只是「不买自己模型都不看好的价」这条常识，不是被证明能赚钱的规则。">模型不认这个价</span>`;
+            })()
+          : '';
+        // 临场告警角标（2026-11-08）——这一块就是「监控到 ≠ 看得见」的补丁。
+        //
+        // 之前 turn-guard 每 10 分钟把告警写进库，但只显示在「数据监控」tab；
+        // 这个 tab（今日推荐）的卡片上完全没有痕迹。用户在推荐页照着买，
+        // 系统在另一个 tab 里喊了十几次「这注危险」——等于没喊。
+        //
+        // 现在：alertSeverity 由后端回写到注单本身，高危的直接置 voided（已撤注），
+        // 主榜照旧列出这行、但整行划掉，用户第一眼就知道「这注别买了」。
+        // 为什么撤注不删行：删掉等于假装没推过，用户第二天复盘会以为系统从没出过这注。
+        const alertTag = it.voided
+          ? `<span class="opt-void" title="${esc((it.alertReason || '') + '｜已从主榜撤下：高危临场告警不再作为可下注推荐。保留此行是为了让你看得见它被撤过，以及赛后能核对撤注对不对。')}">已撤注·临场高危</span>`
+          : (it.alertSeverity
+              ? `<span class="opt-lalert${it.alertSeverity === 'high' ? '' : ' mid'}" title="${esc((it.alertReason || '') + '｜这是开赛前市场/资金对同一场次的转向信号，与这一注的方向相反。高危会自动撤注，关注只提示不撤。')}">临场告警·${it.alertSeverity === 'high' ? '高危' : '关注'}</span>`
+              : '');
         return `<div class="opt-line${on ? ' mk-on' : ''}">
           <input type="checkbox" class="milk-pick" data-mk="${esc(mk)}" ${on ? 'checked' : ''} title="勾选这一注" />
           <b class="opt-name">${esc(it.option || '')}</b>
           <span class="opt-odds">@${Number(it.odds).toFixed(2)}</span>${oddsNowTag}
           <span class="opt-prob"${probTitle ? ` title="${esc(probTitle)}"` : ''}>${showProb.toFixed(1)}%</span>
-          <span class="opt-ev ${evCls}" title="${esc(evTitle)}">EV ${showEv.toFixed(2)}</span>${overPayTag}${divTag}${divgTag}${halfDrawTag}${fatigueTag}${modelOnlyTag}${counterTag}${lowConfTag}${evTopTag}
+          <span class="opt-ev ${evCls}" title="${esc(evTitle)}">EV≈${showEv.toFixed(2)}</span>${alertTag}${overPayTag}${divTag}${divgTag}${halfDrawTag}${fatigueTag}${modelOnlyTag}${counterTag}${doubtTag}${lowConfTag}${baseOnlyTag}${evTopTag}
         </div>`;
       }).join('');
     };
@@ -3158,11 +3240,28 @@ function renderMilkBoard(b, strongOnly){
       if(!pay) return '';
       return `<div class="th-pay${pay < 0.75 ? ' costly' : ''}" title="竞彩${esc(MILK_PLAY_NAME[p] || p)}固定返奖率：每投 100 元；长期期望回收 ${Math.round(pay * 100)} 元。这一列所有注的 EV 天花板都是它，不可能到 1。">返奖 ${Math.round(pay * 100)}%</div>`;
     };
+    // 榜顶红条（2026-11-08）：把监控结果搬到用户真正在看的那一页。
+    // 用户原话：「你监控到了，为啥不去改首页上的推荐结果，你是看着我往坑里跳吗？」
+    // 所以这里不只是「有个告警入口」，而是直接把**被撤掉的注逐条列在榜单正上方**，
+    // 连带原因一起给——他翻到这一页第一眼就不可能漏。
+    const voidedPicks = picks.filter(it => it.voided);
+    if(voidedPicks.length){
+      html += `<div class="milk-void-bar">
+        <b>⚠ 临场撤注 ${voidedPicks.length} 注：市场在开赛前对这些注的方向反向了，不要照买。</b>
+        ${voidedPicks.map(it => `<span class="void-item">${esc(String(it.matchNo||'').trim())} ${esc(it.homeTeam||'')} vs ${esc(it.awayTeam||'')} · ${esc(it.option||'')}${it.odds!=null?` @${Number(it.odds).toFixed(2)}`:''} —— ${esc(it.alertReason||'')}</span>`).join('')}
+        <span class="void-item">说明：撤注是风控动作，不是已验证能赚钱的规则。被撤的注仍会按原样结算（保留在台账里），赛后用来核对「撤得对不对」——撤错的会照实记账，不会悄悄抹掉。</span>
+      </div>`;
+    }
     html += `<div class="board-scroll"><table class="tbl rec-tbl milk-merged"><thead><tr>
         <th>场次</th><th>对阵</th><th>开赛</th>
         <th>${esc(MILK_PLAY_NAME.BQ)}${thPay('BQ')}</th><th>${esc(MILK_PLAY_NAME.JQ)}${thPay('JQ')}</th><th>${esc(MILK_PLAY_NAME.BF)}${thPay('BF')}</th><th>让球${thPay('NSPF')}</th>
       </tr></thead><tbody>`;
-    const rowHtml = g => `<tr class="match-row">
+    // 整场全撤才把整行压暗；只撤一注时不动整行，避免把另外几注正常的也一起「划掉」。
+    const rowVoided = g => {
+      const list = Object.values(g.plays).flat();
+      return list.length > 0 && list.every(it => it.voided);
+    };
+    const rowHtml = g => `<tr class="match-row${rowVoided(g) ? ' row-voided' : ''}">
         <td class="match-no">${esc(g.matchNo || '')}</td>
         <td class="teams-cell"><div class="teams"><span class="tn">${esc(g.homeTeam || '')}</span><span class="vs">VS</span><span class="tn">${esc(g.awayTeam || '')}</span></div>
           <div class="league">${esc(g.leagueName || '')}</div></td>

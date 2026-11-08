@@ -240,6 +240,14 @@ public sealed class OddsCaptureRepository
             .ToArray();
         if (names.Length == 0) return new();
 
+        // 别名展开（2026-11-08）：同一支球队换过写法时（索尔纳 / AIK索尔纳），
+        // 只按规范名查会漏掉另一半历史——「换写法之前那半个赛季」看起来就像没踢过球，
+        // 于是三连败判断和休息天数全部失真。这里把全部写法都捞出来，再按规范名归并。
+        var forms = names
+            .SelectMany(TeamAliases.FormsOf)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
         await using var conn = await _factory.OpenAsync(ct);
         // 主客两行合并成「该队的比赛」，再由内存按时间倒序取前 4 场。
         // 不在 SQL 里做窗口函数：球队数不多（每天几十支），内存排序更好读，也不用担心方言。
@@ -251,7 +259,7 @@ public sealed class OddsCaptureRepository
               WHERE m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
                 AND m.MatchTime < @reference
                 AND m.MatchTime >= DATEADD(day, -150, @reference)
-                AND LTRIM(RTRIM(m.HomeTeamName)) IN @names
+                AND LTRIM(RTRIM(m.HomeTeamName)) IN @forms
               UNION ALL
               SELECT LTRIM(RTRIM(m.AwayTeamName)) AS TeamName,
                      m.MatchTime, LTRIM(RTRIM(m.LeagueName)) AS LeagueName,
@@ -260,11 +268,12 @@ public sealed class OddsCaptureRepository
               WHERE m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
                 AND m.MatchTime < @reference
                 AND m.MatchTime >= DATEADD(day, -150, @reference)
-                AND LTRIM(RTRIM(m.AwayTeamName)) IN @names",
-            new { reference, names }, cancellationToken: ct));
+                AND LTRIM(RTRIM(m.AwayTeamName)) IN @forms",
+            new { reference, forms }, cancellationToken: ct));
 
         var result = new Dictionary<string, TeamForm>(StringComparer.Ordinal);
-        foreach (var g in rows.GroupBy(r => r.TeamName, StringComparer.Ordinal))
+        // 按规范名归并：两个写过法的队合并成一条，键与调用方 Resolve 出来的名字一致。
+        foreach (var g in rows.GroupBy(r => TeamAliases.Canonical(r.TeamName), StringComparer.Ordinal))
         {
             var ordered = g.OrderByDescending(r => r.MatchTime).Take(4).ToList();
             var last = ordered[0];
@@ -303,15 +312,39 @@ public sealed class OddsCaptureRepository
     public async Task<Dictionary<string, TeamProfile>> GetTeamProfilesAsync(
         IEnumerable<string> teamNames, int minGames = 150, CancellationToken ct = default)
     {
-        var names = teamNames.Where(n => !string.IsNullOrWhiteSpace(n)).Distinct().ToList();
+        var names = teamNames.Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n.Trim())
+            .Distinct(StringComparer.Ordinal).ToList();
         if (names.Count == 0) return new();
+
+        // 别名展开 + 按规范名加权合并（2026-11-08）。拆成两个写法时两行都过不了 minGames
+        //（各 100 场上下的队会双双被筛掉），合并后场次累加才够格——这正是「合并」想要的效果。
+        var forms = names.SelectMany(TeamAliases.FormsOf).Distinct(StringComparer.Ordinal).ToList();
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<TeamProfile>(new CommandDefinition(
             @"SELECT TeamName, Games, ReversalRate, CleanSheetRate, HalfDrawTurnRate
               FROM dbo.FbTeamProfile
-              WHERE TeamName IN @names AND Games >= @minGames",
-            new { names, minGames }, cancellationToken: ct));
-        return rows.ToDictionary(r => r.TeamName, r => r, StringComparer.Ordinal);
+              WHERE TeamName IN @forms",
+            new { forms }, cancellationToken: ct));
+
+        var merged = new Dictionary<string, TeamProfile>(StringComparer.Ordinal);
+        foreach (var g in rows.GroupBy(r => TeamAliases.Canonical(r.TeamName), StringComparer.Ordinal))
+        {
+            var total = g.Sum(x => x.Games);
+            if (total <= 0) continue;
+            decimal Weighted(Func<TeamProfile, decimal> pick) => g.Sum(x => pick(x) * x.Games) / total;
+            merged[g.Key] = new TeamProfile
+            {
+                TeamName = g.Key,
+                Games = total,
+                ReversalRate = Weighted(x => x.ReversalRate),
+                CleanSheetRate = Weighted(x => x.CleanSheetRate),
+                HalfDrawTurnRate = Weighted(x => x.HalfDrawTurnRate)
+            };
+        }
+
+        return merged
+            .Where(kv => kv.Value.Games >= minGames)
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
     }
 
     /// <summary>

@@ -35,14 +35,15 @@ public class DailyReviewTests
 
         Assert.Contains("周六011", text);
         Assert.Contains("没进精选", text);
-        Assert.Contains("## 北单 C 级", text);
+        // 2026-11-07 起北单不再按 A/B/C 分级拆节：11-04 之后除竞彩大奶外全部停发，
+        // 北单只写「今日北单推荐」出现过的场次，按板块列一节就够（见 DailyReview.Render）。
+        Assert.Contains("## 北单（推荐场次）", text);
         Assert.Contains("某队", text);
         Assert.Contains("不改 55%", text);
         Assert.Contains("页面会发布但未中", text);
         Assert.Contains("勒沃库森", text);
         Assert.Contains("| 板块 | 场次 | 有方向 | 命中 | 命中率 | 会发布 |", text);
         Assert.Contains("| 竞彩 | 2 | 1 | 0 | 0% | 1 中 0 |", text);
-        Assert.DoesNotContain("| 北单未分级 |", text);
         Assert.Contains("## 胜负彩（全部场次）", text);
         Assert.Contains("### 26153 ", text);
         Assert.Contains("#### 26153-6", text);

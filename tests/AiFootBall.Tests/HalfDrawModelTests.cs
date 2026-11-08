@@ -86,16 +86,21 @@ public class HalfDrawModelTests
     }
 
     [Fact]
-    public void 强弱悬殊时主队方向显著抬升()
+    public void 强弱悬殊也不该指望胜平比负平更好()
     {
-        // 主队超级大热（1.25 / 6.50 / 12.00），平局里半场主队领先的比例应明显更高
+        // 2026-11-08 用真半场数据重算 q(n)（42,384 场平局）：
+        //   n=1 主/客 25.27 / 24.14、n=2 31.34 / 31.58（**反向**）、n=3 34.00 / 33.26、n=4 37.19 / 32.28。
+        // 原先那条「主队大热时胜平相对负平的比值显著更高」的断言，是旧脏数据造出来的假象：
+        // 半场比分被写成全场副本时，胜平（半场主胜→全场平）只在真正主队领先过的场次里出现，
+        // 而那批场次被系统性夸大，于是看起来「大热主队更容易打出胜平」。
+        // 真数据里主客方向差只有 1~3 个点，n=2 还是反的——这一点方向不足以支撑任何选注。
         var hot = HalfDrawModel.Estimate(1.25m, 6.50m, 12.00m, Jq, 20m, 20m)!;
         var even = HalfDrawModel.Estimate(2.60m, 3.20m, 2.60m, Jq, 20m, 20m)!;
 
-        Assert.True(hot.ProbWinDraw / hot.ProbLoseDraw > even.ProbWinDraw / even.ProbLoseDraw,
-            "主队大热时，胜平相对负平的比值应高于均势场");
-        // 同价时（竞彩就是这么报的），大热场的胜平 EV 明显高于负平
-        Assert.True(hot.EvWinDraw > hot.EvLoseDraw);
+        Assert.InRange((double)(hot.ProbWinDraw / hot.ProbLoseDraw), 0.95, 1.15);
+        Assert.InRange((double)(even.ProbWinDraw / even.ProbLoseDraw), 0.95, 1.15);
+        // 竞彩两档本来就是同价，方向差落在噪声里 → EV 也基本相等，别当套利
+        Assert.InRange((double)(hot.EvWinDraw / hot.EvLoseDraw), 0.95, 1.15);
     }
 
     [Fact]

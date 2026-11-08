@@ -25,8 +25,17 @@ public sealed class MilkPick
     public decimal Odds { get; set; }
     /// <summary>模型概率 0-100（Dixon-Coles 比分网格）。</summary>
     public decimal ModelProbability { get; set; }
-    /// <summary>期望回报 = 概率 × 赔率。长期看小于 1 就是亏，列出只为排序。</summary>
+    /// <summary>
+    /// 期望回报。**榜单对外一律报实证口径**（= <see cref="BaselineEv"/>，2026-11-08 改）：
+    /// 模型概率 × 赔率是模型自证——模型越乐观，这个数越漂亮，而每个玩法的返奖率
+    /// （半全场/总进球 0.797、比分 0.710）早把上限写死了。用户的教训就是在这里：
+    /// 按模型 EV 挑注，挑到的恰好是模型高估最狠的那一注（江原负负模型 1.240 / 实证 0.762）。
+    /// API 层会把本字段覆盖成 BaselineEv，模型原值移到 <see cref="ModelEv"/> 仅供对比。
+    /// </summary>
     public decimal Ev { get; set; }
+
+    /// <summary>模型自证口径的 EV（模型概率 × 赔率）。只在需要展示「模型有多乐观」时使用。</summary>
+    public decimal? ModelEv { get; set; }
 
     /// <summary>
     /// 这一注的方向与市场最强方向相反（2026-11-05 加）。
@@ -154,6 +163,42 @@ public sealed class MilkPick
     public bool ModelOverconfident { get; set; }
 
     /// <summary>
+    /// 半全场「模型纯值 ÷ 市场去水隐含」（2026-11-08 加，落库到 FbMilkPick.ModelVsMarketRatio）。
+    ///
+    /// 落库的 <see cref="ModelProbability"/> 是 Blend 之后的混合值（0.7 模型 + 0.3 市场），
+    /// 掺进去的那 0.3 正是市场自己的报价——所以它**不能**用来判断「模型信不信这个价」。
+    /// 这个字段存的是**掺市场之前**的纯模型概率与市场隐含之比，1.0 = 模型与市场完全一致。
+    ///
+    /// 起因（2026-11-08 用户当场质问）：周日015 热那亚 vs AC米兰 负胜@36 被选成单列，
+    /// 纯模型 1.21%、市场隐含 2.22%、混合后 1.51%。三道旧闸全部放行，因为没有一道
+    /// 真的看过「模型自己对这注怎么看」。这个比值就是那道缺失的视角：0.55。
+    ///
+    /// 用法：&lt; 0.70（<see cref="Sources.MilkPickEngine.CounterHighModelVsMarketMin"/>）
+    /// 即「模型认为市场高估 30% 以上」→ 单列直接否决、主榜打红标。
+    /// **只标不撤适用于主榜**，单列是硬闸——单列是我们主动挑出来推荐的那一注，标准必须更严。
+    /// </summary>
+    public decimal? ModelVsMarketRatio { get; set; }
+
+    /// <summary>
+    /// 「模型不认这个价」的判定线：模型纯值 ÷ 市场隐含 &lt; 0.70，即模型认为市场高估 30% 以上。
+    ///
+    /// 放在 Core 而不是 <c>MilkPickEngine</c>，因为标记属性 <see cref="ModelDoubt"/> 要在模型层算，
+    /// 而 Core 不能反向引用 Sources。引擎侧的 <c>CounterHighModelVsMarketMin</c> 直接引用这个常量，
+    /// 保证「筛选」和「标记」用的是同一个数——这两处一旦漂移，就会出现「栏里被拒、榜上却挂绿标」。
+    ///
+    /// 取 0.70 的理由与「没有统计支撑」的坦白，见 <c>MilkPickEngine.CounterHighModelVsMarketMin</c> 注释。
+    /// 一句话：它是风控约束，不是回测优化出来的参数。
+    /// </summary>
+    public const decimal ModelDoubtRatio = 0.70m;
+
+    /// <summary>
+    /// 该注「模型不认这个价」——比值为 null 时按未标记处理。
+    /// 前端渲染成红色角标，文案必须写「模型认为市场高估 XX%」，不能只写「风险」。
+    /// </summary>
+    public bool ModelDoubt =>
+        ModelVsMarketRatio is decimal r && r < ModelDoubtRatio;
+
+    /// <summary>
     /// 半全场 胜平(3-1) / 负平(0-1) 的概率来自 <c>HalfDrawModel</c> 而不是引擎的 HalfFullJoint
     /// （2026-11-08 接入选注，落库到 FbMilkPick.HalfDrawRefined）。
     ///
@@ -254,8 +299,12 @@ public static class MilkCounterVerdicts
     public const string LostToRank = "lost-to-rank";
     /// <summary>模型概率 &lt; 联赛基线×0.40，引擎认为模型连方向都不认同。</summary>
     public const string ModelVeto = "model-veto";
+    /// <summary>模型纯值 &lt; 市场隐含×0.70：模型自己都不信这个价，买它等于替高估买单。</summary>
+    public const string ModelVsMarket = "model-vs-market";
     /// <summary>基线 EV / 返奖率 不在 [0.95, 1.35]。</summary>
     public const string RatioOutOfBand = "ratio-out-of-band";
+    /// <summary>名义 EV 超全局上限，模型概率明显爆表。</summary>
+    public const string EvTooHigh = "ev-too-high";
     /// <summary>该联赛该档实测概率 &lt; 1.20%（如友谊赛 0.05%）。</summary>
     public const string LeagueBelowFloor = "league-below-floor";
     /// <summary>联赛不在基线表里，拿不到可信频率。</summary>
@@ -269,7 +318,9 @@ public static class MilkCounterVerdicts
         Admitted => "已入单列",
         LostToRank => "同档被更优注挤出",
         ModelVeto => "模型否决",
+        ModelVsMarket => "模型不认这个价",
         RatioOutOfBand => "赔率/基线不匹配",
+        EvTooHigh => "模型概率爆表",
         LeagueBelowFloor => "联赛基线过低",
         NoLeagueBaseline => "联赛无基线",
         SameMatchOnBoard => "该场已在主榜",

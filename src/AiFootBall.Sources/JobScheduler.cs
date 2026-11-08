@@ -19,6 +19,8 @@ public sealed class JobScheduler
     private readonly DailyFollowService? _dailyFollow;
     private readonly BdSpfPickService? _bdSpfPick;
     private readonly BdSpfPickRepository? _bdSpfRepo;
+    private readonly StandingService? _standing;
+    private readonly PaperTradeRepository? _paper;
     private readonly Action<string>? _log;
     private readonly object _gate = new();
     private readonly List<Entry> _entries = new();
@@ -27,7 +29,8 @@ public sealed class JobScheduler
         RecommendationService? recommendation = null, PurchaseSettlementService? purchaseSettle = null,
         Action<string>? log = null, LottoRecommendationService? lottoRec = null,
         DailyFollowService? dailyFollow = null, BdSpfPickService? bdSpfPick = null,
-        BdSpfPickRepository? bdSpfRepo = null)
+        BdSpfPickRepository? bdSpfRepo = null, StandingService? standing = null,
+        PaperTradeRepository? paper = null)
     {
         _options = options;
         _collection = collection;
@@ -38,6 +41,8 @@ public sealed class JobScheduler
         _dailyFollow = dailyFollow;
         _bdSpfPick = bdSpfPick;
         _bdSpfRepo = bdSpfRepo;
+        _standing = standing;
+        _paper = paper;
         _log = log;
     }
 
@@ -81,9 +86,12 @@ public sealed class JobScheduler
         ["settle-hourly"] = TimeSpan.FromMinutes(30),
         ["settle-purchases"] = TimeSpan.FromMinutes(20),
         ["settle-recommendations"] = TimeSpan.FromMinutes(30),
+        ["paper-freeze"] = TimeSpan.FromMinutes(20),
+        ["paper-settle"] = TimeSpan.FromMinutes(20),
         ["lotto"] = TimeSpan.FromMinutes(30),
         ["lotto-recommend"] = TimeSpan.FromMinutes(30),
-        ["bd-spf-pick"] = TimeSpan.FromMinutes(30)
+        ["bd-spf-pick"] = TimeSpan.FromMinutes(30),
+        ["rebuild-standings"] = TimeSpan.FromMinutes(30)
     };
 
     private static TimeSpan TimeoutFor(ScheduledJob job) =>
@@ -431,7 +439,13 @@ public sealed class JobScheduler
     private static readonly HashSet<string> RecommendJobTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "save-recommendations",
-        "daily-review"
+        "daily-review",
+        // 2026-11-08 加：这两个都会**重写当天的榜**（DELETE 未结算行 + 重新 INSERT）。
+        // turn-guard 现在会在出现新高危告警时立刻重算，和 8:40/11:40/16:40/20:40 的
+        // save-recommendations 撞车时，两条 DELETE+INSERT 交错就会把榜写成两份。
+        // 放进同一个串行通道是这里唯一可靠的互斥手段（库上没有唯一约束兜底）。
+        "turn-guard",
+        "refresh-near-kickoff"
     };
 
     /// <summary>超时中止后补一条运行记录，方便页面上查。写日志本身失败不再抛出。</summary>
@@ -679,8 +693,7 @@ public sealed class JobScheduler
             }
 
             // 每天早上写前一天的复盘。竞彩和胜负彩全部，北单 A/B/C，没进精选的也写。
-            case "daily-review":
-            {
+            case "daily-review":            {
                 if (_recommendation is null)
                 {
                     result = CollectionResult.Fail("推荐服务未注入");
@@ -693,6 +706,21 @@ public sealed class JobScheduler
                 var day = DateTime.Today.AddDays(-1);
                 var path = await _recommendation.WriteDailyReviewAsync(day, ct);
                 result = CollectionResult.Ok(1, $"复盘已写入 {path}");
+                break;
+            }
+
+            // 联赛积分榜回算（2026-11-08 加）：每场赛前排名 + 当日积分榜快照。
+            // 数据只能从历史比分自己算——第三方榜只给"当天"，拿不到"当时"；回测要的正是赛前那一眼。
+            // 全量重算约 30 秒，以 2021-01-01 为起点（更短的窗口会把赛季起点切错）。
+            case "rebuild-standings":
+            {
+                if (_standing is null)
+                {
+                    result = CollectionResult.Fail("积分榜服务未注入");
+                    break;
+                }
+                var r = await _standing.RebuildAsync(new DateTime(2021, 1, 1), ct);
+                result = CollectionResult.Ok(1, r.ToString());
                 break;
             }
 
@@ -768,10 +796,14 @@ public sealed class JobScheduler
                     result = CollectionResult.Fail("推荐服务未注入");
                     break;
                 }
-                var alerts = await _recommendation.RunTurnGuardAsync(ct);
-                result = alerts > 0
-                    ? CollectionResult.Ok(alerts, $"临场转向哨兵：发现 {alerts} 场已出注场次市场方向漂移，已落告警")
-                    : CollectionResult.Ok(0, "临场转向哨兵：本轮无市场转向告警");
+                var guard = await _recommendation.RunTurnGuardAsync(ct);
+                // 文案必须说「榜面变了什么」，不能只说「喊了几声」——
+                // 2026-11-08 用户的原话是「你监控到了，为啥不去改首页上的推荐结果」。
+                var msg = guard.Alerts == 0
+                    ? "临场转向哨兵：本轮无市场转向告警"
+                    : $"临场转向哨兵：{guard.Alerts} 注告警（高危 {guard.High}），已回写榜面红标 {guard.Marked} 注、撤注 {guard.Voided} 注"
+                      + (guard.Recalculated ? "；出现新高危，已立即重算当日榜" : "");
+                result = CollectionResult.Ok(guard.Alerts, msg);
                 break;
             }
 
@@ -839,6 +871,63 @@ public sealed class JobScheduler
                 var ps = await _purchaseSettle.AutoSettleAsync(null, ct);
                 result = CollectionResult.Ok(ps.Settled,
                     $"购买结算：检查 {ps.Checked}，已结 {ps.Settled}（中 {ps.Won}/未中 {ps.Lost}），待赛果 {ps.Waiting}");
+                break;
+            }
+
+            // 空跑台账：把某一天的终版榜冻结下来（2026-11-08 加）。
+            //
+            // 为什么要单独冻一份而不直接查 FbMilkPick：每次重算都会 DELETE 未结算行，
+            // 盘中每一版的榜都会把上一版冲掉；撤注的行也是未结算行，下一次重算直接消失。
+            // 「照着榜买到底赚不赚」这个评价必须建立在不会变的账本上。
+            case "paper-freeze":
+            {
+                if (_paper is null)
+                {
+                    result = CollectionResult.Fail("空跑台账仓储未注入");
+                    break;
+                }
+                await _paper.EnsureTableAsync(ct);
+
+                // 先补最近 7 天漏冻的（进程 23:30 没起来、当天部署、重启都靠这个兜底）。
+                var (missDays, missRows) = await _paper.FreezeMissingAsync(7, ct);
+
+                // 停售之后才有「终版」。工作日 21:58 / 周末 22:58 停售，23 点后冻今天；
+                // 凌晨 0~4 点改成回冻昨天——不是重复冻，而是**同步撤注标记**：
+                // turn-guard 每 10 分钟还在盯 00:30 / 03:45 的场次，撤掉的注在
+                // FbMilkPick 里是未结算行，下一次重算就删了，只有这个窗口还读得到。
+                var h = DateTime.Now.Hour;
+                var (ins, synced) = (0, 0);
+                var todayMsg = "未到停售，今天不冻";
+                if (h >= 23)
+                {
+                    var r = await _paper.FreezeDayAsync(DateTime.Today, ct);
+                    (ins, synced) = (r.Inserted, r.Synced);
+                    todayMsg = $"今 {ins} 注，撤注标记同步 {synced} 条";
+                }
+                else if (h < 4)
+                {
+                    var r = await _paper.FreezeDayAsync(DateTime.Today.AddDays(-1), ct);
+                    (ins, synced) = (r.Inserted, r.Synced);
+                    todayMsg = $"昨 {ins} 注，撤注标记同步 {synced} 条";
+                }
+
+                var back = missDays > 0 ? $"；补冻历史 {missDays} 天 {missRows} 注" : "";
+                result = CollectionResult.Ok(ins + missRows, $"空跑台账 {todayMsg}{back}");
+                break;
+            }
+
+            // 空跑台账结算：补赛果与盈亏。每小时跑，和 FbMilkPick 的结算同源判据。
+            case "paper-settle":
+            {
+                if (_paper is null)
+                {
+                    result = CollectionResult.Fail("空跑台账仓储未注入");
+                    break;
+                }
+                var n = await _paper.SettleAsync(ct);
+                result = CollectionResult.Ok(n, n == 0
+                    ? "空跑台账：没有待结算的注（赛果未到或半场比分未采到）"
+                    : $"空跑台账结算 {n} 注");
                 break;
             }
 

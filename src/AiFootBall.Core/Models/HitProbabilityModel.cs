@@ -154,7 +154,9 @@ public sealed class HitProbabilityModel
 
     private (decimal Home, decimal Draw, decimal Away) ShrinkLeague(decimal home, decimal draw, decimal away, string? league)
     {
-        var name = league?.Trim();
+        // 竞彩名 → 数据源名（韩职→K1联赛 等，见 LeagueNames）。查不到就原样返回，
+        // 保持「没有联赛信息就不收缩」的旧行为。
+        var name = LeagueNames.Resolve(league);
         if (string.IsNullOrEmpty(name) || !_leagues.TryGetValue(name, out var c))
             return (home, draw, away);
         var n = c.H + c.D + c.A;

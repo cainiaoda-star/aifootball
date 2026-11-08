@@ -24,10 +24,13 @@ public sealed class RecommendationService
     private readonly TicketRepository? _tickets;
     private readonly MilkPickRepository? _milkPicks;
     private readonly OddsCaptureRepository? _oddsCapture;
+    /// <summary>积分榜仓储（2026-11-08 加）：复盘要用「赛前排名」讲「排名靠后先进球」。</summary>
+    private readonly StandingRepository? _standings;
 
     public RecommendationService(BettingCardSource cardSource, BettingRepository repo, JcOddsRepository jcOdds,
         HitProbabilityService? hit = null, MilkScanService? milk = null, TicketRepository? tickets = null,
-        MilkPickRepository? milkPicks = null, OddsCaptureRepository? oddsCapture = null)
+        MilkPickRepository? milkPicks = null, OddsCaptureRepository? oddsCapture = null,
+        StandingRepository? standings = null)
     {
         _cardSource = cardSource;
         _repo = repo;
@@ -37,6 +40,7 @@ public sealed class RecommendationService
         _tickets = tickets;
         _milkPicks = milkPicks;
         _oddsCapture = oddsCapture;
+        _standings = standings;
     }
 
     /// <summary>采样竞彩四类玩法固定奖金，写入 FbJcOddsHistory 时间序列。</summary>
@@ -498,7 +502,7 @@ public sealed class RecommendationService
 
     /// <summary>写一天的复盘文档。竞彩全部场次，北单 A、B、C 级，没进精选的也写。</summary>
     public Task<string> WriteDailyReviewAsync(DateTime day, CancellationToken ct = default)
-        => DailyReview.WriteAsync(this, _repo, day, ct, _milk, _tickets);
+        => DailyReview.WriteAsync(this, _repo, day, ct, _milk, _tickets, _standings);
 
     /// <summary>生成推荐并落库（复盘用）。2026-11-04 改向：胜负彩、北单推荐下线（采集保留），
     /// 只生成竞彩；竞彩胜平负/让球照算照存（校准、否决台账靠它们），对外发布只发大奶。</summary>
@@ -617,15 +621,140 @@ public sealed class RecommendationService
     /// 但以前没有任何一条代码把「已出注的场次临场发生了市场转向」主动推出来。
     /// 返回本次新落库的告警条数。
     /// </summary>
-    public async Task<int> RunTurnGuardAsync(CancellationToken ct = default)
+    public async Task<TurnGuardRunResult> RunTurnGuardAsync(CancellationToken ct = default)
     {
-        if (_milkPicks is null || _oddsCapture is null) return 0;
+        if (_milkPicks is null || _oddsCapture is null) return new TurnGuardRunResult();
+
+        var (scan, openCount) = await ScanTurnAlertsAsync(ct);
+        if (openCount == 0) return new TurnGuardRunResult();
+
+        var save = await _milkPicks.SaveTurnAlertsAsync(DateTime.Today, scan, ct);
+        var (marked, voided) = await _milkPicks.ApplyTurnAlertsToPicksAsync(DateTime.Today, ct);
+
+        // ★ 高危告警必须当场改变榜面（2026-11-08，闭环的核心）。
+        //
+        // 旧行为：告警只写进 FbTurnAlert，榜单纹丝不动，下一次重算要等到 16:40 / 20:40。
+        // 15:30 开赛的场次，最后一版榜是 11:40 —— 12:00 之后市场怎么塌，榜都不会动。
+        // 用户 2026-11-08 的原话：「你监控到了，为啥不去改首页上的推荐结果，你是看着我往坑里跳吗？」
+        //
+        // 现在：一旦出现**新的**高危告警（mid→high 也算新），立刻全量重算当日榜，
+        // 重算后再判一次并把告警回写——这样撤掉的注会从主榜消失，或换成同场另一个档位，
+        // 推荐页在同一分钟内就看到结果，而不是等到下一个固定时点。
+        var recalculated = false;
+        if (save.NewHigh > 0)
+        {
+            try
+            {
+                await RecommendAllAndSaveAsync(ct);
+                recalculated = true;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { recalculated = false; }
+
+            if (recalculated)
+            {
+                // 重算 = DELETE + INSERT，PickId 全变了、注也可能换了档位，
+                // 所以必须用新榜重判一遍再回写，否则红标会丢。
+                var (scan2, open2) = await ScanTurnAlertsAsync(ct);
+                if (open2 > 0)
+                {
+                    await _milkPicks.SaveTurnAlertsAsync(DateTime.Today, scan2, ct);
+                    (marked, voided) = await _milkPicks.ApplyTurnAlertsToPicksAsync(DateTime.Today, ct);
+                }
+            }
+        }
+
+        return new TurnGuardRunResult
+        {
+            Alerts = scan.Count,
+            High = scan.Count(a => a.Severity == "high"),
+            NewHigh = save.NewHigh,
+            Marked = marked,
+            Voided = voided,
+            Recalculated = recalculated
+        };
+    }
+
+    /// <summary>
+    /// 只读诊断（2026-11-08 加）：逐注告诉调用方「这一注被判成什么、为什么」。
+    /// 不落库、不改榜，专门回答「你监控到了为什么不改榜」的另一半——
+    /// 「为什么这一注没被判成危险」。没有它，用户只能看到「无告警」三个字，等于黑箱。
+    /// </summary>
+    public async Task<List<TurnGuardScanRow>> ScanTurnGuardAsync(CancellationToken ct = default)
+    {
+        var rows = new List<TurnGuardScanRow>();
+        if (_milkPicks is null) return rows;
 
         var open = await _milkPicks.GetOpenDayAsync(DateTime.Today, ct);
-        if (open.Count == 0) return 0;
+        if (open.Count == 0) return rows;
+
+        var (alerts, _) = await ScanTurnAlertsAsync(ct);
+        var map = alerts
+            .GroupBy(a => (a.MatchId, a.PlayType, a.OptionCode))
+            .ToDictionary(g => g.Key, g => g.First());
+
+        foreach (var p in open)
+        {
+            var dir = TurnGuard.PickDirection(p.PlayType, p.OptionCode);
+            var hit = map.TryGetValue((p.MatchId, p.PlayType, p.OptionCode), out var a);
+            rows.Add(new TurnGuardScanRow
+            {
+                PickId = p.PickId,
+                MatchId = p.MatchId,
+                MatchNo = p.MatchNo,
+                HomeTeam = p.HomeTeam,
+                AwayTeam = p.AwayTeam,
+                MatchTime = p.MatchTime,
+                PlayType = p.PlayType,
+                OptionCode = p.OptionCode,
+                OptionName = p.OptionName,
+                Odds = p.Odds,
+                BaselineEv = p.BaselineEv,
+                Payback = TurnGuard.PaybackOf(p.PlayType),
+                // ★ 必须用 BaselineEvFloor（与出票闸同源），不能用 PaybackOf（2026-11-08 晚修）。
+                //   用返奖率当线会低估门槛：比分/总进球的出票下限是返奖率×0.85，
+                //   拿返奖率去比会把这些注全标成「破线」，而它们其实是出票闸放行的。
+                EvBroken = p.BaselineEv is decimal bev2 && bev2 > 0m
+                           && bev2 < TurnGuard.BaselineEvFloor(p.PlayType),
+                Direction = dir switch
+                {
+                    '3' => "主胜",
+                    '1' => "平",
+                    '0' => "客胜",
+                    _ => "无方向"
+                },
+                Alerted = hit,
+                Severity = a?.Severity,
+                Reason = a?.Reason,
+                SignalCode = a?.SignalCode,
+                // 文案要说清两件事分别判没判（2026-11-08 改）：EV 破线跟方向无关，
+                // 总进球/平局照样适用——旧文案一句「不参与转向判定」会让人以为这注完全没被检查过。
+                Verdict = hit ? "已告警"
+                    : dir is null
+                        ? $"总进球无方向，转向信号不判；实证EV {p.BaselineEv:0.000} vs 出票下限 {TurnGuard.BaselineEvFloor(p.PlayType):0.000}（返奖率 {TurnGuard.PaybackOf(p.PlayType):0.000}×{TurnGuard.FloorRatioOf(p.PlayType):0.00}），未破线"
+                    : dir == '1'
+                        ? $"平局方向，转向信号不判（库里无推翻平局的实测证据）；实证EV {p.BaselineEv:0.000} vs 出票下限 {TurnGuard.BaselineEvFloor(p.PlayType):0.000}（返奖率 {TurnGuard.PaybackOf(p.PlayType):0.000}×{TurnGuard.FloorRatioOf(p.PlayType):0.00}），未破线"
+                    : $"有方向（{dir}）：转向信号与注方向一致或不足以构成告警；实证EV {p.BaselineEv:0.000} vs 出票下限 {TurnGuard.BaselineEvFloor(p.PlayType):0.000}（返奖率 {TurnGuard.PaybackOf(p.PlayType):0.000}×{TurnGuard.FloorRatioOf(p.PlayType):0.00}），未破线"
+            });
+        }
+
+        return rows.OrderBy(r => r.MatchTime).ToList();
+    }
+
+    /// <summary>
+    /// 只做扫描、不落库（2026-11-08 从 RunTurnGuardAsync 拆出来）。
+    /// 拆的理由：高危告警触发重算后要拿**新榜**再判一次，扫描逻辑必须可重入。
+    /// </summary>
+    private async Task<(List<TurnAlertRow> Alerts, int OpenCount)> ScanTurnAlertsAsync(CancellationToken ct)
+    {
+        var result = new List<TurnAlertRow>();
+        if (_milkPicks is null || _oddsCapture is null) return (result, 0);
+
+        var open = await _milkPicks.GetOpenDayAsync(DateTime.Today, ct);
+        if (open.Count == 0) return (result, 0);
 
         var matchIds = open.Where(p => p.MatchId > 0).Select(p => p.MatchId).Distinct().ToList();
-        if (matchIds.Count == 0) return 0;
+        if (matchIds.Count == 0) return (result, open.Count);
 
         // 净胜球诊断：一场一行，直接读已算好的标量（不碰明细）。
         var diagMap = new Dictionary<long, ScoreDiagRow>();
@@ -659,10 +788,14 @@ public sealed class RecommendationService
         catch (OperationCanceledException) { throw; }
         catch { priceSpans = new(); }
 
-        var alerts = new List<TurnAlertRow>();
+        var alerts = result;
         foreach (var p in open)
         {
-            if (!diagMap.TryGetValue(p.MatchId, out var diag)) continue;
+            // 没有净胜球诊断 ≠ 这一注没问题（2026-11-08 修）。
+            // 原来这里是 `if (!diagMap.TryGetValue(...)) continue;`——取不到诊断就直接跳过，
+            // 于是「实证 EV 已跌破返奖率」这种与诊断无关的绝对判据永远轮不到执行。
+            // 现在照常进判官（diag 传 null），转向类信号自然不报，但 EV 破线照样拦。
+            diagMap.TryGetValue(p.MatchId, out var diag);
 
             var pickDir = TurnGuard.PickDirection(p.PlayType, p.OptionCode);
 
@@ -684,8 +817,7 @@ public sealed class RecommendationService
             if (alert is not null) alerts.Add(alert);
         }
 
-        if (alerts.Count == 0) return 0;
-        return await _milkPicks.SaveTurnAlertsAsync(DateTime.Today, alerts, ct);
+        return (alerts, open.Count);
     }
 
     /// <summary>

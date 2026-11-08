@@ -59,7 +59,8 @@ builder.Services.AddSingleton(sp => new RecommendationService(
     sp.GetRequiredService<MilkScanService>(),
     sp.GetRequiredService<TicketRepository>(),
     sp.GetRequiredService<MilkPickRepository>(),
-    sp.GetRequiredService<OddsCaptureRepository>()));
+    sp.GetRequiredService<OddsCaptureRepository>(),
+    sp.GetRequiredService<StandingRepository>()));
 builder.Services.AddSingleton<UserRepository>();
 builder.Services.AddSingleton<BettingRepository>();
 builder.Services.AddSingleton<AnalysisRepository>();
@@ -71,7 +72,9 @@ builder.Services.AddSingleton<OddsCaptureRepository>();
 builder.Services.AddSingleton<SummaryRepository>();
 builder.Services.AddSingleton<MilkRepository>();
 builder.Services.AddSingleton<MilkPickRepository>();
+builder.Services.AddSingleton<PaperTradeRepository>();
 builder.Services.AddSingleton<HalfDrawRepository>();
+builder.Services.AddSingleton<StandingRepository>();
 builder.Services.AddSingleton<MilkScanService>();
 builder.Services.AddSingleton<DailyFollowRepository>();
 builder.Services.AddSingleton<DailyFollowService>();
@@ -79,6 +82,7 @@ builder.Services.AddSingleton<BdSpfPickRepository>();
 builder.Services.AddSingleton<BdSpfPickService>();
 builder.Services.AddSingleton<AuthService>();
 builder.Services.AddSingleton<PurchaseSettlementService>();
+builder.Services.AddSingleton<StandingService>();
 builder.Services.AddSingleton(sp => new JobScheduler(
     jobsOptions,
     sp.GetRequiredService<CollectionService>(),
@@ -89,7 +93,9 @@ builder.Services.AddSingleton(sp => new JobScheduler(
     sp.GetRequiredService<LottoRecommendationService>(),
     sp.GetRequiredService<DailyFollowService>(),
     sp.GetRequiredService<BdSpfPickService>(),
-    sp.GetRequiredService<BdSpfPickRepository>()));
+    sp.GetRequiredService<BdSpfPickRepository>(),
+    sp.GetRequiredService<StandingService>(),
+    sp.GetRequiredService<PaperTradeRepository>()));
 builder.Services.AddHostedService<SchedulerHostedService>();
 // token 健康守护：连续被人机验证拦截时自动用本机浏览器续期，避免回补空转
 builder.Services.AddHostedService<TokenHealthService>();
@@ -1502,7 +1508,14 @@ static object ToMilkItem(MilkPick p) => new
     // 让用户知道这一注的概率不是联合分布算的，而是总进球报价反推 + 实测方向率。
     halfDrawRefined = p.HalfDrawRefined,
     // 热门方体能/状态标注（2026-11-08）：只标注、不改概率。回测方向是反的，见 TeamForm。
-    fatigueTag = p.FatigueTag
+    fatigueTag = p.FatigueTag,
+    // 模型 vs 市场（2026-11-08 加）：模型纯值 ÷ 市场去水隐含，< 0.70 = 模型认为市场高估 30% 以上。
+    //
+    // 为什么要单独给一个字段：页面上写的 modelProbability 是 Blend 之后的混合值（含 30% 市场），
+    // 它天然和市场对得上，看不出背离。这个比值把市场那 30% 剔掉，还原模型的原判。
+    // 前端必须打红标并把两个数字并排写（模型 X% / 市场 Y%），只说「风险」等于没说。
+    modelVsMarketRatio = p.ModelVsMarketRatio,
+    modelDoubt = p.ModelDoubt
 };
 
 // 大奶票投影（与票面台账同源的一张票）
@@ -1559,6 +1572,10 @@ static object ToMilkGate(MilkBuildResult build) => new
         recs = build.Funnel.Recs,
         withOdds = build.Funnel.WithOdds,
         named = build.Funnel.Named,
+        // 联赛名对齐（2026-11-08 加）：竞彩「韩职」vs 数据源「K1联赛」。
+        // 这个数不写出来，整类联赛消失时看不出是「名字对不上」还是「模型真没见过这支队」。
+        leagueAliased = build.Funnel.LeagueAliased,
+        aliasNotes = build.Funnel.AliasNotes,
         known = build.Funnel.Known,
         thinSample = build.Funnel.ThinSample,
         distributed = build.Funnel.Distributed,
@@ -1672,9 +1689,27 @@ app.MapGet("/api/milk/picks", async (MilkPickRepository repo, string? date, Canc
         var last = await repo.GetLatestPickDateBeforeAsync(d, ct);
         if (last is DateTime ld) list = await repo.GetDayAsync(ld, ct);
     }
+    // 榜面只列「还能下单」的注（2026-11-08 加）。
+    // 起因：同日重算会保留已结算记录（DELETE 只删 Hit/SettledAt 都为空的），
+    // 于是 13:00 已完赛的周日001 两注（BQ 胜胜 + BF 1:0）一直挂在榜上，
+    // 用户看到的是「今天 9 注」——其中 2 注根本买不了，而且还带着 NULL 基线（老版本落的）。
+    // 已结算注的去处是每日复盘，不是推荐榜。
+    list = list.Where(r => r.SettledAt is null).ToList();
     // 玩法级 EV 天花板（2026-11-08 加）：不是 DB 列，按 PlayType 现算。
     // 前端拿它判「模型高估」并与 ev 并排展示，页面不再自己拍一个倍数。
     foreach (var r in list) r.EvCap = MilkPickEngine.EvCapFor(r.PlayType);
+    // ★ 榜单对外只报实证 EV（2026-11-08 用户拍板）。
+    // 起因是江原FC vs 全北现代：模型 EV 报 1.240、按同类场次实测只有 0.762，
+    // 用户是看着 1.24 下的注。模型 EV 是「模型概率 × 赔率」，模型越乐观数字越漂亮，
+    // 而 BQ 返奖率 0.797 / BF 0.710 早把上限写死了——挂出来只会误导。
+    // 模型原值移到 ModelEv 保留，仅供「模型有多乐观」的对比，不参与展示主位。
+    // 没有基线（BaselineEv 为空）的注保持原样：那种注本来就不该上榜，见 milk-check.
+    foreach (var r in list)
+    {
+        if (r.BaselineEv is not decimal be) continue;
+        r.ModelEv = r.Ev;
+        r.Ev = be;
+    }
     return Results.Ok(list);
 });
 
@@ -1906,6 +1941,16 @@ app.MapPost("/api/bd/spf-picks", async (
 app.MapGet("/api/milk/pick-stats", async (MilkPickRepository repo, int? days, CancellationToken ct) =>
     Results.Ok(await repo.GetReportAsync(days ?? 30, ct)));
 
+// 空跑台账（2026-11-08 加）：照首页榜面买、两周下来是赚是亏。
+// 与 /api/milk/pick-stats 的区别：那边读的是活的 FbMilkPick（每次重算会被覆盖），
+// 这边读的是冻结表 FbPaperTrade（只增不改），是唯一可用来做长期评价的口径。
+app.MapGet("/api/milk/paper", async (PaperTradeRepository repo, int? days, CancellationToken ct) =>
+    Results.Ok(await repo.GetReportAsync(days ?? 14, ct)));
+
+// 空跑台账逐注明细（含撤注的行与撤注原因）。
+app.MapGet("/api/milk/paper/rows", async (PaperTradeRepository repo, int? days, CancellationToken ct) =>
+    Results.Ok(await repo.GetRowsAsync(days ?? 14, ct)));
+
 // 临场转向告警：系统主动喊出来的「已出注场次在开赛前市场转向」报警（2026-11-05 加）。
 // 由 turn-guard 定时任务扫描落库，本端点只读，供数据监控页顶部红标。
 app.MapGet("/api/milk/turn-alerts", async (MilkPickRepository repo, string? date, CancellationToken ct) =>
@@ -1913,6 +1958,11 @@ app.MapGet("/api/milk/turn-alerts", async (MilkPickRepository repo, string? date
     var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
     return Results.Ok(await repo.GetTurnAlertsAsync(d, ct));
 });
+
+// 临场哨兵逐注诊断（2026-11-08 加，只读）：不落库、不改榜。
+// 回答的是「为什么这一注没被判成危险」——没有它，用户只能看到「无告警」三个字。
+app.MapGet("/api/milk/turn-guard/scan", async (RecommendationService svc, CancellationToken ct) =>
+    Results.Ok(await svc.ScanTurnGuardAsync(ct)));
 
 // 方向闸回测：用某天的历史盘口重算「这道闸会拦下什么」，不落库、不出票。
 // 11-04 三场反掉之后的验证入口，也是以后调阈值时唯一不必等开奖的办法。

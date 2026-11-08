@@ -21,6 +21,14 @@ public sealed class JcOddsRepository
     public const decimal MoveThreshold = 0.05m;
 
     /// <summary>
+    /// 读 FbJcOddsHistory 的命令超时（秒）。默认 30s 不够：这张表 540 万行、每 2 分钟
+    /// 被 jc-odds-sample 写入 1600 行，数据库又没开 RCSI，读者可能在锁等待上耗掉半分钟以上。
+    /// 2026-11-08 实测 /api/milk/turn-guard/scan 就是这么挂的（500），
+    /// 同一路径的 turn-guard 作业一旦超时就是「静默无告警」。
+    /// </summary>
+    private const int OddsReadTimeoutSeconds = 120;
+
+    /// <summary>
     /// 把一批竞彩固定奖金快照写成时间序列点（同一 CapturedAt，先删旧再插，保证幂等）。
     ///
     /// watchMoves：采样时开（默认），回补历史时关。
@@ -563,15 +571,20 @@ FROM ins;";
 
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<(long MatchId, string OptionCode, decimal Odds)>(new CommandDefinition(
+            // 2026-11-08 晚：加 READUNCOMMITTED。FbJcOddsHistory 是「只追加」的历史表，
+            // 脏读（读到正在插入的半条价）对这个用途无害；而不加的话，jc-odds-sample
+            // 每 2 分钟写 1600 行时读者会被排他锁挡住——数据库 RCSI 是关的。
+            // 实测：同一查询会被堵 44s（CPU 只花 126ms），正好越过默认 30s 命令超时，
+            // 于是 turn-guard 抛异常、「本轮无告警」变成静默失败，正是 2026-11-08 那类事故的形状。
             @"SELECT MatchId, OptionCode, Odds
               FROM (
                   SELECT MatchId, OptionCode, Odds,
                          ROW_NUMBER() OVER (PARTITION BY MatchId, OptionCode ORDER BY CapturedAt ASC) AS rn
-                  FROM dbo.FbJcOddsHistory
+                  FROM dbo.FbJcOddsHistory WITH (READUNCOMMITTED)
                   WHERE PlayType = @play AND MatchId IN @ids AND OptionCode IN ('3','1','0') AND Odds > 1
               ) t
               WHERE rn = 1",
-            new { ids, play = playType }, cancellationToken: ct));
+            new { ids, play = playType }, commandTimeout: OddsReadTimeoutSeconds, cancellationToken: ct));
 
         foreach (var g in rows.GroupBy(r => r.MatchId))
         {
@@ -597,15 +610,16 @@ FROM ins;";
 
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<(long MatchId, string OptionCode, decimal Odds)>(new CommandDefinition(
+            // READUNCOMMITTED / 超时的理由同 GetEarliestPlayAsync，见那里的注释。
             @"SELECT MatchId, OptionCode, Odds
               FROM (
                   SELECT MatchId, OptionCode, Odds,
                          ROW_NUMBER() OVER (PARTITION BY MatchId, OptionCode ORDER BY CapturedAt DESC) AS rn
-                  FROM dbo.FbJcOddsHistory
+                  FROM dbo.FbJcOddsHistory WITH (READUNCOMMITTED)
                   WHERE PlayType = @play AND MatchId IN @ids AND OptionCode IN ('3','1','0') AND Odds > 1
               ) t
               WHERE rn = 1",
-            new { ids, play = playType }, cancellationToken: ct));
+            new { ids, play = playType }, commandTimeout: OddsReadTimeoutSeconds, cancellationToken: ct));
 
         foreach (var g in rows.GroupBy(r => r.MatchId))
         {
