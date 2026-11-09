@@ -57,6 +57,12 @@ public sealed class JobScheduler
         public bool Running { get; set; }
         /// <summary>本次开始执行的时刻，用于观测卡死时长和看门狗判定。</summary>
         public DateTime? RunningSince { get; set; }
+        /// <summary>
+        /// 本次排队的取消源。看门狗判定卡死时取消它，让还堵在通道里的那一份真正退出——
+        /// 否则「已强制释放（本次未真正执行）」是假话：任务仍在通道里等着，稍后照样执行，
+        /// 而且 Next 已重算，下一轮还会再排一份，同一个作业在通道里叠两份。
+        /// </summary>
+        public CancellationTokenSource? Pending { get; set; }
     }
 
     /// <summary>
@@ -124,7 +130,6 @@ public sealed class JobScheduler
             }
 
             lastRuns.TryGetValue($"job:{job.Name}", out var last);
-
             // 从「现在」往后算下一次，而不是从上次运行时间往后算。
             //
             // 原来的写法是 GetNextOccurrence(上次运行)，错过的那一次会落在过去，
@@ -143,7 +148,10 @@ public sealed class JobScheduler
                 Job = job,
                 Schedule = schedule,
                 Next = next,
-                LastRun = last == default ? null : last
+                LastRun = last?.FinishedAt,
+                // 状态与消息同样从日志恢复：重启后监控面板不该失明
+                LastStatus = last?.Status,
+                LastMessage = last?.Message
             });
         }
     }
@@ -169,6 +177,32 @@ public sealed class JobScheduler
         timeoutMinutes = (int)TimeoutFor(e.Job).TotalMinutes
     }).ToList();
 
+    /// <summary>主循环最近一次心跳的时刻（进程刚起、还没跑完第一轮时为 <see cref="DateTime.MinValue"/>）。</summary>
+    private long _lastTickTicks;
+
+    /// <summary>
+    /// 调度器心跳。健康检查用它判断「调度循环是否还在转」——
+    /// 进程活着但循环卡死时，端口照常监听、HTTP 照常 200，只有这个时间会停住。
+    /// </summary>
+    public DateTime LastTickAt
+    {
+        get
+        {
+            var t = Interlocked.Read(ref _lastTickTicks);
+            return t == 0 ? DateTime.MinValue : new DateTime(t);
+        }
+    }
+
+    /// <summary>
+    /// 标记「调度器已经准备启动」。放在 InitializeAsync 之前调用。
+    ///
+    /// 为什么单独一个方法：InitializeAsync 要读库，DB 不通时它会抛；抛了以后
+    /// SchedulerHostedService 只打一行日志就退出，主循环一次都不进，
+    /// 心跳永远停在 MinValue —— 健康检查会把它当成「还没起来」继续报 ok。
+    /// 先落一个起点，5 分钟没有后续 tick 就能被认出来。
+    /// </summary>
+    public void MarkStarting() => _lastTickTicks = DateTime.Now.Ticks;
+
     /// <summary>
     /// 主循环：每 20 秒检查一次到期作业。
     ///
@@ -192,6 +226,14 @@ public sealed class JobScheduler
 
         while (!ct.IsCancellationRequested)
         {
+            // 心跳：主循环每 20 秒跑到这里一次。健康检查靠它区分「进程活着」和「调度器还活着」。
+            //
+            // 没有这个字段之前，进程僵在循环里（比如下面那句写 STUCK 日志用了
+            // CancellationToken.None、DB 不响应就永远等下去）时 /api/health 仍然返回 200，
+            // 看门狗只看 status code，于是天天报「一切正常」而作业一个都不跑。
+            // 这个项目已经在「监控到了却不动」上栽过好几次，不能再留这种假绿灯。
+            _lastTickTicks = DateTime.Now.Ticks;
+
             List<Entry> due;
             var reclaimed = new List<string>();
             var stuck = new List<(string Name, string Type, TimeSpan Elapsed)>();
@@ -209,6 +251,8 @@ public sealed class JobScheduler
                     var elapsed = now - entry.RunningSince.Value;
                     entry.Running = false;
                     entry.RunningSince = null;
+                    // 真正取消还堵在通道里的那一份，否则下面那句「本次未真正执行」是假的
+                    try { entry.Pending?.Cancel(); } catch (ObjectDisposedException) { }
                     entry.LastStatus = "STUCK";
                     entry.LastMessage = $"执行超过 {limit.TotalMinutes:0} 分钟未返回，已强制释放运行标志";
                     entry.Next = entry.Schedule.GetNextOccurrence(now);
@@ -224,6 +268,9 @@ public sealed class JobScheduler
                     entry.Next = entry.Schedule.GetNextOccurrence(DateTime.Now);
                     entry.Running = true;
                     entry.RunningSince = DateTime.Now;
+                    // 每次排队一个新取消源；上一份若还没被回收（正常不会），先弃掉
+                    try { entry.Pending?.Cancel(); } catch (ObjectDisposedException) { }
+                    entry.Pending = new CancellationTokenSource();
                 }
             }
 
@@ -231,13 +278,18 @@ public sealed class JobScheduler
                 _log?.Invoke($"[看门狗] 作业 {name} 长时间未返回，已强制释放");
 
             // 强制释放的作业落一条 STUCK，页面的作业日志里才查得到「这次到底跑没跑」。
+            //
+            // 注意这里是在主循环里 await 的：写日志本身必须带上限，不能像以前那样用
+            // CancellationToken.None —— DB 一旦不响应，整条主循环就永久停在这一句上，
+            // 所有作业一起停摆，而端口和 /api/health 照常正常。
             foreach (var (name, type, elapsed) in stuck)
             {
                 try
                 {
+                    using var logCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                     await _sync.WriteAsync($"job:{name}", type, "STUCK", 0,
                         $"排队/执行卡住 {elapsed.TotalMinutes:0} 分钟未完成，已强制释放（本次未真正执行）",
-                        CancellationToken.None);
+                        logCts.Token);
                 }
                 catch (Exception ex)
                 {
@@ -352,14 +404,18 @@ public sealed class JobScheduler
     /// </summary>
     private async Task EnqueueAsync(Entry entry, CancellationToken ct)
     {
+        var pending = entry.Pending;
         var lane = RecommendJobTypes.Contains(entry.Job.Type) ? _recommendLane
             : DetachedJobTypes.Contains(entry.Job.Type) ? _jcLane : _mainLane;
+        using var linked = pending is null
+            ? CancellationTokenSource.CreateLinkedTokenSource(ct)
+            : CancellationTokenSource.CreateLinkedTokenSource(ct, pending.Token);
         try
         {
-            await lane.WaitAsync(ct);
+            await lane.WaitAsync(linked.Token);
             try
             {
-                await RunGuardedAsync(entry, ct);
+                await RunGuardedAsync(entry, linked.Token);
             }
             finally
             {
@@ -368,12 +424,18 @@ public sealed class JobScheduler
         }
         catch (OperationCanceledException)
         {
-            // 进程退出，排队中的作业直接丢弃，下轮启动会重新算
+            // 进程退出，或看门狗已判定卡死并取消了这一份——排队中的作业直接丢弃，下轮会重新算。
+            // 后者以前不生效：取消源没接进来，被「强制释放」的任务其实还在通道里等着，稍后照样跑。
         }
         finally
         {
             entry.Running = false;
             entry.RunningSince = null;
+            if (ReferenceEquals(entry.Pending, pending))
+            {
+                pending?.Dispose();
+                entry.Pending = null;
+            }
         }
     }
 
@@ -445,7 +507,28 @@ public sealed class JobScheduler
         // save-recommendations 撞车时，两条 DELETE+INSERT 交错就会把榜写成两份。
         // 放进同一个串行通道是这里唯一可靠的互斥手段（库上没有唯一约束兜底）。
         "turn-guard",
-        "refresh-near-kickoff"
+        "refresh-near-kickoff",
+        // 2026-11-09 加：两个结算作业只读库判中、不打任何外部接口，却一直和 water-sample
+        // （每轮 110 秒）挤在主通道串行。11-09 早上的实测后果：paper-settle 排队 25 分钟才轮到，
+        // 看门狗把「排队」判成 STUCK，页面上一片红；更麻烦的是结算被拖到深夜之后，
+        // 而未结算的注正是重算会碰的那批行（见 MilkPickRepository.SaveDayAsync 的注释）。
+        // 结算链是「赛果 → 判中 → 台账」的最后一环，必须和出票同优先级，不能排在采集后面。
+        "paper-settle",
+        "settle-recommendations",
+        // 2026-11-09 再加：今天统计出来的漏网之鱼，全是「只读写本库、不打任何外部接口」，
+        // 却因为排在 water-sample（每轮 110 秒）/ odds-sample-late（8 分钟超时）后面被饿死。
+        // 11-09 00:00~08:00 实测被看门狗强制释放的次数：paper-freeze 11、settle-hourly 6、
+        // settle-purchases 6、daily-follow-settle 9 —— 全都是「排队」而不是「执行慢」。
+        //
+        // paper-freeze 必须在这一条：它读 FbMilkPick、写 FbPaperTrade，而 save-recommendations
+        // 正是对 FbMilkPick 做 DELETE + INSERT 的那个作业。只有同一条串行通道才能保证它读到
+        // 完整的榜面；排在采集后面既会读不到（被重算撞上），也会漏冻（11-08 丢 3 注的成因之一）。
+        "settle-hourly",
+        "settle-purchases",
+        "paper-freeze",
+        // 跟单链同样是「读榜面 → 落库」，不能排在采集后面。
+        "daily-follow-build",
+        "daily-follow-settle"
     };
 
     /// <summary>超时中止后补一条运行记录，方便页面上查。写日志本身失败不再抛出。</summary>
@@ -453,8 +536,11 @@ public sealed class JobScheduler
     {
         try
         {
+            // 同 STUCK 那条：写日志必须有上限。这里虽然不在主循环里，但它是持着通道跑的，
+            // DB 不响应就会把这个通道永久占住，后面排队的作业全部陪葬。
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await _sync.WriteAsync($"job:{entry.Job.Name}", entry.Job.Type, "TIMEOUT", 0,
-                $"执行超过 {limit.TotalMinutes:0} 分钟未完成，已中止", CancellationToken.None);
+                $"执行超过 {limit.TotalMinutes:0} 分钟未完成，已中止", cts.Token);
         }
         catch (Exception ex)
         {

@@ -111,6 +111,21 @@ public static class Program
             return await OddsConditionStudy.RunAsync(connStr, testStart);
         }
 
+        // 单联赛「能不能套现有模型」专项诊断（2026-11-09 加，国际比赛日窗口前）。
+        // 只读。回答：这个联赛的队模型认不认识、够不够 MinTeamGames、按出票口径会出几注、出了准不准。
+        if (args.Any(a => a.Equals("league-probe", StringComparison.OrdinalIgnoreCase)))
+        {
+            var rest = args.SkipWhile(a => !a.Equals("league-probe", StringComparison.OrdinalIgnoreCase))
+                           .Skip(1)
+                           .ToArray();
+            var league = rest.FirstOrDefault(a =>
+                !a.StartsWith("Server=", StringComparison.OrdinalIgnoreCase) &&
+                !DateTime.TryParse(a, out _)) ?? "欧国联";
+            var startArg = rest.FirstOrDefault(a => DateTime.TryParse(a, out _));
+            var testStart = DateTime.TryParse(startArg, out var ts2) ? ts2 : new DateTime(2026, 10, 1);
+            return await LeagueProbeStudy.RunAsync(connStr, league, testStart);
+        }
+
         await using var conn = await factory.OpenAsync();
 
         var allSamples = (await conn.QueryAsync<Sample>(

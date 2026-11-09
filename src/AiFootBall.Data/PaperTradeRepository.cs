@@ -238,12 +238,19 @@ END";
         }
 
         // 取消场次：开赛时间已过、比分仍空、Status=2。与 FbMilkPick 同一套防误杀条件。
+        //
+        // ★ 2026-11-09 修（真事故）：条件原来是「开赛时间已过」，但**比赛正在进行中**同样满足
+        // 「开赛时间已过 + 比分仍是 NULL」。数据源在上下半场会把进行中的比赛短暂标成 Status=2，
+        // 于是 11-09 04:19 那次 paper-settle 把正在踢的 朗斯-马赛（实际 1:2）判成「取消」，
+        // 写死终态、永久退出结算队列。用户看到的就是「这注永远挂在那里没有结果」。
+        // 真正的取消场次在开赛 150 分钟后也拿不到比分，所以把判据收紧到 150 分钟，
+        // 和上面完场判据同一条时间线——同一个时间窗里，要么有赛果，要么才是取消。
         await conn.ExecuteAsync(new CommandDefinition(
             @"UPDATE t SET t.ActualScore = N'取消', t.SettledAt = SYSDATETIME()
               FROM dbo.FbPaperTrade t
               JOIN dbo.FbMatch m ON m.MatchId = t.MatchId
               WHERE t.Hit IS NULL AND t.SettledAt IS NULL AND m.Status = 2
-                AND m.MatchTime < SYSDATETIME()
+                AND m.MatchTime < DATEADD(minute, -150, SYSDATETIME())
                 AND m.HomeScore IS NULL AND m.AwayScore IS NULL",
             new { }, cancellationToken: ct));
 
@@ -289,20 +296,27 @@ END";
 
         var frozenDays = rows.Select(r => r.TradeDate.Date).Distinct().Count();
 
+        // 「以发布的为准」（用户 2026-11-09 拍板）：同一场同玩法若中途换过档，
+        // 台账里会留下两行（只增不改），但只有最后发布的那一档是一注。
+        // 换档的旧档不进任何切片，只在报表的 Superseded 里报个数，方便和榜面对账。
+        var superseded = PaperTradeMath.SupersededCount(rows);
+        var final = PaperTradeMath.FinalVersion(rows);
+
         return new PaperReport(
             days, from, to, frozenDays,
-            Slice("全部", rows),
-            rows.GroupBy(r => r.PlayType).OrderBy(g => g.Key)
+            Slice("全部", final),
+            final.GroupBy(r => r.PlayType).OrderBy(g => g.Key)
                 .Select(g => Slice(g.Key, g.ToList())).ToList(),
-            rows.GroupBy(r => r.TradeDate.ToString("MM-dd")).OrderBy(g => g.Key, StringComparer.Ordinal)
+            final.GroupBy(r => r.TradeDate.ToString("MM-dd")).OrderBy(g => g.Key, StringComparer.Ordinal)
                 .Select(g => Slice(g.Key, g.ToList())).ToList(),
             new[]
             {
-                Slice("常规注", rows.Where(r => !r.CounterHigh && !r.ModelOverconfident && !r.ModelLowConfidence).ToList()),
-                Slice("高赔单列", rows.Where(r => r.CounterHigh).ToList()),
-                Slice("模型高估", rows.Where(r => r.ModelOverconfident).ToList()),
-                Slice("模型低可信", rows.Where(r => r.ModelLowConfidence).ToList())
-            });
+                Slice("常规注", final.Where(r => !r.CounterHigh && !r.ModelOverconfident && !r.ModelLowConfidence).ToList()),
+                Slice("高赔单列", final.Where(r => r.CounterHigh).ToList()),
+                Slice("模型高估", final.Where(r => r.ModelOverconfident).ToList()),
+                Slice("模型低可信", final.Where(r => r.ModelLowConfidence).ToList())
+            },
+            superseded);
     }
 
     /// <summary>台账明细（页面上逐注看）。</summary>
@@ -314,7 +328,7 @@ END";
         await using var conn = await _factory.OpenAsync(ct);
         if (!await TableExistsAsync(conn, ct)) return new();
 
-        return (await conn.QueryAsync<PaperTradeRow>(new CommandDefinition(
+        var rows = (await conn.QueryAsync<PaperTradeRow>(new CommandDefinition(
             @"SELECT TradeId, TradeDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, BaselineProbability,
                      BaselineEv, ModelEv, CounterHigh, ModelOverconfident, ModelLowConfidence,
@@ -324,6 +338,12 @@ END";
               WHERE TradeDate >= @from AND TradeDate <= @to
               ORDER BY TradeDate DESC, MatchTime, PlayType",
             new { from, to }, cancellationToken: ct))).ToList();
+
+        // 明细保留全部行（含换档旧档），但标出哪行不算注——否则「明细 8 行、报表 7 注」没法对账。
+        var keep = PaperTradeMath.FinalVersion(rows).Select(r => r.TradeId).ToHashSet();
+        foreach (var r in rows) r.Superseded = !keep.Contains(r.TradeId);
+
+        return rows;
     }
 
     // ── 内部 ──

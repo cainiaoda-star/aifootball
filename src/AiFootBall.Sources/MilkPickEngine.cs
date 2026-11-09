@@ -93,7 +93,58 @@ public static class MilkPickEngine
     /// 40 倍以上命中率开始塌，且 100 倍以上档被几个千倍冷门单点拉爆，样本极不稳。
     /// 用户 2026-11-04 定调「目的是提高中奖率」，所以砍到 40：3:0@80、3:1@50 这类不再上榜。
     /// </summary>
-    public const decimal MaxScoreOdds = 40m;
+    public const decimal MaxScoreOdds = 20m;
+
+    /// <summary>
+    /// 比分玩法总开关（2026-11-09 停发，用户「提高中奖率」第一段）。
+    ///
+    /// **停发理由不是「4 注 0 中」**——4 注全灭在 10% 真实命中率下概率高达 65.6%，是纯噪音，
+    /// 拿它当依据和我自己反复批判的错法是同一个。真实理由有两条，都是结构性的、不依赖样本：
+    ///   ① 比分返奖率 0.710，比半全场/总进球（0.797）低 8.7 个点。同样猜对率下，比分天生多亏一截，
+    ///      这是税，不是能力问题，再准也补不回来。
+    ///   ② 模型对进球分布的 MAE 1.53 球，比市场 1.33 还差。比分恰好是**唯一**只吃「进球分布精度」
+    ///      的玩法（半全场还有半场/全场相关性可用、总进球只需合计），模型在最弱的能力上被要求最高。
+    ///
+    /// 保留开关而不是删代码：第二段校准检验若证明模型在进球分布上确实优于市场，这里改回 true 即可。
+    /// 关掉后每天注数会减少 0~2 注，这是代价。
+    ///
+    /// ★ 2026-11-09 回测补证（Backtest 校准台，测试集 3107 场，切分 2026-10-29）：
+    ///   比分 Top-1 命中率 **模型 9.8% vs 市场 12.8%**，平均 Brier 0.9346 vs 0.9333。
+    ///   也就是说「选哪一个比分」这件事，模型比市场差 3 个点——这比返奖率论据更直接：
+    ///   不光是税高，是连挑都挑不过。停发的决定因此从推断变成有实测支撑。
+    /// </summary>
+    public const bool EnableScorePicks = false;
+
+    /// <summary>
+    /// 半全场赔率上限（2026-11-09 由 15 降到 8）。
+    ///
+    /// 依据：`league-probe ALL 2026-10-01` 用 **421 场真实竞彩九档 + 真实赛果** 扫描
+    /// 「赔率上限 × 概率下限」，每场一注（取过闸档里模型概率最高那档）：
+    ///
+    /// | 上限 | 注数 | 命中率 | 平均赔率 | 平注回报 |
+    /// |---|---|---|---|---|
+    /// | 6  | 372 | 16.4% | 4.72 | 0.763 |
+    /// | 8  | 401 | 16.5% | 5.04 | **0.811** |
+    /// | 10 | 415 | 15.2% | 5.30 | 0.743 |
+    /// | 12 | 415 | 15.2% | 5.36 | 0.743 |
+    /// | 15 | 415 | 14.5% | 5.51 | 0.711 |
+    ///
+    /// 15 倍是全部配置里最差的一档；10/12/15 三行几乎重合，说明 10 倍以上那批注是纯拖累。
+    /// 8 倍比 15 倍多 2 个点命中、多 0.10 回报，注数只从 415 掉到 401。
+    /// 根因：模型在半全场顺风档（胜胜/负负）与反转档上系统性高估 3~5 倍
+    /// （逐注看：模型 26~30% vs 市场 5~7%），高赔档把这种高估放大成了 EV。
+    ///
+    /// 代价要说清：胜平/负平（13~15 倍）、胜负/负胜（25 倍以上）整类不再发。
+    /// **这不是提高期望，是用赔率换命中率**——扫描里最好的一格（8 倍 + 模型≥市场）也只有 0.951。
+    /// </summary>
+    public const decimal MaxHalfFullOdds = 8m;
+
+    /// <summary>
+    /// 总进球赔率上限（2026-11-09 新增）。总进球 2/3/4 球档赔率约 3.5~5.5，
+    /// 6 球以上才会到 10 倍以上，而 6 球以上全库占比不足 8%。设 10 只是拦住极端档，
+    /// 正常出注（实测全部落在 4.0~4.2）不受影响。
+    /// </summary>
+    public const decimal MaxGoalOdds = 10m;
 
     /// <summary>
     /// 不发档：总进球 5 球。竞彩 453 场实测这一档平注回报 0.591，是八档里最差的，
@@ -945,6 +996,16 @@ public static class MilkPickEngine
 
         foreach (var r in recs)
         {
+            // 完全不出注的联赛（2026-11-09 加，起因「欧国联能不能推」）。
+            // 与下面的 NoParlayLeagues 不是一回事：那张是「能单关、不进串」，这张是「连单关都不发」。
+            // 证据见 NoPickLeagues 注释：欧国联回放 14 场 Top-1 模型 14.3% vs 市场 42.9%，出注口径 13 注 0 中。
+            if (NoPickLeagues.IsExcluded(r.LeagueName))
+            {
+                if (funnel.Skipped.Count < 20)
+                    funnel.Skipped.Add($"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：{r.LeagueName} 属不推名单（国际赛/友谊赛/青年赛，模型无 alpha）");
+                continue;
+            }
+
             // 联赛黑名单（2026-11-07 用户拍板）：澳超整类不发。大奶榜是组串的主要来源，
             // 澳超无升降级+高方差+判罚争议高发（11-07 珀斯光荣越位进球判有效，正是实购 4 串 1 的挂腿）。
             // 名单集中在 NoParlayLeagues，恢复某联赛只改那里。
@@ -1127,6 +1188,9 @@ public static class MilkPickEngine
 
                     if (pt.Odds < MinOptionOdds) continue;
                     if (pt.Odds > MaxScoreOdds) continue;
+                    // 停发比分期间不建候选，但上面的 listed[] 累计与下面的 others 收集必须保留：
+                    // 它们只影响「胜其它/平其它/负其它」的余量计算，跳掉会让概率凭空变好看。
+                    if (!EnableScorePicks) continue;
                     matchPicks.Add(Option(pt, r, (double)Blend((decimal)p.Value, pt.Odds, bfOver)));
                 }
                 else
@@ -1139,6 +1203,7 @@ public static class MilkPickEngine
                 var p = Math.Max(0m, (decimal)ResultProbability(grid, mass, side) - listed[side]);
                 if (p <= 0 || pt.Odds < MinOptionOdds) continue;
                 if (pt.Odds > MaxScoreOdds) continue;
+                if (!EnableScorePicks) continue;
                 matchPicks.Add(WithProbability(Option(pt, r), Blend(p, pt.Odds, bfOver)));
             }
 
@@ -1147,6 +1212,7 @@ public static class MilkPickEngine
             {
                 if (!int.TryParse(pt.OptionCode, out var n)) continue;
                 if (pt.Odds < MinOptionOdds) continue;
+                if (pt.Odds > MaxGoalOdds) continue;
                 if (BannedGoalBuckets.Contains(pt.OptionCode, StringComparer.Ordinal)) continue;
                 var p = n >= 7
                     ? Math.Max(0m, 1m - (decimal)Enumerable.Range(0, 7).Sum(k => GoalsProbability(grid, mass, k)))
@@ -1207,6 +1273,7 @@ public static class MilkPickEngine
                 {
                     if (!HalfFullCombos.Contains(pt.OptionCode, StringComparer.Ordinal)) continue;
                     if (pt.Odds < MinHalfFullOdds) continue;
+                    if (pt.Odds > MaxHalfFullOdds) continue;
                     var p = joint[SideIndex(pt.OptionCode[0]), SideIndex(pt.OptionCode[2])];
                     var bqPick = Option(pt, r);
                     // 友谊赛反转档全库仅 2.7%（39.5万场实测，联赛 11.1%、杯赛 15.1%），

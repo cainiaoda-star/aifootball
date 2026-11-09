@@ -54,6 +54,12 @@ public sealed class PaperTradeRow
 
     /// <summary>平注盈亏：命中 = 赔率 − 1，未中 = −1，撤注 = NULL（没下注）。</summary>
     public decimal? Pnl { get; set; }
+
+    /// <summary>
+    /// 换档时被后一版榜面换掉的旧档（只在读取时算，不落库）。
+    /// 它进不了任何统计，只用于明细页标注「这行不算注」。
+    /// </summary>
+    public bool Superseded { get; set; }
 }
 
 /// <summary>
@@ -83,7 +89,9 @@ public sealed record PaperReport(
     PaperSlice Overall,
     IReadOnlyList<PaperSlice> ByPlayType,
     IReadOnlyList<PaperSlice> ByDate,
-    IReadOnlyList<PaperSlice> ByFlag)
+    IReadOnlyList<PaperSlice> ByFlag,
+    /// <summary>换档被换掉的旧档数。它们不在任何切片里，只在报表上标出来好对账。</summary>
+    int Superseded = 0)
 {
     /// <summary>样本够不够下结论。门槛定义在 PaperTradeMath，别在这里另立一个数。</summary>
     public bool Enough => Overall.Settled >= PaperTradeMath.EnoughSettled;

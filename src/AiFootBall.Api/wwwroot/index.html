@@ -455,6 +455,29 @@
     border:1px solid rgba(255,90,90,.55);background:rgba(255,90,90,.12);color:var(--text)}
   .milk-void-bar b{color:#ff8f8f}
   .milk-void-bar .void-item{display:block;color:var(--dim);font-size:12px;margin-top:3px}
+  /* 撤榜展示区（2026-11-09，用户要求）：撤掉的注不再混在主榜里划掉，统一挪到榜单下方。
+     主榜只回答「现在能买什么」，撤榜区回答「哪些推过又收回、为什么」。
+     改的只是展示位置——「撤注不删行」这条约定不变，账照记、赛果照结算，
+     否则第二天复盘会以为系统从没出过这注（这正是 2026-11-08 那次误会的来源之一）。 */
+  .milk-void-sec{margin:16px 0 0;border:1px solid rgba(255,90,90,.35);border-radius:12px;overflow:hidden;background:rgba(255,90,90,.04)}
+  .milk-void-sec .mvs-head{padding:9px 14px;background:rgba(255,90,90,.10);border-bottom:1px solid rgba(255,90,90,.25);display:flex;gap:10px;flex-wrap:wrap;align-items:baseline}
+  .milk-void-sec .mvs-head b{color:#ff8f8f;font-size:13px;white-space:nowrap}
+  .milk-void-sec .mvs-head span{color:var(--dim);font-size:12px;line-height:1.55}
+  .milk-void-sec .board-scroll{margin:0}
+  .milk-void-sec table{width:100%;border-collapse:collapse}
+  .milk-void-sec th{white-space:nowrap;font-size:12px}
+  .milk-void-sec td{font-size:12.5px;vertical-align:top;padding:7px 8px}
+  .milk-void-sec tbody tr + tr td{border-top:1px solid rgba(255,255,255,.06)}
+  .milk-void-sec .mvs-odds,.milk-void-sec .mvs-time{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .milk-void-sec .mvs-opt{white-space:nowrap;text-decoration:line-through;opacity:.7}
+  .milk-void-sec .mvs-reason{color:var(--dim);line-height:1.55;min-width:180px}
+  .milk-void-sec .mvs-foot{padding:8px 14px;border-top:1px solid rgba(255,90,90,.22);color:var(--dim);font-size:12px;line-height:1.6}
+  .milk-void-sec .mvs-empty{padding:12px 14px;color:var(--dim);font-size:12.5px}
+  /* 撤榜类型角标（2026-11-09）：撤注=风控主动收回；换档=后续重算后不再够格。
+     两者语义完全不同，颜色分开，避免用户把「我们改主意了」读成「市场否掉了这注」。 */
+  .milk-void-sec .mvs-kind{display:inline-block;font-size:11px;line-height:1.5;padding:1px 7px;border-radius:5px;white-space:nowrap;font-weight:700}
+  .milk-void-sec .mvs-kind-void{background:#3a1414;color:#ff8f8f;border:1px solid #a33}
+  .milk-void-sec .mvs-kind-rep{background:rgba(120,120,120,.12);color:#a9a9a9;border:1px solid rgba(140,140,140,.45)}
   /* 实证基线角标（2026-11-08）：主榜注现在也落了 BaselineProbability（见 OptionBaseline）。
      中性灰，不是警告——它只是把「模型 X%」和「联赛历史 Y%」两个数并排摆出来。
      为什么不直接替换成基线口径（单列注那样）：模型是分场次的，联赛均值不是这一场的地板，
@@ -1824,6 +1847,7 @@ function renderBoards(){
   loadJcWater();
   loadMilkRecord();
   loadMilkCandidates();
+  loadMilkVoided();
   loadMilkHalfDraw();
   loadBdSpfPicks();
 }
@@ -1901,6 +1925,82 @@ function renderBdSpfGroup(title, list, kind){
 /* ---------- 够格但未上榜的反转档候选（2026-11-08 用户要求） ---------- */
 
 /** 拉当天「够格但没进单列」的 30~40 倍反转档。只读、纯派生、不落库、不进推荐。 */
+/* ---------- 撤榜展示区（2026-11-09，用户要求「下面开一个栏目」） ----------
+   上方榜单只放「正在发榜、还能买」的注；这一栏专放「推过又收回」的注，两类来源：
+     voided   = 临场高危告警撤注（有原因、有撤下时间，风控动作）
+     replaced = 曾上榜、后续重算把这一档换掉/筛掉（FbMilkPick 里是整行 DELETE，
+                只有空跑台账每 10 分钟冻结才留下痕迹）
+   为什么值得单开一栏：用户复盘的第一问永远是「这注你到底推没推过」。
+   混在主榜里划掉时，划掉的样式很容易被当成行情波动跳过；而删掉更糟，等于假装没推过。
+   注意这只是展示——撤注照记台账、照结算，撤错了会照实记成亏损。 */
+async function loadMilkVoided(){
+  const box = $('#milkVoidSec');
+  if(!box) return;
+  const d = box.getAttribute('data-date') || '';
+  try{
+    const rows = await api(`/api/milk/voided${d ? '?date=' + encodeURIComponent(d) : ''}`);
+    box.innerHTML = milkVoidedHtml(rows || []);
+  }catch(e){
+    box.innerHTML = `<div class="mvs-head"><b>撤榜展示区</b>
+      <span class="dim">加载失败：${esc(e.message || e)}</span></div>`;
+  }
+}
+
+function milkVoidedHtml(rows){
+  const fmt = v => v ? new Date(v).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+  const head = n => `<div class="mvs-head">
+      <b>撤榜展示区 · ${n} 注</b>
+      <span>${n
+        ? '这些注曾经上过榜，现在已撤下，<b>不在上方榜单里，也不构成可下注推荐</b>。撤注不是作废：仍按原样记进台账并结算，赛后来核对「撤得对不对」——撤错了会照实记成亏损。'
+        : '上方榜单只放正在发榜的注。这里放「推过又收回」的注——此刻没有。'}</span>
+    </div>`;
+  if(!rows.length) return head(0) + `<div class="mvs-empty">今日暂无撤榜记录。</div>`;
+
+  // 排序跟主榜一致：先按竞彩场次号，再按玩法。
+  const sorted = rows.slice().sort((x, y) => {
+    const cx = officialMatchSort({ matchNo: String(x.matchNo || '').trim() }, { matchNo: String(y.matchNo || '').trim() });
+    return cx !== 0 ? cx : String(x.playType || '').localeCompare(String(y.playType || ''));
+  });
+
+  const body = sorted.map(it => {
+    const kindTag = it.kind === 'voided'
+      ? '<span class="mvs-kind mvs-kind-void" title="临场告警判定市场在开赛前反向，按风控规则撤下。属于风控动作，不是已验证能赚钱的规则。">撤注</span>'
+      : '<span class="mvs-kind mvs-kind-rep" title="这一档曾经上过榜，之后重算把它换掉或被筛掉了。不是我们「改主意」，而是临场数据/赔率变化后它不再够格。">换档</span>';
+    // 说明列：撤注写告警原因；换档写清楚「上榜时间之后不再出现」，不编造原因。
+    const why = it.kind === 'voided'
+      ? esc(it.alertReason || '未记录原因（撤注时未落告警原因，属老数据）')
+      : `后续重算把这一档换掉了（最后上榜 ${esc(fmt(it.frozenAt) || '—')}），同场同玩法换成了别的档位或被筛掉`;
+    // 时间列：撤注给撤下时间；换档给「上榜于」，因为它没有「撤下」这个动作时刻。
+    const when = it.kind === 'voided'
+      ? `撤于 ${esc(fmt(it.voidedAt) || '—')}`
+      : `上榜 ${esc(fmt(it.frozenAt) || '—')}`;
+    // 赛果列：撤注当天完赛后仍留在这里，回答的正是「撤得对不对」。
+    // 撤对了＝没中，撤错了＝它中了——撤错的照实显示，不美化、不回填。
+    const res = it.settledAt
+      ? `${esc(it.actualScore || '—')}${it.hit === true ? ' <b>中</b>' : (it.hit === false ? ' <span class="dim">未中</span>' : '')}`
+      : '<span class="dim">待赛</span>';
+    return `<tr>
+      <td class="match-no">${esc(String(it.matchNo || '').trim())}</td>
+      <td class="teams-cell"><div class="teams"><span class="tn">${esc(it.homeTeam || '')}</span><span class="vs">VS</span><span class="tn">${esc(it.awayTeam || '')}</span></div>
+        <div class="league">${esc(String(it.leagueName || '').trim())}</div></td>
+      <td class="mvs-time">${esc(fmt(it.matchTime))}</td>
+      <td>${esc(MILK_PLAY_NAME[it.playType] || it.playType || '')}</td>
+      <td class="mvs-opt">${esc(it.optionName || it.optionCode || '')}</td>
+      <td class="mvs-odds">${it.odds != null ? '@' + Number(it.odds).toFixed(2) : '—'}</td>
+      <td>${kindTag}</td>
+      <td class="mvs-reason">${why}</td>
+      <td class="mvs-time">${when}</td>
+      <td class="mvs-time">${res}</td>
+    </tr>`;
+  }).join('');
+
+  return head(sorted.length) + `
+    <div class="board-scroll"><table class="tbl rec-tbl"><thead><tr>
+      <th>场次</th><th>对阵</th><th>开赛</th><th>玩法</th><th>原档位</th><th>赔率</th><th>类型</th><th>说明</th><th>记录时间</th><th>赛果</th>
+    </tr></thead><tbody>${body}</tbody></table></div>
+    <div class="mvs-foot">两类「撤榜」别混着看：<b>撤注</b>是开赛前市场/资金明确反向，系统主动收回（风控）；<b>换档</b>是这一档在后续重算里不再够格（临场赔率或数据变了）。两者都不代表原方向一定错，所以赛后照样结算、照样记账——撤错的会被记成亏损，不会抹掉。</div>`;
+}
+
 async function loadMilkCandidates(){
   const box = $('#milkCand');
   if(!box) return;
@@ -2984,6 +3084,14 @@ function renderMilkBoard(b, strongOnly){
   let picks = (b.milkPicks || []).slice();
   if(strongOnly) picks = picks.filter(it => it.modelProbability != null && Number(it.modelProbability) >= 12);
 
+  // 撤榜拆分（2026-11-09，用户要求）。原来撤注留在主榜里整行划掉，但混排有两个问题：
+  // ① 用户扫榜时只看「有没有这注」，划掉的样式很容易被当成行情波动跳过；
+  // ② 同一场被撤一注、另几注正常时，整行既像能买又像不能买。
+  // 现在主榜只渲染未撤的（上面），撤下的一律进下方「撤榜展示区」（下面）。
+  // 注意：这里只是不渲染，不是删除——结算、台账、复盘全都照旧，「撤注不删行」不变。
+  const voidedPicks = picks.filter(it => !!it.voided);
+  picks = picks.filter(it => !it.voided);
+
   // 一场一行：同一场在比分 / 半全场 / 总进球里的注合并到同一行的三列里。
   // 之前按玩法分三张表，费内巴切-利物浦在两三张表里各出现一次，看着像推了三场。
   const byMatch = new Map();
@@ -3028,7 +3136,7 @@ function renderMilkBoard(b, strongOnly){
   let html = `<div class="board" data-board="jc">
     <div class="board-head">
       <span class="badge badge-jc">竞彩大奶</span>
-      <span class="meta">共 <b>${b.total || 0}</b> 场受注 · 大奶 <b>${picks.length}</b> 注 / <b>${rows.length}</b> 场 · 主攻半全场 → 总进球为辅 → 其次比分 → 让球只发「让平」剧本（强队让胜陷阱，深盘大热只赢1球） · 半全场只发 胜胜/平平/负负 且≥12% · 总进球≥10% 且不发 5 球档 · 比分 4.0~40 倍且≥5% · 概率 = 模型 70% + 盘口去水 30%${b.saleNote ? ' · ' + esc(b.saleNote) : ''}</span>
+      <span class="meta">共 <b>${b.total || 0}</b> 场受注 · 大奶 <b>${picks.length}</b> 注 / <b>${rows.length}</b> 场${voidedPicks.length ? ' · <b style="color:#ff8f8f">有临场撤注</b>（见下方撤榜展示区）' : ''} · 主攻半全场（4~15 倍，9 档全发含反转）→ 总进球为辅（4~10 倍，不发 5 球档）→ 让球只发「让平」剧本（强队让胜陷阱，深盘大热只赢1球） · <b>比分已停发</b>：返奖率 0.710 比半全场/总进球低 8.7 个点，且模型进球分布比市场差，属结构性劣势 · 概率 = 模型 70% + 盘口去水 30%${b.saleNote ? ' · ' + esc(b.saleNote) : ''}</span>
     </div>
     ${(b.showRows || []).some(r => /欧冠|欧罗巴|欧协联|亚冠/.test(r.leagueName || ''))
       ? '<div class="fn-warn">本日含欧战（欧冠/欧罗巴/欧协联/亚冠）场次：这类赛事球队本赛事样本少（门槛已放宽到 3 场），模型给的概率仍以「联赛均值+主场优势」为主，命中率无保证，仅供参考、谨慎下单。</div>'
@@ -3053,7 +3161,11 @@ function renderMilkBoard(b, strongOnly){
   html += `<div class="milk-record" id="milkRecord"><div class="dim">大奶战绩加载中…</div></div>`;
 
   if(!rows.length){
-    html += `<div class="empty">今天没有够格的大奶：半全场只发 胜胜/平平/负负 且≥12%，总进球≥10%（不发 5 球档），比分 4.0~40 倍且≥5%，让球只发让平剧本。门槛是按「能不能中」定的，宁缺毋滥。</div>`;
+    // 空态要区分「今天本来就没出注」和「出过但全被撤了」。两种都显示「没有够格的大奶」
+    // 会让用户以为系统今天没干活，而实际上撤榜区里有票——这正是 2026-11-08 那次误会。
+    html += voidedPicks.length
+      ? `<div class="empty">今天在榜的注已全部撤下（共 ${voidedPicks.length} 注），上方无可下注推荐。撤注明细见下方撤榜展示区。</div>`
+      : `<div class="empty">今天没有够格的大奶。现行门槛（2026-11-09 起）：半全场 4~15 倍、9 档全发含反转档；总进球 4~10 倍、不发 5 球档；让球只发让平剧本。<b>比分已停发</b>——不是因为它最近没中（4 注 0 中在 10% 真实命中率下完全正常），而是比分返奖率只有 0.710，是三个玩法里最低的，属结构性劣势。门槛是按「能不能中」定的，宁缺毋滥。</div>`;
   } else {
     // 勾选按「注」算：同一场三列玩法各有各的选项和赔率，按场勾会混。
     // 每次重渲染都重建 data 表，勾选集合 _milkPickSet 保留，但要把本轮不存在的清理掉。
@@ -3242,14 +3354,12 @@ function renderMilkBoard(b, strongOnly){
     };
     // 榜顶红条（2026-11-08）：把监控结果搬到用户真正在看的那一页。
     // 用户原话：「你监控到了，为啥不去改首页上的推荐结果，你是看着我往坑里跳吗？」
-    // 所以这里不只是「有个告警入口」，而是直接把**被撤掉的注逐条列在榜单正上方**，
-    // 连带原因一起给——他翻到这一页第一眼就不可能漏。
-    const voidedPicks = picks.filter(it => it.voided);
+    // 2026-11-09 改版：撤注的明细不再堆在这里（和主榜重复），统一挪到榜单下方的
+    // 「撤榜展示区」，这里只留一句「本日撤了几注 + 跳转」，上面保持干净——
+    // 上方是正在发榜的，下方是撤下来的。
     if(voidedPicks.length){
       html += `<div class="milk-void-bar">
-        <b>⚠ 临场撤注 ${voidedPicks.length} 注：市场在开赛前对这些注的方向反向了，不要照买。</b>
-        ${voidedPicks.map(it => `<span class="void-item">${esc(String(it.matchNo||'').trim())} ${esc(it.homeTeam||'')} vs ${esc(it.awayTeam||'')} · ${esc(it.option||'')}${it.odds!=null?` @${Number(it.odds).toFixed(2)}`:''} —— ${esc(it.alertReason||'')}</span>`).join('')}
-        <span class="void-item">说明：撤注是风控动作，不是已验证能赚钱的规则。被撤的注仍会按原样结算（保留在台账里），赛后用来核对「撤得对不对」——撤错的会照实记账，不会悄悄抹掉。</span>
+        <b>本日撤注 ${voidedPicks.length} 注</b>：这些注已从上方榜单撤下，<b>不要照买</b>。逐注的撤注原因和时间在下方 <a href="#milkVoidSec" style="color:#ff8f8f">撤榜展示区</a>。
       </div>`;
     }
     html += `<div class="board-scroll"><table class="tbl rec-tbl milk-merged"><thead><tr>
@@ -3293,6 +3403,25 @@ function renderMilkBoard(b, strongOnly){
     html += `<div class="mk-cand mk-fd" id="milkFd" data-date="${esc(_candDate)}"><span class="dim">胜平/负平公平价加载中…</span></div>`;
     // 换日期/换筛选后旧勾选要清掉，否则会拿昨天的注往今天填
     for(const k of [..._milkPickSet]) if(!aliveKeys.has(k)) _milkPickSet.delete(k);
+  }
+  // 撤榜展示区（2026-11-09，用户要求另开一栏）：固定放在榜单下方，与主榜物理隔开。
+  // 上方那半回答「现在买什么」，这里只回答「哪些推过又收回、为什么、什么时候撤的」。
+  //
+  // 内容异步填充（见 loadMilkVoided）：两类撤榜数据里，「被重算换掉的那一档」在
+  // FbMilkPick 里已经被整行删掉，只有空跑台账还留着——同步渲染拿不到，得单独查一次。
+  // 这里只放骨架，不阻塞首屏。
+  {
+    // 日期取当前榜面的 pickDate；今天一注都没有时退到「今天」，让撤榜区仍能显示当日撤注。
+    // 不能用 toISOString()：那是 UTC，凌晨 0~8 点会算成昨天，撤榜区就会去查前一天的记录。
+    const _now = new Date();
+    const _todayLocal = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, '0')}-${String(_now.getDate()).padStart(2, '0')}`;
+    const _vDate = (picks[0] && picks[0].pickDate) ? String(picks[0].pickDate).slice(0, 10)
+      : ((voidedPicks[0] && voidedPicks[0].pickDate) ? String(voidedPicks[0].pickDate).slice(0, 10)
+      : _todayLocal);
+    html += `<div class="milk-void-sec" id="milkVoidSec" data-date="${esc(_vDate)}">
+      <div class="mvs-head"><b>撤榜展示区</b><span>上方只放正在发榜的注。这里放「推过又收回」的注——加载中…</span></div>
+      <div class="mvs-empty">加载中…</div>
+    </div>`;
   }
   html += `</div>`;
   return html;

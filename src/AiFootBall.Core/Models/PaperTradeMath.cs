@@ -8,6 +8,8 @@ namespace AiFootBall.Core.Models;
 ///   1. 分母 = 已结算 **且未撤注** 的注数。撤注 = 没下这笔，不能算「没中」。
 ///   2. 回报 = 命中注的赔率合计 ÷ 注数（平注 1 个单位），不是赔率×概率的期望值。
 ///   3. 撤注单独计数，不进分母也不进分子——它评价的是撤注判据，不是选注判据。
+/// 第四条（2026-11-09 用户拍板）：
+///   4. 同一场同玩法出现多行 = 中途换档，**只算最后发布的那一档**，旧档不算一注。
 /// </summary>
 public static class PaperTradeMath
 {
@@ -18,6 +20,33 @@ public static class PaperTradeMath
         if (hit is null) return null;
         return hit.Value ? odds - 1m : -1m;
     }
+
+    /// <summary>
+    /// 「以发布的为准」：同一场同玩法在台账里可能留下多行 —— 早档先上榜被冻结，随后一轮重算
+    /// 把它换成另一档（引擎是整行 DELETE 再 INSERT，台账只增不改，于是两档都留了下来）。
+    /// **用户 2026-11-09 拍板：被换掉的旧档不算一注**，只算最后发布的那一档。
+    ///
+    /// 判据必须是 FrozenAt 最晚（并列取 TradeId 大），不能写成「未撤注优先」：
+    ///   · 换档的旧档 Voided 恒为 0（引擎是删行，不留撤注标记），按未撤注优先会挑中旧档；
+    ///   · 终版真被撤注的注，Voided=1 且就是最新一行，仍算撤注，语义不变。
+    ///
+    /// 不在这里删表里的行：台账只增不改，换档轨迹要留着复盘「换对了没有」。
+    /// </summary>
+    public static IReadOnlyList<PaperTradeRow> FinalVersion(IReadOnlyList<PaperTradeRow> rows)
+    {
+        if (rows.Count <= 1) return rows;
+
+        return rows
+            .GroupBy(r => (Day: r.TradeDate.Date, r.MatchId, r.PlayType))
+            .Select(g => g.OrderByDescending(r => r.FrozenAt)
+                          .ThenByDescending(r => r.TradeId)
+                          .First())
+            .ToList();
+    }
+
+    /// <summary>被换掉的旧档注数（同场同玩法里除终版之外的注），只用于对账展示。</summary>
+    public static int SupersededCount(IReadOnlyList<PaperTradeRow> rows)
+        => rows.Count - FinalVersion(rows).Count;
 
     public static PaperSlice Slice(string key, IReadOnlyList<PaperTradeRow> rows)
     {

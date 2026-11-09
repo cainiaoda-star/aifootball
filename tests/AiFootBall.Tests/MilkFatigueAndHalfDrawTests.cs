@@ -48,7 +48,7 @@ public class MilkFatigueAndHalfDrawTests
     };
 
     [Fact]
-    public void 胜平负平_现在能真正出注_且标记为方向模型()
+    public void 胜平负平_上限降到8后整类不再出注_两道闸都过不去()
     {
         var model = DrawishModel();
         var rec = Rec(7);
@@ -71,24 +71,58 @@ public class MilkFatigueAndHalfDrawTests
                 Pt(7, JcPlayTypes.Jq, "6", 20.0m),
                 Pt(7, JcPlayTypes.Jq, "7", 25.0m),
                 // 只给反转档，不给胜胜/平平，确保这一注就是该场的剧本锚点。
-                Pt(7, JcPlayTypes.Bq, "3-1", 13.0m),
-                Pt(7, JcPlayTypes.Bq, "0-1", 13.0m),
+                // 2026-11-09：真实胜平/负平均价 15.43，被 MaxHalfFullOdds=8 整类拦掉
+                // （台账 3 注 13/17/30 倍全黑、421 场回放 8 倍以上回报 0.711，两个独立样本同向）。
+                // 本测试验证的是「概率来自 HalfDrawModel」这条路径本身，与赔率高低无关，
+                // 所以载体赔率取 7.5 让它能过闸；「超上限时不发」由下面那条测试单独锁。
+                Pt(7, JcPlayTypes.Bq, "3-1", 7.5m),
+                Pt(7, JcPlayTypes.Bq, "0-1", 7.5m),
             }
         };
 
         var picks = MilkPickEngine.Build(new[] { rec }, odds, model);
 
         var refined = picks.Where(p => p.HalfDrawRefined).ToList();
-        Assert.NotEmpty(refined);
-        Assert.All(refined, p => Assert.Contains(p.OptionCode, new[] { "3-1", "0-1" }));
 
-        // 概率必须来自 HalfDrawModel（总进球反推 × 实测方向率），量级在 4%~9%；
-        // 泊松联合分布给这两档的数值通常也是这个区间，所以这里同时锁「不是 0、也不是盘口隐含」。
-        foreach (var p in refined)
+        // 2026-11-09：MaxHalfFullOdds 15 → 8 之后，胜平/负平被两道闸同时挡住，整类退出。
+        //   ① 赔率闸：真实均价 15.43 > 8，根本进不到选注环节；
+        //   ② 即使把赔率压到 8 以内（本测试用的 7.5），HalfDrawModel 给的 4~9% 概率
+        //      算出的 EV 只有 0.30~0.68，过不了 BQ 的基线 EV 闸（要求 ≥1.00 倍返奖率，
+        //      即赔率需 ≥ 8.9 才可能放行）。
+        // 也就是说「把上限放宽回 15」救不回这两档——放宽赔率闸仍会被 EV 闸拦，
+        // 唯一能救它们的做法是放宽 EV 闸，那是另一个决策。
+        // HalfDrawModel 的代码保留在引擎里，将来重启时需要重新验证。
+        Assert.Empty(refined);
+
+        // 同一场也不该出现胜平/负平（换档逻辑不能把它们塞回来）。
+        Assert.DoesNotContain(picks, p => p.OptionCode is "3-1" or "0-1");
+    }
+
+    [Fact]
+    public void 胜平负平赔率超上限时整类不再出注()
+    {
+        // 设计后果锁定（2026-11-09 MaxHalfFullOdds 15 → 8）：
+        // 胜平/负平真实均价 15.43，落到上限之外，两档会整类退出。
+        // 这条测试的存在意义是：将来有人把上限放宽回 15 时，会立刻看到这里变红，
+        // 从而必须回答「8~15 倍那批到底该不该发」——那批在 421 场回放里回报 0.711。
+        var model = DrawishModel();
+        var rec = Rec(7);
+        var odds = new Dictionary<long, List<JcOddsHistoryPoint>>
         {
-            Assert.InRange(p.ModelProbability, 3.0m, 10.0m);
-            Assert.Equal(Math.Round(p.ModelProbability / 100m * p.Odds, 3), p.Ev);
-        }
+            [7] = new()
+            {
+                Pt(7, JcPlayTypes.Spf, "3", 2.60m),
+                Pt(7, JcPlayTypes.Spf, "1", 3.30m),
+                Pt(7, JcPlayTypes.Spf, "0", 2.80m),
+                Pt(7, JcPlayTypes.Jq, "2", 1.8m),
+                Pt(7, JcPlayTypes.Bq, "3-1", 15.43m),
+                Pt(7, JcPlayTypes.Bq, "0-1", 15.43m),
+            }
+        };
+
+        var picks = MilkPickEngine.Build(new[] { rec }, odds, model);
+
+        Assert.DoesNotContain(picks, p => p.OptionCode is "3-1" or "0-1");
     }
 
     [Fact]

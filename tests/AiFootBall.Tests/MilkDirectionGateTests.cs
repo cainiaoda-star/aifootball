@@ -135,6 +135,15 @@ public class MilkDirectionGateTests
         Odds = odds
     };
 
+    private static JcOddsHistoryPoint Jq(string code, decimal odds) => new()
+    {
+        MatchId = 1,
+        PlayType = JcPlayTypes.Jq,
+        OptionCode = code,
+        OptionName = code,
+        Odds = odds
+    };
+
     // 盘口用「百分之一盘位」的整数传（-25 = 主让 0.25），避免 InlineData 的
     // decimal 字面量被 xUnit 折成 double 再往 decimal? 里塞时抛 ArgumentException。
     [Theory]
@@ -263,7 +272,9 @@ public class MilkDirectionGateTests
     private static List<JcOddsHistoryPoint> PickBook(decimal home, decimal draw, decimal away) => new()
     {
         Spf("3", home), Spf("1", draw), Spf("0", away),
-        Bf("2:1", 10.0m), Bf("1:0", 9.0m), Bf("2:0", 15.0m),
+        // 2026-11-09 改：原来这里放三档比分当「可出注载体」，比分已停发
+        // （MilkPickEngine.EnableScorePicks=false），换成总进球 2/3 球。
+        Jq("2", 4.2m), Jq("3", 4.0m),
         new JcOddsHistoryPoint
         {
             MatchId = 1, PlayType = JcPlayTypes.Bq, OptionCode = "3-3", OptionName = "3-3", Odds = 5.0m
@@ -328,10 +339,12 @@ public class MilkDirectionGateTests
     [Fact]
     public void BuildDetailed_NoSpf_GateStaysOpen()
     {
-        // 快照里没有胜平负（只有比分/半全场）时闸算不出方向，不能因此把榜清空
+        // 快照里没有胜平负（只有总进球/半全场）时闸算不出方向，不能因此把榜清空。
+        // 2026-11-09 改：原来靠比分（BF）当载体，比分已停发（MilkPickEngine.EnableScorePicks=false），
+        // 换成总进球 2/3 球——这是实战里最常过闸的档（22 注里 6 注都是它）。
         var points = new List<JcOddsHistoryPoint>
         {
-            Bf("2:1", 10.0m), Bf("1:0", 9.0m), Bf("2:0", 15.0m),
+            Jq("2", 4.2m), Jq("3", 4.0m),
             new JcOddsHistoryPoint
             {
                 MatchId = 1, PlayType = JcPlayTypes.Bq, OptionCode = "3-3", OptionName = "3-3", Odds = 5.0m

@@ -120,14 +120,18 @@ public class MilkPickTests
         // 于是同一场可以同时挂比分 + 总进球 + 半全场，三注互为子集、抽三遍水。
         var model = Model();
         var rec = Rec(1);
+        // 2026-11-09 改：原来用 4 档比分当载体，比分已停发
+        // （MilkPickEngine.EnableScorePicks=false，返奖率 0.710 结构性劣势）。
+        // 换成半全场 2 档 + 总进球 2 档，仍然是「同一场多个玩法多个互斥档」，
+        // 验证意图不变：跨玩法去重后整场只留一注。
         var odds = new Dictionary<long, List<JcOddsHistoryPoint>>
         {
             [1] = new()
             {
-                Pt(1, JcPlayTypes.Bf, "1:0", 15.0m),
-                Pt(1, JcPlayTypes.Bf, "2:0", 15.0m),
-                Pt(1, JcPlayTypes.Bf, "2:1", 10.0m),
-                Pt(1, JcPlayTypes.Bf, "3:1", 25.0m),
+                Pt(1, JcPlayTypes.Bq, "3-3", 5.0m),
+                Pt(1, JcPlayTypes.Bq, "3-1", 13.0m),
+                Pt(1, JcPlayTypes.Jq, "2", 4.2m),
+                Pt(1, JcPlayTypes.Jq, "3", 4.0m),
             }
         };
 
@@ -272,7 +276,10 @@ public class MilkPickTests
         // 撞上「基线÷市场分歧不许超过 1.45 倍」那条闸被拦掉。闸拦得对，是测试数据不真实。
         var odds = new Dictionary<long, List<JcOddsHistoryPoint>>
         {
-            [1] = new() { Pt(1, JcPlayTypes.Bf, "2:0", 15.0m) },
+            // 2026-11-09 改：场次 1 原来给的是比分 2:0@15，比分已停发，换成总进球 3 球。
+            // 现在三场分别是 Jq / Jq / Bq，且 Bq 那场排在最后——
+            // 断言因此能证明「排序按玩法分组，不按场次顺序」。
+            [1] = new() { Pt(1, JcPlayTypes.Jq, "3", 4.2m) },
             [2] = new() { Pt(2, JcPlayTypes.Jq, "2", 5.0m) },
             [3] = new() { Pt(3, JcPlayTypes.Bq, "1-1", 6.0m) }
         };
@@ -280,7 +287,7 @@ public class MilkPickTests
         var picks = MilkPickEngine.Build(recs, odds, model);
 
         Assert.Equal(
-            new[] { JcPlayTypes.Bq, JcPlayTypes.Jq, JcPlayTypes.Bf },
+            new[] { JcPlayTypes.Bq, JcPlayTypes.Jq, JcPlayTypes.Jq },
             picks.Select(p => p.PlayType).ToArray());
     }
 
@@ -340,13 +347,14 @@ public class MilkPickTests
         var recs = new[] { Rec(1), Rec(2) };
         var odds = new Dictionary<long, List<JcOddsHistoryPoint>>
         {
+            // 2026-11-09 改：原来全部超出新上限（Bq 24/35 > 15、Jq 14/23 > 10）且用比分当载体，
+            // 现在停发比分，数据要落在真实发行区间内，否则 picks 为空、这条断言失去意义。
             [1] = new()
             {
-                Pt(1, JcPlayTypes.Bf, "2:0", 15.0m), Pt(1, JcPlayTypes.Bf, "胜其它", 90.0m),
-                Pt(1, JcPlayTypes.Bq, "3-0", 24.0m), Pt(1, JcPlayTypes.Bq, "0-3", 35.0m),
-                Pt(1, JcPlayTypes.Jq, "0", 14.0m), Pt(1, JcPlayTypes.Jq, "7", 23.0m),
+                Pt(1, JcPlayTypes.Bq, "3-3", 5.0m), Pt(1, JcPlayTypes.Bq, "3-1", 13.0m),
+                Pt(1, JcPlayTypes.Jq, "2", 4.2m), Pt(1, JcPlayTypes.Jq, "3", 4.5m),
             },
-            [2] = new() { Pt(2, JcPlayTypes.Bf, "0:0", 22.0m) },
+            [2] = new() { Pt(2, JcPlayTypes.Jq, "2", 4.0m) },
         };
 
         var picks = MilkPickEngine.Build(recs, odds, model);

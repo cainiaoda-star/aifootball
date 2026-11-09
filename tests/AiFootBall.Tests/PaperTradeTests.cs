@@ -13,9 +13,13 @@ namespace AiFootBall.Tests;
 public class PaperTradeTests
 {
     private static PaperTradeRow Row(string play, decimal odds, bool? hit,
-        bool voided = false, bool counterHigh = false, bool overConfident = false, bool lowConf = false)
+        bool voided = false, bool counterHigh = false, bool overConfident = false, bool lowConf = false,
+        long matchId = 0, long tradeId = 0, DateTime? frozenAt = null)
         => new()
         {
+            TradeId = tradeId,
+            MatchId = matchId,
+            FrozenAt = frozenAt ?? new DateTime(2026, 11, 8, 20, 40, 0),
             PlayType = play,
             OptionCode = "X",
             Odds = odds,
@@ -25,6 +29,64 @@ public class PaperTradeTests
             ModelOverconfident = overConfident,
             ModelLowConfidence = lowConf
         };
+
+    [Fact]
+    public void 同场同玩法换档只算最后发布的那一注()
+    {
+        // 11-08 曼联 vs 维拉 的真实形态：21:45 发「胜平 13.00」（未中），22:25 重算换成「平平 6.15」（命中）。
+        // 用户 2026-11-09 拍板：前一条不算一注。算两注会让战绩凭空多记一个未中，
+        // 这正是 8 注 1.294 与 7 注 1.479 两个数字的来历。
+        var rows = new List<PaperTradeRow>
+        {
+            Row("BQ", 13.00m, false, matchId: 9001, tradeId: 19, frozenAt: new DateTime(2026, 11, 8, 21, 45, 52)),
+            Row("BQ", 6.15m, true, matchId: 9001, tradeId: 22, frozenAt: new DateTime(2026, 11, 8, 22, 25, 36)),
+            Row("BQ", 5.00m, false, matchId: 9002, tradeId: 30, frozenAt: new DateTime(2026, 11, 8, 22, 25, 40))
+        };
+
+        var final = PaperTradeMath.FinalVersion(rows);
+        var s = PaperTradeMath.Slice("BQ", final);
+
+        Assert.Equal(2, final.Count);                       // 两场，两注
+        Assert.Equal(1, PaperTradeMath.SupersededCount(rows));
+        Assert.Equal(2, s.Settled);
+        Assert.Equal(1, s.Hits);
+        Assert.Equal(6.15m, s.Return);                      // 旧档 13.00 那条不进来
+        Assert.Equal(3.075m, s.Roi);                        // 6.15 / 2
+    }
+
+    [Fact]
+    public void 换档后终版被撤注_仍按撤注计而不是回退到旧档()
+    {
+        // 终版那注被 turn-guard 撤掉时，旧档不能顶上来当一注继续算——那等于凭空复活一条已作废的票。
+        var rows = new List<PaperTradeRow>
+        {
+            Row("BQ", 8.00m, false, matchId: 9100, tradeId: 1, frozenAt: new DateTime(2026, 11, 8, 21, 45, 0)),
+            Row("BQ", 9.00m, null, voided: true, matchId: 9100, tradeId: 2, frozenAt: new DateTime(2026, 11, 8, 22, 25, 0))
+        };
+
+        var final = PaperTradeMath.FinalVersion(rows);
+        var s = PaperTradeMath.Slice("BQ", final);
+
+        Assert.Single(final);
+        Assert.Equal(1, s.Voided);
+        Assert.Equal(0, s.Settled);      // 分母 0，不是把旧档补回来变成 1
+    }
+
+    [Fact]
+    public void 同场不同玩法不算换档()
+    {
+        // 同场跨玩法去重是引擎的事；到了台账里它们本来就是两注，不能被当成换档吃掉一条。
+        var rows = new List<PaperTradeRow>
+        {
+            Row("BQ", 6.00m, true, matchId: 9200, tradeId: 1),
+            Row("JQ", 3.50m, false, matchId: 9200, tradeId: 2)
+        };
+
+        var final = PaperTradeMath.FinalVersion(rows);
+
+        Assert.Equal(2, final.Count);
+        Assert.Equal(0, PaperTradeMath.SupersededCount(rows));
+    }
 
     [Fact]
     public void 撤注的注不进分母_也不算没中()

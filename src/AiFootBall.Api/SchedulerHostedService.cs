@@ -30,6 +30,9 @@ public sealed class SchedulerHostedService : BackgroundService
 
         try
         {
+            // 先落心跳起点：InitializeAsync 读库失败时下面 catch 只打一行日志就结束，
+            // 主循环不会再进；没有这个起点，/api/health 会一直把「调度器已死」报成 ok。
+            _scheduler.MarkStarting();
             await _scheduler.InitializeAsync(stoppingToken);
             foreach (var saved in JobScheduleStore.Load(JobScheduleStore.FilePath(_env.ContentRootPath)))
             {

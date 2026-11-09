@@ -62,24 +62,49 @@ public sealed class MilkPickRepository
         await EnsureColumnsAsync(conn, ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
+        // ★ 2026-11-09 修：只重写「还没开赛」的注。
+        //
+        // 旧写法 `WHERE Hit IS NULL AND SettledAt IS NULL` 是无差别的：只要结算还没跑到，
+        // 已开赛（甚至已完赛）的注也会被删掉。而结算作业每小时才跑一次，重算却更频繁，
+        // 于是「重算先跑 → 注被删 → 结算再来时已找不到行」成了常态。
+        // 11-08 的后果：曼联 BQ 平平 @6.15、弗赖堡 JQ 2 @4.20 两注命中，
+        // 但它们在 FbMilkPick 里被删了，页面上只剩两注未中的町田，用户看到的是「一个都没中」。
+        // 空跑台账 FbPaperTrade 因为每 10 分钟冻结才留下证据——台账能验证，但用户不该靠台账才能看到战绩。
+        //
+        // 口径：开赛 = 票已买，不可撤回、不可重写。要改只能走告警撤注（Voided），不是 DELETE。
+        // 留 5 分钟余量覆盖时钟/调度抖动，避免开赛前一刹那的重算把票冲掉。
+        //
+        // 2026-11-09 追加：已撤注的行（Voided=1）也不删。撤注记录要「粘住」——
+        // 撤注发生后若告警消失，下一次重算会把这行删掉再重建为未撤状态，等于悄悄复活，
+        // 用户刚在撤榜展示区看到「这注被撤了」，十分钟后又回到主榜。撤注是风控决定，
+        // 不能被重算无声撤销；要恢复只能人工判断（撤注判错要留痕，这正是撤榜区存在的意义）。
         await conn.ExecuteAsync(new CommandDefinition(
-            "DELETE FROM dbo.FbMilkPick WHERE PickDate=@d AND Hit IS NULL AND SettledAt IS NULL",
+            @"DELETE FROM dbo.FbMilkPick
+              WHERE PickDate=@d AND Hit IS NULL AND SettledAt IS NULL
+                AND ISNULL(Voided,0)=0
+                AND MatchTime > DATEADD(minute, 5, SYSDATETIME())",
             new { d }, tx, cancellationToken: ct));
 
         var rows = 0;
         foreach (var p in picks)
         {
             if (p.MatchId is not long mid) continue;
+            // INSERT ... SELECT ... WHERE NOT EXISTS：已开赛的注被上面那条 DELETE 刻意留下，
+            // 这里必须避免同一注再插一条（否则页面同一场同一档会并排出两行，其中一行赔率还是旧的）。
+            // 用「同日 + 场次 + 玩法 + 档位」去重，和 FbPaperTrade 的冻结键同源。
             rows += await conn.ExecuteAsync(new CommandDefinition(
                 @"INSERT INTO dbo.FbMilkPick
                     (PickDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
                      BaselineProbability, BaselineEv, ModelLowConfidence, ModelOverconfident,
                      DivergenceTag, DivergenceNote, HalfDrawRefined, FatigueTag, ModelVsMarketRatio)
-                  VALUES (@d, @mid, @no, @lg, @home, @away, @time,
+                  SELECT @d, @mid, @no, @lg, @home, @away, @time,
                           @play, @code, @name, @odds, @prob, @ev, @counterHigh,
                           @basePct, @baseEv, @lowConf, @overConf,
-                          @divTag, @divNote, @halfDraw, @fatigue, @vsMarket)",
+                          @divTag, @divNote, @halfDraw, @fatigue, @vsMarket
+                  WHERE NOT EXISTS (
+                      SELECT 1 FROM dbo.FbMilkPick
+                       WHERE PickDate=@d AND MatchId=@mid AND PlayType=@play AND OptionCode=@code)",
                 new
                 {
                     d, mid, no = p.MatchNo, lg = p.LeagueName, home = p.HomeTeam, away = p.AwayTeam,
@@ -265,6 +290,59 @@ public sealed class MilkPickRepository
         return rows;
     }
 
+    /// <summary>
+    /// 撤榜明细（2026-11-09 加，配合前端「撤榜展示区」）。两类来源，语义完全不同，前端必须分开写：
+    ///
+    ///   ① <c>voided</c> —— 临场告警主动撤注：有原因、有撤下时间，是风控动作。
+    ///   ② <c>replaced</c> —— 曾经上过榜、当前榜面已经没有它：后续重算把这一档换掉或被筛掉了。
+    ///      这类注在 FbMilkPick 里是被 **整行 DELETE** 的（重写当日榜），要不是空跑台账
+    ///      每 10 分钟冻一次，它们完全无痕。11-08 曼联「胜平 @13.00」被换成「平平 @6.15」
+    ///      就是这么消失的——用户第二天问「这注你到底推没推过」，系统当时答不出来。
+    ///
+    /// 为什么用台账做差集、而不另建一张「撤榜表」：台账是只增不改的原始记录，
+    /// 差集天然自愈——重算把某注换回来，它就自动从撤榜区消失，不需要额外的状态机去同步。
+    /// </summary>
+    public async Task<List<MilkVoidedRow>> GetVoidedAsync(DateTime pickDate, CancellationToken ct = default)
+    {
+        var d = pickDate.Date;
+        await using var conn = await _factory.OpenAsync(ct);
+        await EnsureColumnsAsync(conn, ct);
+
+        // 台账表由 paper-freeze 建，可能还不存在（新库/首次部署）。缺表就只给①类，不能整页 500。
+        var hasPaper = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT CASE WHEN OBJECT_ID(N'dbo.FbPaperTrade', N'U') IS NULL THEN 0 ELSE 1 END",
+            cancellationToken: ct)) == 1;
+
+        var sql = @"
+SELECT N'voided' AS Kind, p.MatchId, p.MatchNo, p.LeagueName, p.HomeTeam, p.AwayTeam, p.MatchTime,
+       p.PlayType, p.OptionCode, p.OptionName, p.Odds, p.AlertSeverity, p.AlertReason,
+       p.VoidedAt, CAST(NULL AS datetime2) AS FrozenAt, p.ActualScore, p.Hit, p.SettledAt
+FROM dbo.FbMilkPick p
+WHERE p.PickDate=@d AND p.Voided=1";
+
+        if (hasPaper)
+            sql += @"
+UNION ALL
+SELECT N'replaced', t.MatchId, t.MatchNo, t.LeagueName, t.HomeTeam, t.AwayTeam, t.MatchTime,
+       t.PlayType, t.OptionCode, t.OptionName, t.Odds,
+       CAST(NULL AS nvarchar(8)) AS AlertSeverity, CAST(NULL AS nvarchar(400)) AS AlertReason,
+       CAST(NULL AS datetime2) AS VoidedAt, t.FrozenAt, t.ActualScore, t.Hit, t.SettledAt
+FROM dbo.FbPaperTrade t
+WHERE t.TradeDate=@d
+  AND NOT EXISTS (SELECT 1 FROM dbo.FbMilkPick p
+                   WHERE p.PickDate=@d AND p.MatchId=t.MatchId
+                     AND p.PlayType=t.PlayType AND p.OptionCode=t.OptionCode)
+  -- 同一档历史上有过重复冻结（早期幂等保护缺失）时只取最早那一行，避免撤榜区出现重复行。
+  AND t.TradeId = (SELECT MIN(x.TradeId) FROM dbo.FbPaperTrade x
+                    WHERE x.TradeDate=@d AND x.MatchId=t.MatchId
+                      AND x.PlayType=t.PlayType AND x.OptionCode=t.OptionCode)";
+
+        sql += " ORDER BY MatchNo, PlayType";
+
+        return (await conn.QueryAsync<MilkVoidedRow>(
+            new CommandDefinition(sql, new { d }, cancellationToken: ct))).ToList();
+    }
+
     /// <summary>指定日期之前最近一个有大奶注的日期（跨午夜回退用），没有则 null。</summary>
     public async Task<DateTime?> GetLatestPickDateBeforeAsync(DateTime pickDate, CancellationToken ct = default)
     {
@@ -382,12 +460,17 @@ public sealed class MilkPickRepository
         // 旧逻辑只要 Status=2 就写死「取消」，导致还没开赛的注被永久误杀、退出结算队列。
         // 加两个前置条件：① 开赛时间已过（m.MatchTime < 当前时刻）；② 比分仍为 NULL。
         // 只有「时间过了 + 比分仍空 + Status=2」才是真取消；未开赛的短暂波动绝不判取消。
+        //
+        // ★ 2026-11-09 再修：上面两条还不够——**比赛正在进行中**也满足它们（开赛时间已过、比分还没采到），
+        // 而数据源在比赛进行中会把 Status 短暂刷成 2。11-09 04:19 paper-settle 就这样把正在踢的
+        // 朗斯-马赛（实际 1:2）写死成「取消」终态。改为开赛后 150 分钟仍无比分才算取消，
+        // 与结算判据用同一条时间线，避免两张表各自跑出一套「取消」。
         await conn.ExecuteAsync(new CommandDefinition(
             @"UPDATE p SET p.ActualScore = N'取消', p.SettledAt = SYSDATETIME()
               FROM dbo.FbMilkPick p
               JOIN dbo.FbMatch m ON m.MatchId = p.MatchId
               WHERE p.Hit IS NULL AND p.SettledAt IS NULL AND m.Status = 2
-                AND m.MatchTime < SYSDATETIME()
+                AND m.MatchTime < DATEADD(minute, -150, SYSDATETIME())
                 AND m.HomeScore IS NULL AND m.AwayScore IS NULL",
             new { }, cancellationToken: ct));
 
@@ -539,8 +622,12 @@ public sealed class MilkPickRepository
             new { d }, cancellationToken: ct));
 
         // 告警消失 → 清红标（撤注不解除）。
+        // 2026-11-09：已撤注（Voided=1）的行**不清原因**。撤注理由要留档，
+        // 因为撤榜展示区就是靠 AlertReason 回答「为什么撤的」；清掉之后就只剩
+        // 「未记录原因」，等于把撤注的唯一凭证也一起删了。未撤注的注照旧清。
         await conn.ExecuteAsync(new CommandDefinition(
-            @"UPDATE p SET p.AlertSeverity=NULL, p.AlertReason=NULL
+            @"UPDATE p SET p.AlertSeverity = CASE WHEN ISNULL(p.Voided,0)=1 THEN p.AlertSeverity ELSE NULL END,
+                          p.AlertReason   = CASE WHEN ISNULL(p.Voided,0)=1 THEN p.AlertReason   ELSE NULL END
                 FROM dbo.FbMilkPick p
                WHERE p.PickDate=@d AND p.SettledAt IS NULL AND p.AlertSeverity IS NOT NULL
                  AND NOT EXISTS (SELECT 1 FROM dbo.FbTurnAlert a
@@ -971,6 +1058,35 @@ public sealed class MilkPickRow
     public string? ActualScore { get; set; }
     public string? ActualHalfScore { get; set; }
     public int? ActualGoals { get; set; }
+    public bool? Hit { get; set; }
+    public DateTime? SettledAt { get; set; }
+}
+
+/// <summary>
+/// 撤榜明细行（2026-11-09 加）。给前端「撤榜展示区」用，不参与任何出票与统计。
+/// <see cref="Kind"/> 决定页面怎么写这一行：
+///   voided   = 临场高危撤注（有 AlertReason / VoidedAt）
+///   replaced = 曾上榜、后来被重算换掉（只有 FrozenAt：它最后一次出现在榜上的时间）
+/// </summary>
+public sealed class MilkVoidedRow
+{
+    public string Kind { get; set; } = "";
+    public long MatchId { get; set; }
+    public string? MatchNo { get; set; }
+    public string? LeagueName { get; set; }
+    public string? HomeTeam { get; set; }
+    public string? AwayTeam { get; set; }
+    public DateTime? MatchTime { get; set; }
+    public string PlayType { get; set; } = "";
+    public string OptionCode { get; set; } = "";
+    public string? OptionName { get; set; }
+    public decimal Odds { get; set; }
+    public string? AlertSeverity { get; set; }
+    public string? AlertReason { get; set; }
+    public DateTime? VoidedAt { get; set; }
+    /// <summary>该注最后一次被空跑台账记下的时间（只有 replaced 类有）。</summary>
+    public DateTime? FrozenAt { get; set; }
+    public string? ActualScore { get; set; }
     public bool? Hit { get; set; }
     public DateTime? SettledAt { get; set; }
 }

@@ -779,7 +779,33 @@ app.MapPost("/api/daily-follow/skill/write", async (DailyFollowRepository repo, 
 app.MapGet("/api/jobs/logs", async (int? take, SyncLogRepository repo) =>
     Results.Ok(await repo.GetRecentAsync(take ?? 50)));
 
-app.MapGet("/api/health", () => Results.Ok(new { status = "ok", time = DateTime.Now }));
+// 健康检查。2026-11-09 改：原来只回一句 ok，等于只证明「进程还在」。
+//
+// watchdog-api.ps1 每 5 分钟探一次，只看 status code → 调度循环卡死（DB 写日志用了
+// CancellationToken.None，DB 不响应就永远等）时端口照常监听、HTTP 照常 200，
+// 看门狗于是天天报正常，而作业一个都不跑。这个项目已经在「监控到了却不动」上栽过几次。
+//
+// 现在把调度器心跳一并报出来：超过 5 分钟没有 tick（正常 20 秒一次，15 次没动）
+// 直接返 503，看门狗照原样就会重启，不需要改 watchdog 脚本。
+app.MapGet("/api/health", (JobScheduler scheduler) =>
+{
+    var tick = scheduler.LastTickAt;
+    var seconds = tick == DateTime.MinValue
+        ? (double?)null
+        : Math.Round((DateTime.Now - tick).TotalSeconds, 1);
+    // 启动初期还没跑完第一轮（seconds = null）不算故障
+    var stalled = seconds is > 300;
+    var body = new
+    {
+        status = stalled ? "stalled" : "ok",
+        time = DateTime.Now,
+        schedulerTickSecondsAgo = seconds,
+        stalled
+    };
+    return stalled
+        ? Results.Json(body, statusCode: 503)
+        : Results.Ok(body);
+});
 
 // 数据源连通性自检（VPS 部署前测地区、部署后测是否被反爬拦截）。
 // 并发探测 6 个上游源，每个返回 HTTP 状态 + 是否命中反爬挑战/人机验证页 + 耗时。
@@ -1680,7 +1706,13 @@ app.MapGet("/api/milk/today", async (MilkScanService milk, CancellationToken ct)
 // 大奶推荐台账：某天落库的大奶榜（含赛果与命中），复盘用
 app.MapGet("/api/milk/picks", async (MilkPickRepository repo, string? date, CancellationToken ct) =>
 {
-    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+    // 显式传 date = 复盘视图（2026-11-09 修）。
+    // 此前不论带不带 date，下面都统一过滤掉已结算行；于是只要那天全部结算完，
+    // 历史查询就恒返回 0 行：复盘页空白，自检脚本拿不到任何一行、把字段检查全判成 FAIL
+    // （11-09 上午实测 7 条假 FAIL，全是这个原因）。「榜面只列还能下单的注」这条规则
+    // 只对当日榜成立，对历史日期不成立——历史日期本来就不存在「还能下单」。
+    var explicitDate = DateTime.TryParse(date, out var dv);
+    var d = explicitDate ? dv.Date : DateTime.Today;
     var list = await repo.GetDayAsync(d, ct);
     // 午夜回退（2026-11-07 修复，同北单 bug）：没传 date 且当天为空时，回退到最近一个有数据的日期。
     // 竞彩注 21:50/22:50 落库、场次开到次日凌晨，凌晨查"今天"会落空。
@@ -1694,7 +1726,13 @@ app.MapGet("/api/milk/picks", async (MilkPickRepository repo, string? date, Canc
     // 于是 13:00 已完赛的周日001 两注（BQ 胜胜 + BF 1:0）一直挂在榜上，
     // 用户看到的是「今天 9 注」——其中 2 注根本买不了，而且还带着 NULL 基线（老版本落的）。
     // 已结算注的去处是每日复盘，不是推荐榜。
-    list = list.Where(r => r.SettledAt is null).ToList();
+    // 2026-11-09 例外：已撤注（Voided）即使结算了也留着。撤榜展示区存在的第二个理由
+    // 就是赛后核对「撤得对不对」——如果当天结算后这行就消失，那批最该被检验的样本
+    // 恰好被藏起来，只能靠台账另查。前端会把它渲染到撤榜区，不进主榜、不进勾选。
+    // 当日榜才过滤已结算。显式查历史日期是复盘视图，全部保留（否则历史永远空白）。
+    // 撤注行两种情形都保留（见上一条注释）。
+    if (!explicitDate)
+        list = list.Where(r => r.SettledAt is null || r.Voided).ToList();
     // 玩法级 EV 天花板（2026-11-08 加）：不是 DB 列，按 PlayType 现算。
     // 前端拿它判「模型高估」并与 ev 并排展示，页面不再自己拍一个倍数。
     foreach (var r in list) r.EvCap = MilkPickEngine.EvCapFor(r.PlayType);
@@ -1711,6 +1749,36 @@ app.MapGet("/api/milk/picks", async (MilkPickRepository repo, string? date, Canc
         r.Ev = be;
     }
     return Results.Ok(list);
+});
+
+// 撤榜明细（2026-11-09）：推荐页下方「撤榜展示区」的唯一数据源。
+// 刻意和 /api/milk/picks 分开：那边回答「现在能买什么」，这边回答「推过又收回的」。
+// 混成一个列表的话，前端每次都要在主榜里再过滤一遍 voided，两套口径迟早分叉。
+app.MapGet("/api/milk/voided", async (MilkPickRepository repo, string? date, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+    var rows = await repo.GetVoidedAsync(d, ct);
+    return Results.Ok(rows.Select(r => new
+    {
+        kind = r.Kind,
+        matchId = r.MatchId,
+        matchNo = r.MatchNo,
+        leagueName = r.LeagueName,
+        homeTeam = r.HomeTeam,
+        awayTeam = r.AwayTeam,
+        matchTime = r.MatchTime,
+        playType = r.PlayType,
+        optionCode = r.OptionCode,
+        optionName = r.OptionName,
+        odds = r.Odds,
+        alertSeverity = r.AlertSeverity,
+        alertReason = r.AlertReason,
+        voidedAt = r.VoidedAt,
+        frozenAt = r.FrozenAt,
+        actualScore = r.ActualScore,
+        hit = r.Hit,
+        settledAt = r.SettledAt
+    }));
 });
 
 // 单列候选判定（2026-11-08 改版）：优先读引擎落库的判定（FbMilkCounterCandidate），
