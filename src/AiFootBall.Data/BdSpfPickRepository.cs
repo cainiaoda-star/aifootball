@@ -119,6 +119,156 @@ public sealed class BdSpfPickRepository
         return rows;
     }
 
+    /// <summary>
+    /// 按赛果结算北单让球胜平负台账（2026-11-09 加）。
+    ///
+    /// 在此之前这张表**从来没有结算过**：46 行 Hit 全是 NULL，所以「北单成功率多少」
+    /// 只能靠临时写 SQL 回算，系统自己不知道。缺的就是这一段。
+    ///
+    /// 判据：
+    ///  · 让球后主队净胜 = 主队进球 − 客队进球 + 让球数（Handicap 负=主让球、正=主受让）。
+    ///    北单让球数挂在主队，所以这里直接用台账自己的 Handicap，**不要用 FbMatch.Handicap**
+    ///    （那是竞彩盘，11-07 的对账报告踩过这个坑）。
+    ///  · &gt;0 让胜(3) / =0 让平(1，走盘) / &lt;0 让负(0)。
+    ///  · 完场不信 Status（重采会把 3 洗回 0）：比分齐全 && (Status=3 || 开赛已过 150 分钟)。
+    ///  · 比分或让球数缺失的一律不结算，宁缺勿假——北单腰斩/取消的场次本来就不该算进命中率。
+    ///
+    /// 幂等：只动 Hit IS NULL 的行，重复跑不会改写已结算结果。
+    /// </summary>
+    public async Task<int> SettleAsync(int lookbackDays = 7, CancellationToken ct = default)
+    {
+        var lookback = Math.Clamp(lookbackDays, 1, 90);
+        await using var conn = await _factory.OpenAsync(ct);
+        var pending = (await conn.QueryAsync<PendingRow>(new CommandDefinition(
+            @"SELECT p.PickId,
+                     p.Side,
+                     p.HandicapSide,
+                     p.Handicap,
+                     CAST(m.HomeScore AS INT) AS HomeScore,
+                     CAST(m.AwayScore AS INT) AS AwayScore
+                FROM dbo.FbBdSpfPick p
+                JOIN dbo.FbMatch m ON m.MatchId = p.MatchId
+               WHERE p.Hit IS NULL
+                 AND p.Handicap IS NOT NULL
+                 AND p.PickDate >= DATEADD(day, -@lookback, CAST(SYSDATETIME() AS DATE))
+                 AND m.HomeScore IS NOT NULL AND m.AwayScore IS NOT NULL
+                 AND (m.Status = 3 OR p.MatchTime <= DATEADD(minute, -150, SYSDATETIME()))",
+            new { lookback }, cancellationToken: ct))).ToList();
+        if (pending.Count == 0) return 0;
+
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var settled = 0;
+        foreach (var r in pending)
+        {
+            var side = !string.IsNullOrEmpty(r.HandicapSide) ? r.HandicapSide![0] : r.Side[0];
+            var hit = BdSpfSettlement.Judge(side, r.HomeScore, r.AwayScore, r.Handicap);
+            settled += await conn.ExecuteAsync(new CommandDefinition(
+                @"UPDATE dbo.FbBdSpfPick
+                     SET ActualScore = @score, Hit = @hit, SettledAt = SYSDATETIME()
+                   WHERE PickId = @id AND Hit IS NULL",
+                new
+                {
+                    id = r.PickId,
+                    score = $"{r.HomeScore}:{r.AwayScore}",
+                    hit = hit ? 1 : 0
+                }, tx, cancellationToken: ct));
+        }
+        await tx.CommitAsync(ct);
+        return settled;
+    }
+
+    /// <summary>
+    /// 北单战绩（近 N 天，按 steady / reverse 分组）。
+    ///
+    /// ★ 口径：分母只算**已结算**注数（Hit 非空），回报 = 命中赔率合计 ÷ 注数（平注 1 单位）。
+    /// ★ 赔率警示：`Odds` 存的是推荐生成那一刻的 SP，实际能买到的终版 SP 与它常有 10~46% 的差距
+    ///   （场16 让胜 2.91→实购 4.25、场36 让负 2.07→3.74），所以这个 ROI 只能当方向参考，
+    ///   不能当账本。要精确到分必须另存终版 SP，目前没有。
+    /// </summary>
+    public async Task<BdSpfRecord> GetRecordAsync(int days = 30, CancellationToken ct = default)
+    {
+        var n = Math.Clamp(days, 1, 365);
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = (await conn.QueryAsync<RecordRow>(new CommandDefinition(
+            @"SELECT Kind,
+                     COUNT(CASE WHEN Hit IS NOT NULL THEN 1 END) AS Settled,
+                     SUM(CASE WHEN Hit = 1 THEN 1 ELSE 0 END) AS Hits,
+                     SUM(CASE WHEN Hit IS NULL THEN 1 ELSE 0 END) AS Pending,
+                     CAST(AVG(CASE WHEN Hit IS NOT NULL THEN Odds END) AS DECIMAL(8,2)) AS AvgOdds,
+                     CAST(SUM(CASE WHEN Hit = 1 THEN ISNULL(Odds, 0) ELSE 0 END) AS DECIMAL(10,2)) AS HitOddsSum,
+                     MIN(PickDate) AS FromDate, MAX(PickDate) AS ToDate
+              FROM dbo.FbBdSpfPick
+              WHERE PickDate >= DATEADD(day, -@n, CAST(SYSDATETIME() AS DATE))
+              GROUP BY Kind",
+            new { n }, cancellationToken: ct))).ToList();
+
+        var record = new BdSpfRecord { Days = n };
+        foreach (var r in rows)
+        {
+            var g = new BdSpfRecordGroup
+            {
+                Kind = r.Kind,
+                Settled = r.Settled,
+                Hits = r.Hits,
+                Pending = r.Pending,
+                AvgOdds = r.AvgOdds,
+                HitPct = r.Settled > 0 ? Math.Round(r.Hits * 100m / r.Settled, 1) : 0m,
+                Roi = r.Settled > 0 ? Math.Round(r.HitOddsSum / r.Settled, 3) : 0m
+            };
+            if (r.Kind == "reverse") record.Reverse = g; else record.Steady = g;
+            record.From ??= r.FromDate;
+            if (r.FromDate is DateTime f && (record.From is null || f < record.From)) record.From = f;
+            if (r.ToDate is DateTime t && (record.To is null || t > record.To)) record.To = t;
+        }
+
+        var sum = new BdSpfRecordGroup { Kind = "total" };
+        foreach (var g in new[] { record.Steady, record.Reverse })
+        {
+            if (g is null) continue;
+            sum.Settled += g.Settled;
+            sum.Hits += g.Hits;
+            sum.Pending += g.Pending;
+        }
+        var oddsSum = rows.Sum(r => r.HitOddsSum);
+        sum.HitPct = sum.Settled > 0 ? Math.Round(sum.Hits * 100m / sum.Settled, 1) : 0m;
+        sum.Roi = sum.Settled > 0 ? Math.Round(oddsSum / sum.Settled, 3) : 0m;
+        sum.AvgOdds = sum.Settled > 0
+            ? Math.Round(rows.Where(r => r.AvgOdds is not null)
+                             .Select(r => r.AvgOdds!.Value * r.Settled).Sum() / sum.Settled, 2)
+            : null;
+        record.Total = sum;
+        record.Rows = (await conn.QueryAsync<BdSpfPickRecordItem>(new CommandDefinition(
+            @"SELECT PickDate, Kind, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
+                     Handicap, SideName, Odds, ActualScore, Hit
+              FROM dbo.FbBdSpfPick
+              WHERE PickDate >= DATEADD(day, -@n, CAST(SYSDATETIME() AS DATE))
+              ORDER BY PickDate DESC, MatchTime DESC",
+            new { n }, cancellationToken: ct))).ToList();
+        return record;
+    }
+
+    private sealed class PendingRow
+    {
+        public long PickId { get; set; }
+        public string Side { get; set; } = "3";
+        public string? HandicapSide { get; set; }
+        public decimal Handicap { get; set; }
+        public int HomeScore { get; set; }
+        public int AwayScore { get; set; }
+    }
+
+    private sealed class RecordRow
+    {
+        public string Kind { get; set; } = "steady";
+        public int Settled { get; set; }
+        public int Hits { get; set; }
+        public int Pending { get; set; }
+        public decimal? AvgOdds { get; set; }
+        public decimal HitOddsSum { get; set; }
+        public DateTime? FromDate { get; set; }
+        public DateTime? ToDate { get; set; }
+    }
+
     /// <summary>读当天北单推荐（两组）。北单期次横跨午夜：指定日期无数据时回退到最近一个有数据的日期。</summary>
     public async Task<BdSpfPickDay?> GetDayAsync(DateTime pickDate, CancellationToken ct = default)
     {

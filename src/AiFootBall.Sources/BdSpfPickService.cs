@@ -136,6 +136,15 @@ public sealed class BdSpfPickService
             steady.Add(BuildPick(r, hside, reversed: false));
         }
 
+        // 无价注一律丢弃（2026-11-09 实测事故）：北单是实购串关，回报必须靠赔率算，
+        // 没有 SP 的注等于「发了一张买不到价、也算不出回报的票」。
+        // 当日实例：克里斯蒂安松 vs 瓦勒伦加（平手盘）让负 41.3% 上榜，Odds=NULL——
+        // 该场北单页面抓不到让球 SP，台账里成了空价行，结算分母里也白占一格。
+        // 注意与竞彩 ForJcHandicap 的区别：那边「水位未知保留」是为了不误杀数据缺口下的正常注（单关，回报事后补）；
+        // 北单做的是串关，缺一腿就整串作废，所以这里必须硬拦。
+        steady = steady.Where(HasUsablePrice).ToList();
+        reverse = reverse.Where(HasUsablePrice).ToList();
+
         // 串关正路：按让球盘概率降序取前 10（宁缺毋滥），再按场次号升序展示。
         steady = steady
             .OrderByDescending(p => p.HandicapProbability ?? 0)
@@ -157,6 +166,13 @@ public sealed class BdSpfPickService
             Reverse = reverse
         };
     }
+
+    /// <summary>
+    /// 这一注有没有可用的北单 SP。串关靠赔率算回报，缺价就没法下、也没法结算，
+    /// 所以 <see cref="BdSpfPickService.BuildAsync"/> 在出榜前用它硬拦（2026-11-09 加）。
+    /// 门槛用 1.00：赔率 ≤1 在数学上不可能是有效报价，等同于没价。
+    /// </summary>
+    public static bool HasUsablePrice(BdSpfPick pick) => pick.HandicapOdds is > 1m;
 
     /// <summary>场次号排序键：取末尾连续数字做数值排序（"周五001"→1、"25"→25），非数字兜底排最后。</summary>
     private static int MatchNoKey(string? matchNo)

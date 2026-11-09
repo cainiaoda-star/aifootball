@@ -126,6 +126,49 @@ public static class Program
             return await LeagueProbeStudy.RunAsync(connStr, league, testStart);
         }
 
+        // 方向检验（2026-11-09 加，用户「连方向都猜错，方向对了才谈得上中奖率」）。
+        // 只读。把「方向」拆成 胜平负 / 让球 / 总进球 / 半全场的半场格与全场格 四个可独立计分的量，
+        // 每个量都比「模型 vs 市场 vs 无脑基线」，用来判断我们到底是方向错了还是在赌低概率档。
+        if (args.Any(a => a.Equals("direction-probe", StringComparison.OrdinalIgnoreCase)))
+        {
+            var rest = args.SkipWhile(a => !a.Equals("direction-probe", StringComparison.OrdinalIgnoreCase))
+                           .Skip(1)
+                           .ToArray();
+            var startArg = rest.FirstOrDefault(a => DateTime.TryParse(a, out _));
+            var testStart = DateTime.TryParse(startArg, out var dts) ? dts : new DateTime(2026, 10, 1);
+            var lg = rest.FirstOrDefault(a =>
+                !a.StartsWith("Server=", StringComparison.OrdinalIgnoreCase) &&
+                !DateTime.TryParse(a, out _));
+            var league = lg is null || lg.Equals("ALL", StringComparison.OrdinalIgnoreCase) || lg == "*" ? null : lg;
+            return await DirectionStudy.RunAsync(connStr, testStart, league);
+        }
+
+        // 稳胆口径回测（2026-11-09 加，用户拍板开「稳胆」栏目后的前置验证）。
+        // 只读。回答「只买市场最看好那一档」按赔率分箱的命中率/回报，用来定赔率上限，而不是拍脑袋定 3 倍。
+        if (args.Any(a => a.Equals("steady-probe", StringComparison.OrdinalIgnoreCase)))
+        {
+            var rest = args.SkipWhile(a => !a.Equals("steady-probe", StringComparison.OrdinalIgnoreCase))
+                           .Skip(1)
+                           .ToArray();
+            var startArg = rest.FirstOrDefault(a => DateTime.TryParse(a, out _));
+            var testStart = DateTime.TryParse(startArg, out var sts) ? sts : new DateTime(2026, 10, 1);
+            var capArg = rest.FirstOrDefault(a => decimal.TryParse(a, out _));
+            var cap = decimal.TryParse(capArg, out var capv) ? capv : 3.0m;
+            return await SteadyStudy.RunAsync(connStr, testStart, cap);
+        }
+
+        // 稳胆线上引擎复核：把同一批历史数据喂给 SteadyPickEngine（线上那份代码），
+        // 检验它和 steady-probe 的统计口径是否一致。只读。
+        if (args.Any(a => a.Equals("steady-check", StringComparison.OrdinalIgnoreCase)))
+        {
+            var rest = args.SkipWhile(a => !a.Equals("steady-check", StringComparison.OrdinalIgnoreCase))
+                           .Skip(1)
+                           .ToArray();
+            var startArg = rest.FirstOrDefault(a => DateTime.TryParse(a, out _));
+            var testStart = DateTime.TryParse(startArg, out var cts) ? cts : new DateTime(2026, 9, 1);
+            return await SteadyStudy.CheckAsync(connStr, testStart);
+        }
+
         await using var conn = await factory.OpenAsync();
 
         var allSamples = (await conn.QueryAsync<Sample>(

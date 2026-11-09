@@ -155,7 +155,12 @@ internal static class Program
                     var purchaseSettle = new PurchaseSettlementService(purchaseRepo, fbRepo, cardSource);
                     var scheduler = new JobScheduler(jobsOptions, service, syncRepo, recService, purchaseSettle, Console.WriteLine,
                         standing: new StandingService(new StandingRepository(factory)),
-                        paper: new PaperTradeRepository(factory));
+                        paper: new PaperTradeRepository(factory),
+                        // 2026-11-09：北单结算只读写本库，采集器这一侧也给一份，
+                        // 免得用 `scheduler --once bd-spf-settle` 手动补跑时撞上「未注入」。
+                        bdSpfRepo: new BdSpfPickRepository(factory),
+                        // 2026-11-09：稳胆同理，手动 `scheduler --once save-steady-picks` 时要能跑。
+                        steady: new SteadyPickRepository(factory));
                     await scheduler.InitializeAsync();
                     if (opts.TryGetValue("once", out var once))
                     {

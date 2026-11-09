@@ -1838,6 +1838,8 @@ function renderBoards(){
       .map(b => (b.milkPicks ? renderMilkBoard(b, strongOnly) : renderBoard(b, strongOnly)))
       .join('')
     + `<div class="dim" style="margin:10px 2px">胜平负 / 让球 / 大小球自 2026-11-04 起停止发布。后台仍按旧口径计算并落库（校准与否决台账要用），但不再对外给任何方向。</div>`
+    + `<div id="steadyBoard"></div>`
+    + `<div id="bdSpfRecord"></div>`
     + `<div id="bdSpfBoard"></div>`;
   bindPickCheckboxes();
   bindSfcBits();
@@ -1849,13 +1851,132 @@ function renderBoards(){
   loadMilkCandidates();
   loadMilkVoided();
   loadMilkHalfDraw();
+  loadSteadyBoard();
+  loadBdSpfRecord();
   loadBdSpfPicks();
+}
+
+/* ---------- 稳胆（2026-11-09 加，命中导向，与主榜分开记帐） ----------
+   口径：当日竞彩每场取「市场最看好（去水概率最高）」的那一档，赔率 ≤1.75，
+        全天后按赔率升序取前 3 注。不掺模型、不掺必发、不看亚盘。
+   回测（steady-probe，382 注 / 33 个比赛日）：每日前 3 注 77.6% 命中、回报 0.993。
+   ★ 它是「更常中」，不是「更赚」——长期回报仍被竞彩返奖率 0.878 压着。 */
+
+async function loadSteadyBoard(){
+  const box = $('#steadyBoard');
+  if(!box) return;
+  try{
+    const r = await api('/api/steady/picks');
+    const picks = r.picks || [];
+    const st = r.stats || {};
+    const nd = r.day ? String(r.day).slice(0,10) : '';
+    const today = new Date().toISOString().slice(0,10);
+    const isToday = nd === today;
+
+    const num = (v,d) => Number(v||0).toFixed(d);
+    const sideCls = s => s === '3' ? 'hit-tag' : (s === '1' ? 'draw-tag' : 'miss-tag');
+    const rankBadge = k => k === 1 ? '首选' : (k === 2 ? '次选' : '第三');
+
+    let body = '';
+    if(!picks.length){
+      body = `<div class="dim" style="padding:10px 2px">该日没有符合条件的三注（候选场次不足，或全部超出赔率上限 1.75）。</div>`;
+    }else{
+      let rows = '', cards = '';
+      for(const it of picks){
+        const res = it.hit === true ? '<span class="hit-tag">中</span>'
+                  : it.hit === false ? '<span class="miss-tag">未中</span>'
+                  : '<span class="dim">待结算</span>';
+        rows += `<tr>
+          <td class="mono">${rankBadge(it.rank)}</td>
+          <td class="match-no">${esc(it.matchNo||'')}</td>
+          <td class="teams-cell"><div class="teams">${esc(it.homeTeam||'')}<span class="vs">VS</span>${esc(it.awayTeam||'')}</div>
+              <div class="league">${esc(it.leagueName||'')}</div></td>
+          <td class="result-cell"><span class="${sideCls(it.side)}">${esc(it.sideName||'')}</span></td>
+          <td class="mono">${num(it.odds,2)}</td>
+          <td class="mono">${num(it.marketPct,1)}%</td>
+          <td class="mono">${esc(it.actualScore||'')}</td>
+          <td class="hit-cell">${res}</td>
+        </tr>`;
+        cards += `<div class="m-card">
+          <div class="m-top"><span class="m-no">${esc(it.matchNo||'')}</span><span class="ou-tag">${rankBadge(it.rank)}</span></div>
+          <div class="m-teams">${esc(it.homeTeam||'')}<span class="vs">VS</span>${esc(it.awayTeam||'')}</div>
+          <div class="m-time">${esc(it.leagueName||'')}</div>
+          <div class="m-row"><span class="lbl">方向</span><span class="val">${esc(it.sideName||'')}</span></div>
+          <div class="m-row"><span class="lbl">赔率</span><span class="val">${num(it.odds,2)}</span></div>
+          <div class="m-row"><span class="lbl">市场概率</span><span class="val">${num(it.marketPct,1)}%</span></div>
+          <div class="m-row"><span class="lbl">比分</span><span class="val">${esc(it.actualScore||'-')}</span></div>
+          <div class="m-row"><span class="lbl">结果</span><span class="val">${res}</span></div>
+        </div>`;
+      }
+      body = `<div class="board-scroll"><table class="tbl"><thead><tr>
+          <th>序</th><th>场次</th><th>对阵</th><th>方向</th><th>赔率</th><th>市场概率</th><th>比分</th><th>结果</th>
+        </tr></thead><tbody>${rows}</tbody></table></div>${cards}`;
+    }
+
+    const statLine = st.settled
+      ? `近 ${st.days} 天已结算 <b>${st.settled}</b> 注 · 命中 <b>${st.hits}</b> 注 · 命中率 <b>${num(st.hitPct,1)}%</b> · 均赔 <b>${num(st.avgOdds,2)}</b> · 回报 <b>${num(st.roi,3)}</b>`
+      : '还没有已结算样本';
+
+    box.innerHTML = `<div class="board bd-spf-board">
+      <div class="board-head">
+        <span class="badge badge-jc">稳胆</span>
+        <span class="meta">${isToday ? '今日' : `<b>${nd}</b>（当日无符合条件的注，显示最近一期）`} ·
+          取每场「市场最看好」那一档 · 赔率 ≤1.75 · 每日最多 3 注 · 按赔率从低到高排</span>
+      </div>
+      ${body}
+      <div class="dim" style="margin:8px 2px 10px">
+        <b>${statLine}</b><br>
+        本栏是<b>命中导向</b>：目标是「经常能中」，不是「赚更多」。回测 382 注：每日前 3 注 77.6% 命中、回报 0.993；
+        每日前 1 注 90.9%、回报 1.102（33 注）。<b>长期回报仍被竞彩胜平负返奖率 0.878 压着，别把它当盈利来源。</b>
+        与大奶主榜完全分开记账——主榜按 EV 挑价值（命中率 12~15%），两者不可混看。
+      </div>
+    </div>`;
+  }catch(err){
+    if(err.message === 'unauthorized') return;
+    box.innerHTML = '';
+  }
 }
 
 /* ---------- 今日北单推荐（北单胜平负，不让球） ---------- */
 
 const BD_SIDE_TEXT = { '3': '主胜', '1': '平', '0': '客胜' };
 const BD_SIDE_CLS = { '3': 'hit-tag', '1': 'draw-tag', '0': 'miss-tag' };
+
+/* ---------- 北单战绩（2026-11-09 加，配套 bd-spf-settle 作业） ---------- */
+
+async function loadBdSpfRecord(){
+  const box = $('#bdSpfRecord');
+  if(!box) return;
+  try{
+    const r = await api('/api/bd/spf-record?days=30');
+    const t = r.total || {};
+    if(!t.settled){ box.innerHTML = ''; return; }
+    const num = (v, d) => Number(v || 0).toFixed(d);
+    const row = (g, name) => (g && g.settled)
+      ? `<tr><td>${name}</td><td class="mono">${g.settled}</td><td class="mono">${g.hits}</td>
+           <td class="mono">${num(g.hitPct,1)}%</td><td class="mono">${num(g.avgOdds,2)}</td>
+           <td class="mono">${num(g.roi,3)}</td><td class="mono">${g.pending||0}</td></tr>`
+      : '';
+    box.innerHTML = `<div class="board bd-spf-board">
+      <div class="board-head">
+        <span class="badge badge-bd">北单战绩</span>
+        <span class="meta">近 <b>${r.days}</b> 天 · 已结算 <b>${t.settled}</b> 注 · 待结算 <b>${t.pending||0}</b> 注</span>
+      </div>
+      <div class="board-scroll"><table class="tbl"><thead><tr>
+        <th>分组</th><th>已结算</th><th>命中</th><th>命中率</th><th>均赔</th><th>回报</th><th>待结算</th>
+      </tr></thead><tbody>
+        ${row(r.steady,'串关正路')}${row(r.reverse,'爆冷参考')}
+        <tr><td><b>合计</b></td><td class="mono"><b>${t.settled}</b></td><td class="mono"><b>${t.hits}</b></td>
+          <td class="mono"><b>${num(t.hitPct,1)}%</b></td><td class="mono"><b>${num(t.avgOdds,2)}</b></td>
+          <td class="mono"><b>${num(t.roi,3)}</b></td><td class="mono">${t.pending||0}</td></tr>
+      </tbody></table></div>
+      <div class="dim" style="margin:6px 2px 10px">回报 = 命中赔率合计 ÷ 已结算注数（平注 1 单位）。<b>赔率是推荐时点 SP，实购终版与之有 10~46% 差距，只能看方向，不是账本。</b>单注命中率也不等于串关中奖率（10 串 1 ≈ 0.585 的 10 次方）。</div>
+    </div>`;
+  }catch(err){
+    if(err.message === 'unauthorized') return;
+    box.innerHTML = '';
+  }
+}
 
 async function loadBdSpfPicks(){
   const box = $('#bdSpfBoard');

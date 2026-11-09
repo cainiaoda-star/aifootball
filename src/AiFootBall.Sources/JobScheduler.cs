@@ -21,6 +21,7 @@ public sealed class JobScheduler
     private readonly BdSpfPickRepository? _bdSpfRepo;
     private readonly StandingService? _standing;
     private readonly PaperTradeRepository? _paper;
+    private readonly SteadyPickRepository? _steady;
     private readonly Action<string>? _log;
     private readonly object _gate = new();
     private readonly List<Entry> _entries = new();
@@ -30,7 +31,7 @@ public sealed class JobScheduler
         Action<string>? log = null, LottoRecommendationService? lottoRec = null,
         DailyFollowService? dailyFollow = null, BdSpfPickService? bdSpfPick = null,
         BdSpfPickRepository? bdSpfRepo = null, StandingService? standing = null,
-        PaperTradeRepository? paper = null)
+        PaperTradeRepository? paper = null, SteadyPickRepository? steady = null)
     {
         _options = options;
         _collection = collection;
@@ -43,6 +44,7 @@ public sealed class JobScheduler
         _bdSpfRepo = bdSpfRepo;
         _standing = standing;
         _paper = paper;
+        _steady = steady;
         _log = log;
     }
 
@@ -97,6 +99,12 @@ public sealed class JobScheduler
         ["lotto"] = TimeSpan.FromMinutes(30),
         ["lotto-recommend"] = TimeSpan.FromMinutes(30),
         ["bd-spf-pick"] = TimeSpan.FromMinutes(30),
+        // 2026-11-09 加：北单结算。只读写本库，正常 1 秒内完成，给 10 分钟纯属兜底。
+        ["bd-spf-settle"] = TimeSpan.FromMinutes(10),
+        // 2026-11-09 加：稳胆出榜要跑一遍竞彩卡片管线（和 save-recommendations 同源），给 30 分钟；
+        // 结算只读写本库，10 分钟足够，多给纯属兜底。
+        ["save-steady-picks"] = TimeSpan.FromMinutes(30),
+        ["steady-settle"] = TimeSpan.FromMinutes(10),
         ["rebuild-standings"] = TimeSpan.FromMinutes(30)
     };
 
@@ -528,7 +536,18 @@ public sealed class JobScheduler
         "paper-freeze",
         // 跟单链同样是「读榜面 → 落库」，不能排在采集后面。
         "daily-follow-build",
-        "daily-follow-settle"
+        "daily-follow-settle",
+        // 2026-11-09 加：北单结算只读 FbMatch / 写 FbBdSpfPick，不打任何外部接口，
+        // 而且是「赛果 → 判中 → 台账」的最后一环，没理由排在 water-sample 后面。
+        // ★ 它和 bd-spf-pick 不是互斥关系：bd-spf-pick 只 DELETE 当日**未结算**行
+        //   （Hit IS NULL AND SettledAt IS NULL），已经结算的行它碰不到，所以进不进同一条通道
+        //   都不会互相写坏；进这条通道纯粹是为了不被采集饿死。
+        "bd-spf-settle",
+        // 2026-11-09 加：稳胆。save-steady-picks 要读当日场次 + 胜平负快照，steady-settle 只读写本库；
+        // 两者和主榜的 save-recommendations 一样是 DELETE+INSERT 形态，**必须串行**，
+        // 否则同一天两次重算交错会把「赔率最低的三场」写成两批（库上同样没有唯一约束兜底）。
+        "save-steady-picks",
+        "steady-settle"
     };
 
     /// <summary>超时中止后补一条运行记录，方便页面上查。写日志本身失败不再抛出。</summary>
@@ -911,6 +930,69 @@ public sealed class JobScheduler
                 var rows = await _bdSpfRepo.SaveDayAsync(DateTime.Today, day, ct);
                 result = CollectionResult.Ok(rows,
                     $"北单推荐：确定性正路 {day.Steady.Count} 注 + 反向价值 {day.Reverse.Count} 注，已落库");
+                break;
+            }
+
+            // 北单结算（2026-11-09 加）：按「比分 + 北单让球数」判让胜/让平/让负，回写 Hit。
+            // 建这条之前这张表从来没结算过（46 行 Hit 全 NULL），「北单成功率」只能靠临时 SQL 回算。
+            case "bd-spf-settle":
+            {
+                if (_bdSpfRepo is null)
+                {
+                    result = CollectionResult.Fail("北单台账未注入");
+                    break;
+                }
+                var settled = await _bdSpfRepo.SettleAsync(7, ct);
+                var rec = await _bdSpfRepo.GetRecordAsync(30, ct);
+                var t = rec.Total;
+                result = CollectionResult.Ok(settled, settled == 0
+                    ? $"北单结算：没有新的可判注单（近 30 天已结算 {t.Settled} 注、待结算 {t.Pending} 注）"
+                    : $"北单结算：补判 {settled} 注；近 30 天累计 {t.Settled} 注 {t.Hits} 中"
+                      + $"（{t.HitPct:0.0}%），回报 {t.Roi:0.000}（推荐时点 SP，非实购价）");
+                break;
+            }
+
+            // 稳胆榜（2026-11-09 加，用户拍板）：取市场最看好档、每日最多 3 注。
+            // 与主榜分开落库（FbSteadyPick），互不覆盖——两边命中率差 5 倍，混在一起统计谁也不是。
+            case "save-steady-picks":
+            {
+                if (_recommendation is null || _steady is null)
+                {
+                    result = CollectionResult.Fail("稳胆依赖未注入");
+                    break;
+                }
+                var steady = await _recommendation.BuildSteadyAsync(null, ct);
+                await _steady.EnsureTableAsync(ct);
+                // 一张都没出时不要执行 DELETE：否则一次「快照还没到」的早跑会把当天已发的注清空。
+                // 稳胆的规则是「赔率最低的三场」，早跑和晚跑可能完全不同，清空代价很大。
+                var saved = steady.Picks.Count == 0
+                    ? 0
+                    : await _steady.SaveDayAsync(DateTime.Today, steady.Picks, ct);
+                var st = await _steady.GetStatsAsync(30, ct);
+                result = CollectionResult.Ok(saved, steady.Picks.Count == 0
+                    ? $"稳胆：今日无符合条件场次（候选 {steady.Candidates}、名单外 {steady.Excluded}、"
+                      + $"超赔率上限 {steady.OverOdds}）；近 30 天 {st.Settled} 注 {st.Hits} 中（{st.HitPct:0.0}%）"
+                    : $"稳胆：{steady.Picks.Count} 注已落库（候选 {steady.Candidates}，"
+                      + $"被每日上限截掉 {steady.CutByRank}）；近 30 天 {st.Settled} 注 {st.Hits} 中"
+                      + $"（{st.HitPct:0.0}%），回报 {st.Roi:0.000}");
+                break;
+            }
+
+            // 稳胆结算（按比分判竞彩胜平负，不让球）
+            case "steady-settle":
+            {
+                if (_steady is null)
+                {
+                    result = CollectionResult.Fail("稳胆台账未注入");
+                    break;
+                }
+                await _steady.EnsureTableAsync(ct);
+                var settled2 = await _steady.SettleAsync(7, ct);
+                var st2 = await _steady.GetStatsAsync(30, ct);
+                result = CollectionResult.Ok(settled2, settled2 == 0
+                    ? $"稳胆结算：没有新的可判注单（近 30 天已结算 {st2.Settled} 注、待结算 {st2.Pending} 注）"
+                    : $"稳胆结算：补判 {settled2} 注；近 30 天累计 {st2.Settled} 注 {st2.Hits} 中"
+                      + $"（{st2.HitPct:0.0}%），回报 {st2.Roi:0.000}");
                 break;
             }
 

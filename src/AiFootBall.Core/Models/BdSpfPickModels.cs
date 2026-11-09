@@ -46,3 +46,52 @@ public sealed class BdSpfPickDay
     public List<BdSpfPick> Steady { get; set; } = new();
     public List<BdSpfPick> Reverse { get; set; } = new();
 }
+
+/// <summary>北单战绩分组（2026-11-09 加，配套 bd-spf-settle）。</summary>
+public sealed class BdSpfRecordGroup
+{
+    public string Kind { get; set; } = "total";
+    /// <summary>已结算注数（分母）。未结算的不进分母。</summary>
+    public int Settled { get; set; }
+    public int Hits { get; set; }
+    /// <summary>还没结算的注数（今晚待开赛 + 缺赛果）。</summary>
+    public int Pending { get; set; }
+    public decimal HitPct { get; set; }
+    /// <summary>平注 1 单位：命中赔率合计 ÷ 注数。</summary>
+    public decimal Roi { get; set; }
+    public decimal? AvgOdds { get; set; }
+}
+
+/// <summary>
+/// 北单战绩（近 N 天）。★ Roi 用的是**推荐时点 SP**，与实购终版 SP 常有 10~46% 差距，
+/// 只能看方向，不能当账本。
+/// </summary>
+public sealed class BdSpfRecord
+{
+    public int Days { get; set; }
+    public DateTime? From { get; set; }
+    public DateTime? To { get; set; }
+    public BdSpfRecordGroup Total { get; set; } = new();
+    public BdSpfRecordGroup? Steady { get; set; }
+    public BdSpfRecordGroup? Reverse { get; set; }
+    public List<BdSpfPickRecordItem> Rows { get; set; } = new();
+    public string Note { get; set; } =
+        "Roi = 命中赔率合计 ÷ 已结算注数；赔率为推荐时点 SP，实购终版与之有差距，仅作方向参考。";
+}
+
+/// <summary>北单战绩逐注行（前端表格用）。</summary>
+public sealed class BdSpfPickRecordItem
+{
+    public DateTime PickDate { get; set; }
+    public string Kind { get; set; } = "steady";
+    public string MatchNo { get; set; } = "";
+    public string? LeagueName { get; set; }
+    public string? HomeTeam { get; set; }
+    public string? AwayTeam { get; set; }
+    public DateTime? MatchTime { get; set; }
+    public decimal? Handicap { get; set; }
+    public string? SideName { get; set; }
+    public decimal? Odds { get; set; }
+    public string? ActualScore { get; set; }
+    public bool? Hit { get; set; }
+}

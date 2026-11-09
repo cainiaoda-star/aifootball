@@ -824,6 +824,31 @@ public sealed class RecommendationService
     /// 大奶推荐落库 + 大奶票出票。榜是空的（模型未就绪/无受注场）就不出票，当天不留空票。
     /// 台账先删当日未结算行再写，重算刷新概率不会冲掉已结算的历史。
     /// </summary>
+    /// <summary>
+    /// 稳胆榜（2026-11-09 加，用户拍板）。
+    ///
+    /// 只用到两样东西：当日竞彩场次、每场胜平负的快照。**不碰模型、不碰必发、不碰亚盘。**
+    /// 理由写在 <see cref="SteadyPickEngine"/> 的注释里——这个栏目卖的是命中率，
+    /// 而模型在胜平负上 51.9% vs 市场 56.9%，掺进来只会更低。
+    ///
+    /// 与大奶榜共用同一份 recs 时传进来，避免重复跑整条盘口管线。
+    /// </summary>
+    public async Task<SteadyPickEngine.Result> BuildSteadyAsync(
+        IReadOnlyList<MatchRecommendation>? jcRecs = null, CancellationToken ct = default)
+    {
+        var recs = jcRecs ?? await RecommendAsync(Boards.Jc, null, ct);
+        var fids = recs.Where(r => r.MatchId is > 0).Select(r => r.MatchId!.Value).Distinct().ToList();
+        if (fids.Count == 0) return new SteadyPickEngine.Result();
+
+        var points = await _jcOdds.GetLatestAsync(fids, ct);
+        var odds = points
+            .Where(p => p.MatchId is > 0)
+            .GroupBy(p => p.MatchId!.Value)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        return SteadyPickEngine.Build(recs, odds);
+    }
+
     private async Task SaveMilkAsync(List<MatchRecommendation>? jcRecs, CancellationToken ct)
     {
         if (_milkPicks is null || _tickets is null) return;

@@ -80,6 +80,7 @@ builder.Services.AddSingleton<DailyFollowRepository>();
 builder.Services.AddSingleton<DailyFollowService>();
 builder.Services.AddSingleton<BdSpfPickRepository>();
 builder.Services.AddSingleton<BdSpfPickService>();
+builder.Services.AddSingleton<SteadyPickRepository>();
 builder.Services.AddSingleton<AuthService>();
 builder.Services.AddSingleton<PurchaseSettlementService>();
 builder.Services.AddSingleton<StandingService>();
@@ -95,7 +96,8 @@ builder.Services.AddSingleton(sp => new JobScheduler(
     sp.GetRequiredService<BdSpfPickService>(),
     sp.GetRequiredService<BdSpfPickRepository>(),
     sp.GetRequiredService<StandingService>(),
-    sp.GetRequiredService<PaperTradeRepository>()));
+    sp.GetRequiredService<PaperTradeRepository>(),
+    sp.GetRequiredService<SteadyPickRepository>()));
 builder.Services.AddHostedService<SchedulerHostedService>();
 // token 健康守护：连续被人机验证拦截时自动用本机浏览器续期，避免回补空转
 builder.Services.AddHostedService<TokenHealthService>();
@@ -2003,6 +2005,44 @@ app.MapPost("/api/bd/spf-picks", async (
         await repo.SaveDayAsync(DateTime.Today, day, ct);
     }
     return Results.Ok(day);
+});
+
+// 北单战绩（2026-11-09 加）：近 N 天已结算注单的命中率与平注回报，配套 bd-spf-settle 作业。
+// ★ Roi 用推荐时点 SP，与实购终版 SP 常有 10~46% 差距，只看方向不要当账本（见 BdSpfRecord.Note）。
+app.MapGet("/api/bd/spf-record", async (BdSpfPickRepository repo, int? days, CancellationToken ct) =>
+    Results.Ok(await repo.GetRecordAsync(days ?? 30, ct)));
+
+// 稳胆榜（2026-11-09 加，用户拍板「开稳胆栏目」）。
+// 与大奶主榜是两条产品线：这条按「市场最看好档」挑最可能中的，命中率导向，不是期望导向。
+// 口径常量在 SteadyPickRules（赔率 ≤1.75、每日 ≤3 注），回测数字在 SteadyPick 的类注释里。
+app.MapGet("/api/steady/picks", async (SteadyPickRepository repo, string? date, CancellationToken ct) =>
+{
+    var day = DateTime.TryParse(date, out var d) ? d.Date : DateTime.Today;
+    return Results.Ok(await repo.GetDayAsync(day, ct));
+});
+
+// 稳胆战绩（近 N 天逐注 + 汇总）。分母只算已结算注数，回报 = 命中赔率合计 ÷ 注数。
+app.MapGet("/api/steady/record", async (SteadyPickRepository repo, int? days, CancellationToken ct) =>
+{
+    var n = Math.Clamp(days ?? 30, 1, 365);
+    var stats = await repo.GetStatsAsync(n, ct);
+    var rows = await repo.GetRowsAsync(n, ct);
+    return Results.Ok(new { days = n, stats, rows });
+});
+
+// 手动重算今日稳胆（不落库，纯预览）。调阈值或排查「今天为什么只有 1 注」时用。
+app.MapPost("/api/steady/preview", async (RecommendationService svc, CancellationToken ct) =>
+{
+    var built = await svc.BuildSteadyAsync(null, ct);
+    return Results.Ok(new
+    {
+        picks = built.Picks,
+        candidates = built.Candidates,
+        excluded = built.Excluded,
+        overOdds = built.OverOdds,
+        cutByRank = built.CutByRank,
+        skipped = built.Skipped
+    });
 });
 
 // 大奶台账 KPI：近 N 天按玩法分组的命中率、平注 ROI、模型高估幅度、热门选项

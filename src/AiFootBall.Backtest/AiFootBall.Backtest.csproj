@@ -11,6 +11,9 @@
   <ItemGroup>
     <ProjectReference Include="..\AiFootBall.Core\AiFootBall.Core.csproj" />
     <ProjectReference Include="..\AiFootBall.Data\AiFootBall.Data.csproj" />
+    <!-- 2026-11-09 加：方向检验台要复刻线上出票闸，需调用 OptionBaseline / MilkPickEngine.Payout。
+         只读用途，不改任何业务表。 -->
+    <ProjectReference Include="..\AiFootBall.Sources\AiFootBall.Sources.csproj" />
   </ItemGroup>
 
 </Project>
