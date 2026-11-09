@@ -1,0 +1,34 @@
+bin/
+obj/
+node_modules/
+_run/
+.vs/
+*.user
+.workbuddy/
+
+# 数据库口令只留在本机，不进仓库
+**/appsettings.json
+
+# 500.com 验证后 cookie，等同凭证，绝不进仓库
+secrets/
+
+# 这几个探针源码里写了连接串
+_probe/SqlProbe/Program.cs
+_probe/RecDiag/Program.cs
+_probe/BdTop11/Program.cs
+_probe/JcDiag/Program.cs
+
+# 2026-11-05：_probe 整个是诊断临时目录（json/html/sql/log 等 226 个临时产物），
+# 已从跟踪移除，整个目录一并忽略，不再进仓库。
+_probe/
+
+# 日志与临时输出
+*.log
+*.err
+
+# 2026-11-05：生产环境本地产物，含真实数据/凭据，绝不进仓库
+# （deploy-package 里的 secrets/ 与 appsettings.json 已由上方规则覆盖）
+*.bak
+db-backup/
+production-data/
+deploy-package/
