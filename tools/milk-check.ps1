@@ -292,13 +292,22 @@ SELECT ISNULL(CAST(SUM(CASE WHEN DATEPART(hour, ISNULL(StartedAt, FinishedAt)) <
      + ISNULL(CAST(SUM(CASE WHEN DATEPART(hour, ISNULL(StartedAt, FinishedAt)) >= 8 THEN 1 ELSE 0 END) AS varchar(10)), '0') + '|'
      + ISNULL(CAST(COUNT(*) AS varchar(10)), '0')
 FROM dbo.SyncLog
-WHERE ISNULL(StartedAt, FinishedAt) >= @d AND Status <> 'SUCCESS'
+WHERE ISNULL(StartedAt, FinishedAt) >= @d AND Status NOT IN ('SUCCESS', 'RUNNING')
 "@)
+    # RUNNING is not a failure. Since 2026-11-10 every run inserts a RUNNING row
+    # first and updates it on exit, so counting "Status <> SUCCESS" would report
+    # every job that happens to be executing at the moment of the check as broken.
+    # Measured right after that change: jc-odds-sample (every 2 min) alone would
+    # have turned this check red several times an hour.
+    # NOTE: the comment must live here, not inside the here-string. sqlcmd chokes on
+    # a "--" line in the -Q payload ("'-' has no associated parameter"), the section
+    # then falls into its catch and degrades to WARN - i.e. a check that silently
+    # stops checking is exactly the failure shape this file exists to prevent.
     $recent = @(Sql @"
 DECLARE @d date = CAST(GETDATE() AS date);
 SELECT ISNULL(CAST(COUNT(*) AS varchar(10)), '0')
 FROM dbo.SyncLog
-WHERE Status <> 'SUCCESS'
+WHERE Status NOT IN ('SUCCESS', 'RUNNING')
   AND ISNULL(StartedAt, FinishedAt) >= DATEADD(minute, -90, GETDATE())
   AND ISNULL(StartedAt, FinishedAt) >= @d;
 "@)
@@ -479,6 +488,45 @@ WHERE StartedAt >= @d AND Status = 'STUCK';
     }
 } catch {
     Warn ("stuck classification skipped - " + $_.Exception.Message)
+}
+
+# --- 4h. runs that started but never finished ---------------------------------
+# 2026-11-10: a job used to write its SyncLog row only AT THE END. A run killed by
+# a process restart therefore left nothing at all: odds-backfill started 12:21:51,
+# the process restarted 12:40, and the board still showed the 03:55 SUCCESS with
+# "next run tomorrow 03:20" - green, while that day's only historical-odds backfill
+# was gone. Same for the exception path, which never reached the write at all.
+# Now every run inserts a RUNNING row first and updates it on exit, and the next
+# startup flips leftovers to ABORTED. So ABORTED > 0 means "a run died mid-flight",
+# which is exactly the thing that used to be invisible.
+try {
+    $h = @(Sql @"
+DECLARE @d datetime = DATEADD(hour, -24, GETDATE());
+SELECT ISNULL(CAST(SUM(CASE WHEN Status = 'ABORTED' THEN 1 ELSE 0 END) AS varchar(10)), '0') + '|'
+     + ISNULL(CAST(SUM(CASE WHEN Status = 'RUNNING' AND StartedAt < DATEADD(minute, -120, GETDATE())
+                            THEN 1 ELSE 0 END) AS varchar(10)), '0') + '|'
+     + ISNULL(STUFF((SELECT DISTINCT ',' + TaskName FROM dbo.SyncLog
+                     WHERE StartedAt >= @d AND Status = 'ABORTED' FOR XML PATH('')), 1, 1, ''), '')
+FROM dbo.SyncLog
+WHERE StartedAt >= @d;
+"@)
+    $p = @($h)[0]
+    if ($p -is [string] -and $p.Contains('|')) {
+        $q = $p -split '\|'
+        $aborted = [int]$q[0]; $stale = [int]$q[1]; $names = $q[2]
+        if ($aborted -gt 0) {
+            Warn ("a job run died mid-flight " + $aborted + "x in 24h (ABORTED): " + $names + " - the process exited while it was running, and its slot for the day was consumed, so it will NOT be retried")
+        } else {
+            Ok "no interrupted job runs in 24h"
+        }
+        if ($stale -gt 0) {
+            Warn ("a job is still marked RUNNING after 120 min " + $stale + "x: the startup sweep did not reach it - check whether a second scheduler process is running")
+        }
+    } else {
+        Warn "interrupted-run check skipped - unexpected result shape"
+    }
+} catch {
+    Warn ("interrupted-run check skipped - " + $_.Exception.Message)
 }
 
 # --- 5. decision --------------------------------------------------------------

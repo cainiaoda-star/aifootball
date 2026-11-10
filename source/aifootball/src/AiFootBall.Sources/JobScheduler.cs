@@ -82,6 +82,14 @@ public sealed class JobScheduler
         /// 而且 Next 已重算，下一轮还会再排一份，同一个作业在通道里叠两份。
         /// </summary>
         public CancellationTokenSource? Pending { get; set; }
+        /// <summary>
+        /// 本轮在 SyncLog 里那一行「开始记录」的 LogId。结束时回填结论用。
+        ///
+        /// 为空说明开始行没写进去（DB 不通），结束时退回插一整行。
+        /// 一行对应一次执行，而不是两次——否则「开始」和「结束」会变成两行，
+        /// 谁也没法用一个 SQL 问出「这次跑完了没有」。
+        /// </summary>
+        public long? LogId { get; set; }
     }
 
     /// <summary>
@@ -209,6 +217,39 @@ public sealed class JobScheduler
         timeoutMinutes = (int)TimeoutFor(e.Job).TotalMinutes
     }).ToList();
 
+    /// <summary>
+    /// 把上一进程遗留的 RUNNING 标成 ABORTED，并把结果刷回内存里的面板状态。
+    ///
+    /// 这是「作业跑到一半消失」唯一能被看见的地方：没有它，一次被重启掐断的执行
+    /// 在库里是空白、在页面上是上一次的成功。刷回内存是必须的——InitializeAsync
+    /// 早就读过一遍库了，不清洗就会拿着清洗前的旧结论对外展示。
+    /// </summary>
+    private async Task SweepAbandonedAsync()
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var n = await _sync.SweepAbandonedAsync(cts.Token);
+            if (n <= 0) return;
+
+            _log?.Invoke($"[上次退出] {n} 个作业在执行中被进程退出打断，已标为 ABORTED（本轮不会自动补跑）");
+
+            var lastRuns = await _sync.GetLastRunsAsync(cts.Token);
+            foreach (var entry in _entries)
+            {
+                if (!lastRuns.TryGetValue($"job:{entry.Job.Name}", out var last)) continue;
+                entry.LastRun = last.FinishedAt;
+                entry.LastStatus = last.Status;
+                entry.LastMessage = last.Message;
+            }
+        }
+        catch (Exception ex)
+        {
+            // 清洗失败不影响调度本身，但要说出来：不说就等于「监控瞎了还报平安」。
+            _log?.Invoke($"遗留 RUNNING 清洗失败：{ex.Message}");
+        }
+    }
+
     /// <summary>主循环最近一次心跳的时刻（进程刚起、还没跑完第一轮时为 <see cref="DateTime.MinValue"/>）。</summary>
     private long _lastTickTicks;
 
@@ -248,6 +289,12 @@ public sealed class JobScheduler
             _log?.Invoke("没有可运行的定时作业，请检查 appsettings.json 的 Jobs 配置");
             return;
         }
+
+        // 上一次进程遗留的 RUNNING 行先定性，再报状态。
+        //
+        // 放在这里而不是 InitializeAsync：命令行 `scheduler --once X` 也会调 InitializeAsync，
+        // 那样一次手工补跑就会把 Api 正在跑的作业判成「没跑完」。RunAsync 只有常驻进程进。
+        await SweepAbandonedAsync();
 
         _log?.Invoke($"调度器已启动（{_entries.Count} 个作业）：");
         foreach (var e in _entries)
@@ -565,6 +612,17 @@ public sealed class JobScheduler
         var limit = TimeoutFor(job);
         using var runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         runCts.CancelAfter(limit);
+
+        // 先落「开始」这一行，再执行。
+        //
+        // 顺序不能反：如果先执行后写，进程在中途死掉就什么都没有——
+        // 2026-11-10 12:21:51 的 odds-backfill 就是这么消失的（12:40 重启掐断，
+        // SyncLog 零行、看板显示上一次 SUCCESS、下次明天）。
+        // 有了开始行，被打断的执行会永远停在 RUNNING，启动时被扫成 ABORTED。
+        entry.LogId = await _sync.BeginAsync($"job:{job.Name}", job.Type, entry.RunningSince, ct);
+        if (entry.LogId is null)
+            _log?.Invoke($"[{job.Name}] 开始记录写入失败（DB 不通？），本轮只会在结束时留一条结论");
+
         try
         {
             return await ExecuteAsync(entry, runCts.Token);
@@ -587,7 +645,35 @@ public sealed class JobScheduler
             entry.LastStatus = "FAILED";
             entry.LastMessage = ex.Message;
             _log?.Invoke($"[{job.Name}] 执行异常：{ex.Message}");
+            // 抛异常的这条路径以前**一行日志都不写**：ExecuteAsync 末尾那句写日志在
+            // throw 之后，永远到不了。于是「作业炸了」只存在于内存和文本日志里，
+            // 库里查不到，重启后 lastStatus 还退回上一次的成功。
+            // 典型受害者：jc-odds-backfill 04:35 的 SQL 超时，库里没有任何记录。
+            await CompleteQuietlyAsync(entry, "FAILED", null, ex.Message);
             return CollectionResult.Fail(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 回填结论，自带 30 秒上限。用于 catch 分支——那里的 token 多半已经取消，
+    /// 直接用会写不进去，而这恰恰是最需要留下记录的时刻。
+    /// </summary>
+    private async Task CompleteQuietlyAsync(Entry entry, string status, int? rows, string? message)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var logId = entry.LogId;
+            await _sync.CompleteAsync(logId, $"job:{entry.Job.Name}", entry.Job.Type,
+                status, rows, message, cts.Token, entry.RunningSince);
+        }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"[{entry.Job.Name}] {status} 记录写入失败：{ex.Message}");
+        }
+        finally
+        {
+            entry.LogId = null;
         }
     }
 
@@ -660,22 +746,13 @@ public sealed class JobScheduler
         "finalize-prices"
     };
 
-    /// <summary>超时中止后补一条运行记录，方便页面上查。写日志本身失败不再抛出。</summary>
+    /// <summary>超时中止后回填这一行的结论，方便页面上查。写日志本身失败不再抛出。</summary>
     private async Task LogTimeoutAsync(Entry entry, TimeSpan limit)
     {
-        try
-        {
-            // 同 STUCK 那条：写日志必须有上限。这里虽然不在主循环里，但它是持着通道跑的，
-            // DB 不响应就会把这个通道永久占住，后面排队的作业全部陪葬。
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            await _sync.WriteAsync($"job:{entry.Job.Name}", entry.Job.Type, "TIMEOUT", 0,
-                $"执行超过 {limit.TotalMinutes:0} 分钟未完成，已中止", cts.Token,
-                startedAt: entry.RunningSince);
-        }
-        catch (Exception ex)
-        {
-            _log?.Invoke($"[{entry.Job.Name}] 超时记录写入失败：{ex.Message}");
-        }
+        // 回填而不是新插一行：本轮已经有一条开始记录了，再插一条就变成「两次执行」。
+        // 同 STUCK 那条：写日志必须有上限。这里虽然不在主循环里，但它是持着通道跑的，
+        // DB 不响应就会把这个通道永久占住，后面排队的作业全部陪葬。
+        await CompleteQuietlyAsync(entry, "TIMEOUT", 0, $"执行超过 {limit.TotalMinutes:0} 分钟未完成，已中止");
     }
 
     /// <summary>按页面上保存的时间改期。下次触发从现在起按新 cron 计算。</summary>
@@ -1385,11 +1462,10 @@ public sealed class JobScheduler
         entry.LastStatus = result.Success ? "SUCCESS" : "FAILED";
         entry.LastMessage = result.Message;
 
-        await _sync.WriteAsync($"job:{job.Name}", job.Type, result.Success ? "SUCCESS" : "FAILED",
-            result.Rows, result.Message, ct,
-            // 真实开始执行时刻，让 SyncLog 里有耗时可查（以前 StartedAt 靠默认约束，
-            // 恒等于 FinishedAt，全库耗时都是 0 秒）。
-            startedAt: entry.RunningSince);
+        // 回填开始时那一行，而不是再插一行。
+        // 真实开始执行时刻（entry.RunningSince / 开始行里的 StartedAt）让耗时第一次变得可查
+        // ——以前 StartedAt 靠默认约束恒等于 FinishedAt，全库耗时都是 0 秒。
+        await CompleteQuietlyAsync(entry, result.Success ? "SUCCESS" : "FAILED", result.Rows, result.Message);
 
         _log?.Invoke($"[{DateTime.Now:HH:mm:ss}] 作业 {job.Name} 结束：{result.Message}");
         return result;
