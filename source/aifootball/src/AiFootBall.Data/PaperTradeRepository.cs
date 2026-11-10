@@ -69,6 +69,10 @@ BEGIN
         ALTER TABLE dbo.FbPaperTrade ADD FinalAt DATETIME2(0) NULL;
     IF COL_LENGTH('dbo.FbPaperTrade','FinalSource') IS NULL
         ALTER TABLE dbo.FbPaperTrade ADD FinalSource NVARCHAR(12) NULL;
+    -- 让球数快照（2026-11-10）：让球胜平负判中必须知道出注时的让球数，
+    -- 回退 FbMatch.Handicap 只能拿到「当前」盘口，官方一调整就还原不出当时。
+    IF COL_LENGTH('dbo.FbPaperTrade','Handicap') IS NULL
+        ALTER TABLE dbo.FbPaperTrade ADD Handicap DECIMAL(6,2) NULL;
 END";
 
     /// <summary>确保表存在（幂等）。</summary>
@@ -196,6 +200,12 @@ END";
         await using var conn = await _factory.OpenAsync(ct);
         if (!await TableExistsAsync(conn, ct)) return 0;
 
+        // ★ 补列必须在这里也跑一次（2026-11-10）：下面 SELECT 引用 t.Handicap，
+        //   这一列是本轮新加的，只靠建表脚本的话老库永远不会有它。
+        //   漏了这一步的后果不是「少一列」，而是 SELECT 直接报列名无效 →
+        //   整个 paper-settle 失败 → 空跑台账全员停在「待结算」，且只有 SyncLog 里一行 FAIL。
+        await conn.ExecuteAsync(new CommandDefinition(Ddl, cancellationToken: ct));
+
         // 先同步最近两天的撤注标记：冻结发生在停售后，而 turn-guard 之后还会继续撤凌晨场次的注。
         await conn.ExecuteAsync(new CommandDefinition(
             @"UPDATE t
@@ -213,6 +223,7 @@ END";
 
         var pending = (await conn.QueryAsync<PaperPending>(new CommandDefinition(
             @"SELECT t.TradeId, t.PlayType, t.OptionCode, t.Voided, t.Odds,
+                     COALESCE(t.Handicap, m.Handicap) AS Handicap,
                      m.HomeScore, m.AwayScore, m.HalfHomeScore, m.HalfAwayScore, m.Status, m.MatchTime
               FROM dbo.FbPaperTrade t
               JOIN dbo.FbMatch m ON m.MatchId = t.MatchId
@@ -231,10 +242,16 @@ END";
                 hit = MilkPickMath.IsHit(row.PlayType, row.OptionCode,
                     row.HomeScore!.Value, row.AwayScore!.Value, hh, ha);
             }
+            else if (row.PlayType == JcPlayTypes.Nspf && row.Handicap is not decimal)
+            {
+                // 让球胜平负缺让球数就不判（判 false 等于记成未中，会污染命中率）。
+                // 与主榜 FbMilkPick 同一套处理，两张表不能各跑一套「缺数据怎么办」。
+                continue;
+            }
             else
             {
                 hit = MilkPickMath.IsHit(row.PlayType, row.OptionCode,
-                    row.HomeScore!.Value, row.AwayScore!.Value, null, null);
+                    row.HomeScore!.Value, row.AwayScore!.Value, null, null, row.Handicap);
             }
 
             var score = $"{row.HomeScore}:{row.AwayScore}";
@@ -246,8 +263,10 @@ END";
             settled += await conn.ExecuteAsync(new CommandDefinition(
                 @"UPDATE dbo.FbPaperTrade
                   SET Hit = @hit, ActualScore = @score, ActualHalfScore = @half,
+                      Handicap = COALESCE(Handicap, @hcp),
                       Pnl = @pnl, SettledAt = SYSDATETIME()
-                  WHERE TradeId = @id", new { hit, score, half, pnl, id = row.TradeId }, cancellationToken: ct));
+                  WHERE TradeId = @id",
+                new { hit, score, half, hcp = row.Handicap, pnl, id = row.TradeId }, cancellationToken: ct));
         }
 
         // 取消场次：开赛时间已过、比分仍空、Status=2。与 FbMilkPick 同一套防误杀条件。
@@ -382,6 +401,8 @@ END";
         public string OptionCode { get; set; } = string.Empty;
         public bool Voided { get; set; }
         public decimal Odds { get; set; }
+        /// <summary>出注时的让球数（缺失回退 FbMatch.Handicap），只给让球胜平负判定用。</summary>
+        public decimal? Handicap { get; set; }
         public int? HomeScore { get; set; }
         public int? AwayScore { get; set; }
         public int? HalfHomeScore { get; set; }

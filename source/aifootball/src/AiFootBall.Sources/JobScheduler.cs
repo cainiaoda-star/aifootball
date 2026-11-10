@@ -1116,7 +1116,10 @@ public sealed class JobScheduler
                     break;
                 }
                 var s = await _recommendation.SettleAsync(ct);
-                result = CollectionResult.Ok(s.Total, $"复盘回填 {s.Total} 场，命中 {s.Hit} 场（命中率 {s.HitRate}%）");
+                var sidecar = s.SidecarErrors.Count > 0
+                    ? "；!! 旁路结算失败：" + string.Join(" / ", s.SidecarErrors)
+                    : "";
+                result = CollectionResult.Ok(s.Total, $"复盘回填 {s.Total} 场，命中 {s.Hit} 场（命中率 {s.HitRate}%）{sidecar}");
                 break;
             }
 
@@ -1214,7 +1217,12 @@ public sealed class JobScheduler
                     buyMsg = $"；购买结算 {ps.Settled}（中{ps.Won}/未中{ps.Lost}，待{ps.Waiting}）";
                 }
                 var msg = $"赛果采集 {collect.Rows} 场；复盘回填 {s.Total} 场，命中 {s.Hit} 场（命中率 {s.HitRate}%）{buyMsg}";
-                result = CollectionResult.Ok(collect.Rows + s.Total + buyRows, msg);
+                // 旁路（票面/否决/大奶）结算失败必须进日志（2026-11-10）。
+                // 这些失败原本被空 catch 吃掉，作业永远 SUCCESS —— 台账停摆但没人知道。
+                var sidecarFail = s.SidecarErrors.Count > 0
+                    ? "；!! 旁路结算失败：" + string.Join(" / ", s.SidecarErrors)
+                    : "";
+                result = CollectionResult.Ok(collect.Rows + s.Total + buyRows, msg + sidecarFail);
                 break;
             }
 

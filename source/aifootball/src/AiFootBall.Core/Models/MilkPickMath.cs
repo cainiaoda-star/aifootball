@@ -6,13 +6,16 @@ namespace AiFootBall.Core.Models;
 public static class MilkPickMath
 {
     /// <summary>大奶选项是否打出。</summary>
-    /// <param name="playType">BF / BQ / JQ。</param>
-    /// <param name="optionCode">比分 "3:1" 或 "胜其它"、半全场 "3-0"（半-全，3胜1平0负）、总进球 "7"（7=7+）。</param>
+    /// <param name="playType">BF / BQ / JQ / SPF / NSPF。</param>
+    /// <param name="optionCode">比分 "3:1" 或 "胜其它"、半全场 "3-0"（半-全，3胜1平0负）、
+    /// 总进球 "7"（7=7+）、胜平负 "3"/"1"/"0"、让球胜平负 "3"/"1"/"0"。</param>
     /// <param name="home">全场主队进球。</param>
     /// <param name="away">全场客队进球。</param>
     /// <param name="halfHome">半场主队进球（BQ 判定必需）。</param>
     /// <param name="halfAway">半场客队进球。</param>
-    public static bool IsHit(string playType, string optionCode, int home, int away, int? halfHome, int? halfAway)
+    /// <param name="handicap">竞彩让球数（NSPF 判定必需）。正=主受让、负=主让球，与 <c>FbMatch.Handicap</c> 同口径。</param>
+    public static bool IsHit(string playType, string optionCode, int home, int away,
+                             int? halfHome, int? halfAway, decimal? handicap = null)
     {
         switch (playType)
         {
@@ -33,10 +36,31 @@ public static class MilkPickMath
                 var full = home > away ? '3' : home == away ? '1' : '0';
                 return $"{half}-{full}" == optionCode;
             }
+            // 胜平负（不让球）与让球胜平负：三档代码同为 "3" 主/让胜、"1" 平/让平、"0" 客/让负。
+            //
+            // ★ 2026-11-10 补：这两个玩法此前落到 default 直接返回 false，
+            //   也就是「不管打成什么，都算没中」。危害形态是**静默**的——
+            //   无 1 注命中也会被记成未中，命中率被系统性压低，而且台账里看不出任何异常。
+            //   实测证据：11-07 罗马 vs 萨索洛 让平 @4.40（3:0）被判未中，结论巧合正确
+            //   （让 -1 后净胜 2 球确实是让胜），但那是 default 兜出来的，不是算出来的。
+            case JcPlayTypes.Spf:
+                return optionCode == ScoreSide(home, away);
+            case JcPlayTypes.Nspf:
+            {
+                // 缺让球数不在这里硬判：返回 false 等于「没中」，会把这注谎报成未中。
+                // 调用方（SettleAsync）必须先挡——拿不到让球就跳过，留到下一轮再判。
+                if (handicap is not decimal hcp) return false;
+                var net = home - away + (int)decimal.Truncate(hcp);
+                return optionCode == (net > 0 ? "3" : net == 0 ? "1" : "0");
+            }
             default:
                 return false;
         }
     }
+
+    /// <summary>胜平负三档代码：3 主胜 / 1 平 / 0 客胜。</summary>
+    private static string ScoreSide(int home, int away)
+        => home > away ? "3" : home == away ? "1" : "0";
 
     private static bool IsOtherScore(string optionCode, int home, int away)
     {
@@ -66,13 +90,16 @@ public static class MilkPickMath
     /// <summary>官方比分档只覆盖上面 28 个；之外的（4:3、5:4、6:x、合计 8+ 等）都算「其它」。</summary>
     private static bool IsOutsideListed(int home, int away) => !IsListedScore(home, away);
 
-    /// <summary>选项显示名：比分 3:1 / 半全场 胜负 / 总进球 4球（与竞彩官方叫法一致）。</summary>
+    /// <summary>选项显示名：比分 3:1 / 半全场 胜负 / 总进球 4球 / 胜平负 主胜（与竞彩官方叫法一致）。</summary>
     public static string DisplayName(string playType, string code) => playType switch
     {
         JcPlayTypes.Bf => $"比分 {code}",
         JcPlayTypes.Bq => $"半全场 {HalfFullName(code)}",
         JcPlayTypes.Jq => code == "7" ? "总进球 7+球" : $"总进球 {code}球",
         JcPlayTypes.Nspf => $"让球胜平负 {HcpName(code)}",
+        // SPF 的三档代码和 NSPF 同形（3/1/0），但语义是「不让球」。
+        // 缺这一支时页面会把选项列直接印成 "3"——玩家不可能知道那是主胜。
+        JcPlayTypes.Spf => $"胜平负 {PlainName(code)}",
         _ => code
     };
 
@@ -83,6 +110,16 @@ public static class MilkPickMath
         JcPlayTypes.Bq => HalfFullName(code),
         JcPlayTypes.Jq => code == "7" ? "7+球" : $"{code}球",
         JcPlayTypes.Nspf => HcpName(code),
+        JcPlayTypes.Spf => PlainName(code),
+        _ => code
+    };
+
+    /// <summary>胜平负三档名（不让球：3=主胜、1=平、0=客胜）。</summary>
+    public static string PlainName(string code) => code switch
+    {
+        "3" => "主胜",
+        "1" => "平",
+        "0" => "客胜",
         _ => code
     };
 

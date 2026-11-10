@@ -35,6 +35,11 @@ public sealed class MilkPickRepository
                   ALTER TABLE dbo.FbMilkPick ADD Voided bit NOT NULL CONSTRAINT DF_FbMilkPick_Voided DEFAULT(0);
               IF COL_LENGTH('dbo.FbMilkPick','VoidedAt') IS NULL
                   ALTER TABLE dbo.FbMilkPick ADD VoidedAt datetime2 NULL;
+              -- 让球数快照（2026-11-10）：让球胜平负（NSPF）判中必须知道出注时的让球数。
+              -- 不落这一列就只能回退 FbMatch.Handicap，而那是「当前」盘口——
+              -- 竞彩让球在受注期间会被官方调整，赛后回看根本分不清当时让的是几球。
+              IF COL_LENGTH('dbo.FbMilkPick','Handicap') IS NULL
+                  ALTER TABLE dbo.FbMilkPick ADD Handicap decimal(6,2) NULL;
               -- 告警去重键（2026-11-08）：Reason 带实时数值，拿它去重等于不去重。
               IF COL_LENGTH('dbo.FbTurnAlert','SignalCode') IS NULL
                   ALTER TABLE dbo.FbTurnAlert ADD SignalCode nvarchar(80) NULL;
@@ -415,9 +420,17 @@ WHERE t.TradeDate=@d
     public async Task<int> SettleAsync(CancellationToken ct = default)
     {
         await using var conn = await _factory.OpenAsync(ct);
+        // ★ 补列必须在这里也调一次（2026-11-10）：下面 SELECT 引用 p.Handicap，
+        //   而这一列是本次新加的。SettleAsync 原本只有 SaveDayAsync 那条路径会补列，
+        //   一旦结算先跑（或者进程刚重启 → _columnsReady 被重置后结算比保存先到），
+        //   就会报「列名 Handicap 无效」。更糟的是调用方 RecommendationService 用
+        //   try/catch 包着它（结算失败不能拖垮整轮采集），异常被吞 → 结算静默停摆，
+        //   症状是「注一直挂在那里没有结果」，和 11-09 那次取消误判的表现一模一样。
+        await EnsureColumnsAsync(conn, ct);
 
         var pending = (await conn.QueryAsync<MilkPendingRow>(new CommandDefinition(
             @"SELECT p.PickId, p.PlayType, p.OptionCode,
+                     COALESCE(p.Handicap, m.Handicap) AS Handicap,
                      m.HomeScore, m.AwayScore, m.HalfHomeScore, m.HalfAwayScore
               FROM dbo.FbMilkPick p
               JOIN dbo.FbMatch m ON m.MatchId = p.MatchId
@@ -436,10 +449,17 @@ WHERE t.TradeDate=@d
                 hit = MilkPickMath.IsHit(row.PlayType, row.OptionCode,
                     row.HomeScore!.Value, row.AwayScore!.Value, hh, ha);
             }
+            else if (row.PlayType == JcPlayTypes.Nspf && row.Handicap is not decimal)
+            {
+                // 让球胜平负拿不到让球数就**不许判**。判 false 等于把这注记成未中，
+                // 直接污染命中率；跳过只损失一轮及时性，下一轮读到了自然补上。
+                // 与半全场缺半场比分同一个处理方式。
+                continue;
+            }
             else
             {
                 hit = MilkPickMath.IsHit(row.PlayType, row.OptionCode,
-                    row.HomeScore!.Value, row.AwayScore!.Value, null, null);
+                    row.HomeScore!.Value, row.AwayScore!.Value, null, null, row.Handicap);
             }
 
             var score = $"{row.HomeScore}:{row.AwayScore}";
@@ -449,8 +469,10 @@ WHERE t.TradeDate=@d
             settled += await conn.ExecuteAsync(new CommandDefinition(
                 @"UPDATE dbo.FbMilkPick
                   SET Hit=@hit, ActualScore=@score, ActualHalfScore=@half, ActualGoals=@goals,
+                      Handicap=COALESCE(Handicap, @hcp),
                       SettledAt=SYSDATETIME()
-                  WHERE PickId=@id", new { hit, score, half, goals, id = row.PickId }, cancellationToken: ct));
+                  WHERE PickId=@id",
+                new { hit, score, half, goals, hcp = row.Handicap, id = row.PickId }, cancellationToken: ct));
         }
 
         // 取消场次（Status=2）永远等不到赛果：写死「取消」终态退出 pending。
@@ -857,6 +879,8 @@ WHERE t.TradeDate=@d
         public long PickId { get; set; }
         public string PlayType { get; set; } = "";
         public string OptionCode { get; set; } = "";
+        /// <summary>出注时的让球数（缺失回退 FbMatch.Handicap），只给让球胜平负判定用。</summary>
+        public decimal? Handicap { get; set; }
         public int? HomeScore { get; set; }
         public int? AwayScore { get; set; }
         public int? HalfHomeScore { get; set; }

@@ -989,16 +989,17 @@ public sealed class RecommendationService
             }).ToList();
 
         // 赛果刚回填完，正好顺手结票。票面台账是新增的旁路，表还没建时不能拖垮复盘本身。
+        var sidecarErrors = new List<string>();
         try { await SettleTicketsAsync(ct); }
-        catch (Exception) { /* 台账不可用就当没这张表，复盘照常出 */ }
+        catch (Exception ex) { sidecarErrors.Add(DescribeSidecarFailure("票面台账", ex)); }
 
         // 否决记录也用同一份赛果判定：「当时照打会不会中」。
         try { await SettleVetoesAsync(ct); }
-        catch (Exception) { /* 同上，旁路不拖垮主流程 */ }
+        catch (Exception ex) { sidecarErrors.Add(DescribeSidecarFailure("否决记录", ex)); }
 
         // 大奶台账：比分/半全场/总进球对赛果判中。半场比分没采到的场留着下轮。
         try { if (_milkPicks is not null) await _milkPicks.SettleAsync(ct); }
-        catch (Exception) { /* 大奶台账不可用不拖垮复盘本身 */ }
+        catch (Exception ex) { sidecarErrors.Add(DescribeSidecarFailure("大奶台账", ex)); }
 
         return new SettlementResult
         {
@@ -1006,9 +1007,29 @@ public sealed class RecommendationService
             Hit = hitCount,
             HitRate = total > 0 ? Math.Round(100.0 * hitCount / total, 1) : 0,
             ByBoard = byBoard,
-            Items = settled
+            Items = settled,
+            // 旁路失败的痕迹必须跟着结果一起返回，由作业写进 SyncLog。
+            // 只往 Console 打是不够的：这个进程的 stdout/stderr 走计划任务，
+            // 按天日志是程序自己写的结构化文件，两者不通。
+            SidecarErrors = sidecarErrors
         };
     }
+
+    /// <summary>
+    /// 旁路台账结算失败时的统一留痕（2026-11-10 加）。
+    ///
+    /// 旁路失败不该拖垮复盘——这条设计没错。错的是原来写成 <c>catch (Exception) { }</c>，
+    /// 一个字节都不留：SQL 写错（列名不存在）、表结构漂移这类**永久性失败**，
+    /// 和「表还没建」的一次性情况长得一模一样，全都表现为
+    /// 「Job 全绿、复盘正常、只有台账再也不更新」。
+    ///
+    /// 实测代价：11-10 给 FbMilkPick 加 Handicap 列时，结算先跑到、补列没跑到，
+    /// SELECT 直接报列名无效，异常被这个空 catch 吃掉 —— 台账静默停摆，
+    /// 而 SyncLog 里 settle-hourly 全程 SUCCESS。发现它靠的是去查列存不存在，
+    /// 不是靠日志。所以这里返回文字，由调用方拼进 SyncLog 的 message。
+    /// </summary>
+    private static string DescribeSidecarFailure(string what, Exception ex)
+        => $"{what}结算失败（复盘继续）：{ex.GetType().Name}: {ex.Message}";
 }
 
 /// <summary>复盘结果</summary>
@@ -1019,6 +1040,8 @@ public sealed class SettlementResult
     public double HitRate { get; set; }
     public List<BoardSettlement> ByBoard { get; set; } = new();
     public List<SettlementItem> Items { get; set; } = new();
+    /// <summary>旁路台账（票面/否决/大奶）结算失败的描述。空表示全部结算正常。</summary>
+    public List<string> SidecarErrors { get; set; } = new();
 }
 
 public sealed class BoardSettlement
