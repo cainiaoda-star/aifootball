@@ -404,6 +404,37 @@ public sealed class JobScheduler
     /// <summary>上一次做「复盘漏跑」自查的时刻，节流到 5 分钟一次。</summary>
     private DateTime _reviewSweepAt = DateTime.MinValue;
 
+    /// <summary>
+    /// water-sample 已经跑过几轮。用来让它每 3 轮（约 30 分钟）做一次全量采集。
+    ///
+    /// 为什么需要这个：water-sample 改成只采欧赔之后，亚盘/大小球就没人更新了，
+    /// 而且不是"变慢"，是"完全停"。原因是它每轮都写 `FbMatch.OddsSampledAt`，
+    /// 而 `odds-sample`（recheck 55 分钟）和 `odds-sample-late`（recheck 15 分钟）
+    /// 正是靠这个戳判断「刚采过就跳过」—— 10 分钟一次的高频采样把它们全压住了。
+    /// 2026-11-10 16:41 实测：两个作业都报「无待采样赛事」，而 6 小时内实际有 27 场，
+    /// 当前盘 AH/OU 停在 15 分钟前不再动。
+    ///
+    /// 为什么不是"让 odds-sample 别被压制"：它 Limit=400、窗口 72 小时、
+    /// 每场 3 个页面，一轮要 1200 次请求 ≈ 18 分钟，而主通道只有一个槽位、
+    /// 超时上限 10 分钟。这个容量本来就超出通道能力，只是长期被压制所以从没暴露。
+    /// 解开压制等于每小时拿 18 分钟独占通道、并把 water-sample 挤到超时。
+    ///
+    /// 所以选择在源头补：每 3 轮采一次三页面全量，其余两轮只采欧赔。
+    /// AH/OU 的粒度从 10 分钟变成 30 分钟，而判据侧容忍度是 MarketTtlHours = 12 小时，
+    /// 落在里面。用轮次计数而不是「分钟数落在 0-2」这种时间判据，
+    /// 是为了不受调度延迟影响；进程重启后从 0 开始，第一轮就做全量。
+    /// </summary>
+    private int _waterRound;
+
+    /// <summary>
+    /// water-sample 第 <paramref name="round"/> 轮是否只采欧赔。
+    /// 第 1、4、7… 轮采三页全量（让亚盘/大小球维持 30 分钟粒度），其余轮次只采欧赔。
+    ///
+    /// 单独抽出来是为了能被测试钉住：这里最容易写反，而写反的后果不是报错，
+    /// 是「亚盘再也没人更新」—— 页面全绿，只有盘口判据在悄悄用旧盘。
+    /// </summary>
+    internal static bool WaterRoundIsEuroOnly(int round) => round % 3 != 1;
+
     /// <summary>已经补排过哪一天的复盘。一天最多补两次——写失败不无限重试，留给人工。</summary>
     private DateTime? _reviewPatchedFor;
 
@@ -813,21 +844,30 @@ public sealed class JobScheduler
                 var hours = job.Hours <= 0 ? 8 : job.Hours;
                 var recheck = job.RecheckMinutes <= 0 ? 1 : job.RecheckMinutes;
                 var sw = Stopwatch.StartNew();
-                // euroOnly: true —— 只采欧赔一个页面。原来一场要打 ouzhi/yazhi/daxiao
-                // 三个页面且串行 await，配上 900ms 全站节流就是 2.7 秒/场、30 场 91 秒。
+                // 每 3 轮（约 30 分钟）采一次三页面全量，其余两轮只采欧赔。
+                // 全量的必要性、以及为什么不能改成"解压 odds-sample"，见 _waterRound 的注释。
+                _waterRound++;
+                // 第 1、4、7… 轮做全量，其余只采欧赔。写成「不是第 1 类」而不是「是第 0 类」，
+                // 是为了「重启后第一轮就全量」—— 否则重启后要等最多 30 分钟
+                // 才轮到第一次全量，那段时间 AH/OU 会一直停在重启前的值。
+                var euroOnly = WaterRoundIsEuroOnly(_waterRound);
+                // euroOnly 的理由：原来一场要打 ouzhi/yazhi/daxiao 三个页面且串行 await，
+                // 配上 900ms 全站节流就是 2.7 秒/场、30 场 91 秒。
                 // 2026-11-10 查清：FbOddsHistory 里 AH/OU 两类占全表 63% 的行、
                 // 近 14 天 58.9 万行，但没有任何读取方（轨迹只查 EU，盘口判据都读
-                // dbo.FbOdds 当前盘）。所以那 2/3 的请求是在给一张没人查的表续命。
-                // 关掉之后单场 1 次请求，实测可从 91 秒降到 30 秒左右。
-                // 当前盘的 AH/OU 不受影响：odds-sample（每小时）与 odds-sample-late（20 分钟）照采。
+                // dbo.FbOdds 当前盘）。所以每 10 分钟抓一遍是给一张没人查的表续命，
+                // 30 分钟粒度对当前盘判据足够。
                 var resOdds = await _collection.SampleOddsAsync(hours, job.HoursBehind, recheck,
-                    job.Limit, null, ct, euroOnly: true);
+                    job.Limit, null, ct, euroOnly: euroOnly);
                 sw.Stop();
                 // 用 with 改写消息而不是自己拼一句：内部那句「token 失效已提前中止」
                 // 「本轮验证拦截 N 次，需更换 500-cookie.txt」是排障的唯一线索，不许丢。
                 result = resOdds with
                 {
-                    Message = $"{resOdds.Message}，耗时 {sw.Elapsed.TotalSeconds:0}s"
+                    // 「仅欧赔/全量」必须写出来：两种轮次耗时差三倍，
+                    // 不标的话日志上就是 31s、31s、85s 交替出现，看不出规律。
+                    Message = $"{resOdds.Message}，{(euroOnly ? "仅欧赔" : "全量三页")}"
+                              + $"，耗时 {sw.Elapsed.TotalSeconds:0}s"
                 };
                 break;
             }
