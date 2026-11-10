@@ -292,13 +292,21 @@ SELECT ISNULL(CAST(SUM(CASE WHEN DATEPART(hour, ISNULL(StartedAt, FinishedAt)) <
      + ISNULL(CAST(SUM(CASE WHEN DATEPART(hour, ISNULL(StartedAt, FinishedAt)) >= 8 THEN 1 ELSE 0 END) AS varchar(10)), '0') + '|'
      + ISNULL(CAST(COUNT(*) AS varchar(10)), '0')
 FROM dbo.SyncLog
-WHERE ISNULL(StartedAt, FinishedAt) >= @d AND Status NOT IN ('SUCCESS', 'RUNNING')
+WHERE ISNULL(StartedAt, FinishedAt) >= @d AND Status NOT IN ('SUCCESS', 'RUNNING', 'ABORTED')
 "@)
     # RUNNING is not a failure. Since 2026-11-10 every run inserts a RUNNING row
     # first and updates it on exit, so counting "Status <> SUCCESS" would report
     # every job that happens to be executing at the moment of the check as broken.
     # Measured right after that change: jc-odds-sample (every 2 min) alone would
     # have turned this check red several times an hour.
+    #
+    # ABORTED is not a failure either - it means the process exited while that run
+    # was in flight (a deploy, a crash, a reboot). It is a real gap in data but a
+    # different fault, and section 4g already reports it separately as WARN.
+    # Counting it here made every deploy produce a red board: measured 2026-11-10
+    # after four deploys, this check said "4 failures in 90 minutes" when three of
+    # them were my own restarts and the fourth was the backfill timeout being fixed.
+    #
     # NOTE: the comment must live here, not inside the here-string. sqlcmd chokes on
     # a "--" line in the -Q payload ("'-' has no associated parameter"), the section
     # then falls into its catch and degrades to WARN - i.e. a check that silently
@@ -307,7 +315,7 @@ WHERE ISNULL(StartedAt, FinishedAt) >= @d AND Status NOT IN ('SUCCESS', 'RUNNING
 DECLARE @d date = CAST(GETDATE() AS date);
 SELECT ISNULL(CAST(COUNT(*) AS varchar(10)), '0')
 FROM dbo.SyncLog
-WHERE Status NOT IN ('SUCCESS', 'RUNNING')
+WHERE Status NOT IN ('SUCCESS', 'RUNNING', 'ABORTED')
   AND ISNULL(StartedAt, FinishedAt) >= DATEADD(minute, -90, GETDATE())
   AND ISNULL(StartedAt, FinishedAt) >= @d;
 "@)

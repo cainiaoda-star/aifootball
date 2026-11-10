@@ -296,6 +296,18 @@ ORDER BY CASE
                AND c.CapturedAt = (SELECT MAX(CapturedAt) FROM dbo.BettingCard b WHERE b.Board = c.Board)
            ) THEN 0 ELSE 1 END,
          CASE WHEN m.OddsSampledAt IS NULL THEN 0 ELSE 1 END,
+         -- 超过 staleHours 的场次排在「公司数多」之前（2026-11-10 加）。
+         --
+         -- 第一版只把兜底条件写进 WHERE，没有动排序，结果一场都没采到：
+         -- 它们确实进了候选池，但按「公司数 DESC」排序时，只有 1~3 家公司报价的
+         -- 小联赛永远排在最后，Limit=30 每次都把它们截在门外。
+         -- 实测 18:20 那轮采了 30 场，越南国奥的 OddsSampledAt 仍停在 11-08（49 小时前）。
+         --
+         -- 判据里加了这一档，等于「陈旧本身就是一种优先级」：
+         -- 一场 49 小时没更新的场次，比一场 10 分钟前刚采过、只是公司多几家的场次更该被刷。
+         -- 它们数量很少（实测超 12 小时的 8 场），一轮就能消化完，不会长期挤占配额。
+         CASE WHEN m.OddsSampledAt < DATEADD(HOUR, -@Stale, SYSDATETIME())
+              THEN 0 ELSE 1 END,
          ISNULL(m.OddsCompanyCount, 0) DESC, m.MatchTime", new
         {
             Take = take <= 0 ? 100000 : take,
