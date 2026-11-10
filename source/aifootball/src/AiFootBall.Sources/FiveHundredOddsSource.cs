@@ -55,19 +55,38 @@ public sealed class FiveHundredOddsSource : IOddsSource
     public static long Stat429 => OddsHttp.Stat429;
     public static long StatChallenge => OddsHttp.StatChallenge;
 
-    public async Task<MatchOddsResult> FetchAsync(long matchId, CancellationToken ct = default)
+    /// <summary>接口实现：采全部三个页面（欧赔 + 亚盘 + 大小球）。</summary>
+    public Task<MatchOddsResult> FetchAsync(long matchId, CancellationToken ct = default)
+        => FetchAsync(matchId, ct, euroOnly: false);
+
+    /// <summary>带采集范围的重载。<paramref name="euroOnly"/> 只取欧赔一个页面。</summary>
+    public async Task<MatchOddsResult> FetchAsync(long matchId, CancellationToken ct, bool euroOnly)
     {
         var odds = new List<OddsRecord>();
         var failed = 0;
         var requested = 0;
         var errors = new List<string>();
 
-        var targets = new[]
-        {
-            ("ouzhi", OddsTypes.Eu),
-            ("yazhi", OddsTypes.Ah),
-            ("daxiao", OddsTypes.Ou)
-        };
+        // 三个页面 = 三次请求，而且这里是串行 await，加上全站节流 900ms，
+        // 单场最少要 2.7 秒。2026-11-10 实测：water-sample 30 场跑 91 秒，
+        // 不是被限流惩罚（/api/odds/pressure 显示节流一直在 900ms 基准），
+        // 就是 30×3=90 次请求排队排出来的。
+        //
+        // euroOnly 给高频水位采样用：只取欧赔。理由不是"省点时间"，是数据侧的事实——
+        // FbOddsHistory 里 AH/OU 两类行（近 14 天 58.9 万行、占全表 63%）
+        // 没有任何消费者：轨迹查询（TrajectoryRepository 4 处）和盘口判据
+        // （BettingRepository 的 GetAsianMoveAsync / GetTotalLineAsync）
+        // 全部只读 dbo.FbOdds 当前盘，且都限定 CompanyId = 0。
+        // 也就是说每 10 分钟抓一遍亚盘和大小球的历史快照，写完就没人看过。
+        // 当前盘的 AH/OU 仍由 odds-sample（每小时）和 odds-sample-late（20 分钟）维护。
+        var targets = euroOnly
+            ? new[] { ("ouzhi", OddsTypes.Eu) }
+            : new[]
+            {
+                ("ouzhi", OddsTypes.Eu),
+                ("yazhi", OddsTypes.Ah),
+                ("daxiao", OddsTypes.Ou)
+            };
 
         foreach (var (path, type) in targets)
         {

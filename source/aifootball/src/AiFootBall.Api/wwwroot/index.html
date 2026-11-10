@@ -4693,7 +4693,8 @@ const JOB_META = {
   'odds-sample': ['赔率采样', '只采开赛前这段时间里的欧赔，用来看水位升降。'],
   'odds-sample-late': ['临场赔率', '开赛前 90 分钟再加密采一次。'],
   'exchange': ['必发', '只采开赛前这段时间里的必发成交。'],
-  'water-sample': ['水位', '开赛前这段时间里，胜平负和必发一起采。'],
+  'exchange-late': ['必发加密', '临场这批场次每 10 分钟采一次必发，资金流判据要 10 分钟粒度。'],
+  'water-sample': ['水位', '开赛前这段时间里每 10 分钟采一次胜平负欧赔，用来看水位升降。'],
   'jc-odds-sample': ['竞彩奖金', '竞彩胜平负、比分、进球、半全场的固定奖金。'],
   'odds-backfill': ['赔率补齐', '凌晨把缺的历史赔率补上。'],
   'settle-hourly': ['赛果回填', '采集完场比分，回填推荐，并自动结算我的投注。'],
@@ -4702,8 +4703,8 @@ const JOB_META = {
   'lotto-daily': ['数字彩开奖', '大乐透/双色球/3D 等开奖入库，并生成下一期选号。'],
   'lotto-recommend': ['数字彩选号', '按规则为双色球/大乐透/3D/排三/排五生成主推+备选。']
 };
-const JOB_WINDOW = new Set(['odds-sample','exchange','water-sample']);
-const JOB_GAP = new Set(['odds-sample','odds-sample-late','exchange','water-sample']);
+const JOB_WINDOW = new Set(['odds-sample','exchange','water-sample','exchange-late']);
+const JOB_GAP = new Set(['odds-sample','odds-sample-late','exchange','water-sample','exchange-late']);
 
 function parseCron(cron){
   const p = String(cron || '').trim().split(/\s+/);

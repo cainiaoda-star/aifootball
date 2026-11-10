@@ -26,6 +26,12 @@ public sealed class RequestThrottle
 
     public int CurrentIntervalMs => Volatile.Read(ref _intervalMs);
 
+    /// <summary>基线间隔。请求全部成功、没有被 429 惩罚时会逐步回到这个值。</summary>
+    public int BaseIntervalMs => _baseIntervalMs;
+
+    /// <summary>间隔上限。被连续限流时不会超过这个值。</summary>
+    public int MaxIntervalMs => _maxIntervalMs;
+
     /// <summary>排队等待下一个请求槽位。</summary>
     public async Task WaitTurnAsync(CancellationToken ct = default)
     {

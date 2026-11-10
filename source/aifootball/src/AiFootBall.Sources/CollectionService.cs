@@ -53,6 +53,14 @@ public sealed record CollectionResult(bool Success, int Rows, string Message)
     ///
     /// 不做「部分成功就算成功」：两段是两个不同的数据源，等赔率的和等必发的不是同一批人。
     /// 宁可让这一轮报红，也不要让必发断了三天没人知道。
+    ///
+    /// <para>
+    /// 2026-11-10 晚：water-sample 拆成 water-sample（只跑赔率）+ exchange-late（只跑必发），
+    /// 两段成了两个独立作业，各自把自己的结果写进 SyncLog，**不再有合并这一步**。
+    /// 因此本方法目前没有生产调用者，只剩测试在用。保留是因为语义本身没错，
+    /// 将来若再把两段合回一个作业可以直接复用。看到它没人调用不必惊讶，也不要
+    /// 误以为「两段合成」还在生效——那件事已经不存在了。
+    /// </para>
     /// </summary>
     public static CollectionResult Combine(string prefix, params CollectionResult[] parts)
     {
@@ -363,7 +371,8 @@ public sealed class CollectionService
     /// <param name="hoursBehind">向后包含多少小时（捕获开赛瞬间与滚球初段）</param>
     /// <param name="recheckMinutes">同一场两次采样最小间隔</param>
     public async Task<CollectionResult> SampleOddsAsync(double hoursAhead, double hoursBehind,
-        int recheckMinutes, int limit, IProgress<string>? log = null, CancellationToken ct = default)
+        int recheckMinutes, int limit, IProgress<string>? log = null, CancellationToken ct = default,
+        bool euroOnly = false)
     {
         var now = DateTime.Now;
         var from = now.AddHours(-hoursBehind);
@@ -385,6 +394,11 @@ public sealed class CollectionService
 
         int points = 0, done = 0, failed = 0;
         var verifyBefore = OddsHttp.StatVerify;
+        // 本轮真实发生的 HTTP 成功次数。用途只有归因：
+        // 30 场 91 秒到底是「场次多」还是「每场请求多」，光看耗时永远分不清。
+        // 有了这个数，91 秒 = 95 次请求 × 900ms 一眼就能算平；
+        // 没有它，第一次看到 91 秒的人只会去调 Limit 或并发，而并发改不动节流。
+        var okBefore = OddsHttp.StatOk;
         var abortedByVerify = false;
 
         for (var offset = 0; offset < matches.Count; offset += batchSize)
@@ -401,7 +415,7 @@ public sealed class CollectionService
                     MatchOddsResult r;
                     try
                     {
-                        r = await source.FetchAsync(m.MatchId, token);
+                        r = await source.FetchAsync(m.MatchId, token, euroOnly);
                     }
                     catch (OperationCanceledException) when (token.IsCancellationRequested)
                     {
@@ -446,7 +460,8 @@ public sealed class CollectionService
         // StatVerify 是进程内累计值，不是本轮。原来直接报它，日志里写着「拦截 2326 次」，
         // 让人以为是这一轮被拦了 2326 次；实际是当天累计。改成本轮增量。
         var verifyDelta = OddsHttp.StatVerify - verifyBefore;
-        var msg = $"轨迹采样完成：{done} 场（失败 {failed}），赔率行 {points}"
+        var reqDelta = OddsHttp.StatOk - okBefore;
+        var msg = $"轨迹采样完成：{done} 场（失败 {failed}），请求 {reqDelta} 次，赔率行 {points}"
                   + (abortedByVerify ? $"，token 失效已提前中止（本轮拦截 {verifyDelta} 次）" : "")
                   + (verifyDelta > 0 ? $"；本轮验证拦截 {verifyDelta} 次，需更换 500-cookie.txt 里的 token" : "");
         log?.Report(msg);

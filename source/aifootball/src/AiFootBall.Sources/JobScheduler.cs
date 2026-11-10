@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using AiFootBall.Core.Options;
 using AiFootBall.Data;
 using NCrontab;
@@ -92,6 +93,9 @@ public sealed class JobScheduler
         ["odds-sample"] = TimeSpan.FromMinutes(10),
         ["odds-sample-late"] = TimeSpan.FromMinutes(8),
         ["water-sample"] = TimeSpan.FromMinutes(10),
+        // 2026-11-10 加：从 water-sample 拆出来的必发加密段。实测一轮 12 场、约 30 秒，
+        // 给 6 分钟是留足 token 失效时的重试余量（每场最多 8 次重试 × 冷却）。
+        ["exchange-late"] = TimeSpan.FromMinutes(6),
         ["jc-odds-sample"] = TimeSpan.FromMinutes(8),
         ["jc-odds-backfill"] = TimeSpan.FromMinutes(30),
         ["exchange"] = TimeSpan.FromMinutes(15),
@@ -788,27 +792,66 @@ public sealed class JobScheduler
                 break;
             }
 
-            // 水位高频采样：胜平负三线欧赔 + 必发成交量 同步采样（默认 1 分钟一次），
-            // 分别写入 FbOddsHistory 与 FbExchange，形成「赔率水位 + 资金流」随时间变化的过程记录。
+            // 水位高频采样：只采胜平负三线欧赔，写 FbOddsHistory 形成赔率水位曲线。
+            //
+            // 2026-11-10 把必发段拆出去了（见下面的 exchange-late）。拆之前这里一轮跑两段。
+            // 先纠正一个我自己前一天给错的估计：当时说「103 秒里必发占大半」，实测不成立——
+            // 赔率 30 场（Limit=30）、必发 12 场，必发只占约三成。
+            //
+            // 而且拆开**不省时间**：两段打的是同一个 500 节流器（OddsHttp.Throttle，
+            // 全站共享 900ms 起），总请求数一变没变；走的也还是同一条主通道。
+            // 拆成两个作业，加起来仍然是 103 秒。所以拆的收益只有两条，都要说清楚：
+            //   ① 观测：一段一句话。合并成「赔率 3271 点 / 必发 12 场」时，
+            //      里面谁慢、谁挂了、谁跑了零场，日志上完全看不出来——
+            //      两段都传 null 当 progress，内部的「采样进度 N/M」一条都没进日志；
+            //   ② 单次通道占用从 103 秒切成两截。排在后面的 odds-sample-late、
+            //      结算、台账等的是最长那一截（约 73 秒），不是两截相加。
+            // 两段各自把耗时写进消息，这是判断「该不该降频」的唯一依据，
+            // 也是下一次想动这里的人不用再靠猜的东西。
             case "water-sample":
             {
                 var hours = job.Hours <= 0 ? 8 : job.Hours;
                 var recheck = job.RecheckMinutes <= 0 ? 1 : job.RecheckMinutes;
+                var sw = Stopwatch.StartNew();
+                // euroOnly: true —— 只采欧赔一个页面。原来一场要打 ouzhi/yazhi/daxiao
+                // 三个页面且串行 await，配上 900ms 全站节流就是 2.7 秒/场、30 场 91 秒。
+                // 2026-11-10 查清：FbOddsHistory 里 AH/OU 两类占全表 63% 的行、
+                // 近 14 天 58.9 万行，但没有任何读取方（轨迹只查 EU，盘口判据都读
+                // dbo.FbOdds 当前盘）。所以那 2/3 的请求是在给一张没人查的表续命。
+                // 关掉之后单场 1 次请求，实测可从 91 秒降到 30 秒左右。
+                // 当前盘的 AH/OU 不受影响：odds-sample（每小时）与 odds-sample-late（20 分钟）照采。
                 var resOdds = await _collection.SampleOddsAsync(hours, job.HoursBehind, recheck,
-                    job.Limit, null, ct);
+                    job.Limit, null, ct, euroOnly: true);
+                sw.Stop();
+                // 用 with 改写消息而不是自己拼一句：内部那句「token 失效已提前中止」
+                // 「本轮验证拦截 N 次，需更换 500-cookie.txt」是排障的唯一线索，不许丢。
+                result = resOdds with
+                {
+                    Message = $"{resOdds.Message}，耗时 {sw.Elapsed.TotalSeconds:0}s"
+                };
+                break;
+            }
+
+            // 必发成交加密采样：只盯开赛前后的在售场（Hours 默认 6、Limit 默认 30），
+            // 每 10 分钟一轮，让资金流（PnlIdx / 占比）有 10 分钟粒度——turn-guard
+            // 每 10 分钟判一次转向，必发比它更疏就等于在拿旧数据判新盘。
+            //
+            // 与 exchange 作业的分工：exchange 是「大范围低频」（72 小时窗、Limit 350、
+            // 每 30 分钟一次、15 分钟内不重采），负责把所有场次都过一遍；
+            // exchange-late 是「小范围高频」，只负责临场这批的加密。
+            // 两者 recheck 不同，撞上时后跑的那个自然采到 0 场，不产生重复请求。
+            case "exchange-late":
+            {
+                var hours = job.Hours <= 0 ? 6 : job.Hours;
+                var recheck = job.RecheckMinutes <= 0 ? 1 : job.RecheckMinutes;
+                var sw = Stopwatch.StartNew();
                 var resEx = await _collection.CollectExchangeAsync(hours, job.HoursBehind, recheck,
                     job.Limit, null, ct);
-
-                // 两段是两次独立采集，任一段失败都不该被另一段掩盖。
-                //
-                // 这里原来是无条件 CollectionResult.Ok(...)。后果和 11-10 修的
-                // 「叶子报 FAILED、job 层报 SUCCESS」一模一样，只是又高了一层：
-                // SampleOddsAsync 已经如实地返回 Fail，包装层立刻把它丢进 Ok 里，
-                // 页面和自检看到的还是绿的。三层链路（叶子 → 组合 → 作业）里，
-                // 只要有一层用 Ok 无脑包装，上面修的全都白做。
-                result = CollectionResult.Combine(
-                    $"水位采样：赔率 {resOdds.Rows} 点 / 必发 {resEx.Rows} 场（间隔 {recheck} 分钟）",
-                    resOdds, resEx);
+                sw.Stop();
+                result = resEx with
+                {
+                    Message = $"{resEx.Message}，耗时 {sw.Elapsed.TotalSeconds:0}s"
+                };
                 break;
             }
 

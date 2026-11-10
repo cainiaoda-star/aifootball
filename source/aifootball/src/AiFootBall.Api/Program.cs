@@ -795,6 +795,50 @@ app.MapGet("/api/jobs/logs", async (int? take, SyncLogRepository repo) =>
 //
 // 现在把调度器心跳一并报出来：超过 5 分钟没有 tick（正常 20 秒一次，15 次没动）
 // 直接返 503，看门狗照原样就会重启，不需要改 watchdog 脚本。
+// 500 节流压力（只读）。加这个端点的原因很具体：
+//
+// 2026-11-10 拆 water-sample 时实测一轮赔率采样 30 场 91 秒，折合每场 3 秒，
+// 而节流基准是 900ms。这个 3 倍差距当时只能靠「总耗时 ÷ 场数」反推，
+// 因为进程里 OddsHttp 的 ok/428/429/挑战/验证 五个计数器
+// 和 Throttle.CurrentIntervalMs 从来没有被报出来过——只有 StatVerify 的
+// 增量偶尔进日志。结果是页面上只看到「water-sample 跑了 91 秒」，
+// 无法回答「这是正常节流，还是正在被 429 惩罚」。
+//
+// 判读：
+//   throttleMs ≈ baseMs       正常，慢就是场次多
+//   throttleMs >> baseMs      正在被限流惩罚，间隔翻倍上去后要 240 次成功才回落
+//   verify > 0                人机验证拦截，token 已不能取数，需人工换 secrets/500-cookie.txt
+// 计数是**进程累计值**，重启清零；这里不做增量，要看增量请按两次采样相减。
+app.MapGet("/api/odds/pressure", () =>
+{
+    var ms = OddsHttp.ThrottleIntervalMs;
+    var baseMs = OddsHttp.ThrottleBaseMs;
+    var penalized = ms > baseMs;
+    var verify = OddsHttp.StatVerify;
+
+    // 一句话结论，让页面/人不用自己算。
+    var verdict = verify > 0
+        ? "token 已被人机验证拦截，采集取不到数，需人工更换 500-cookie.txt"
+        : penalized
+            ? $"节流被推到上限方向的 {ms}ms（基准 {baseMs}ms），每场要等 {ms / 1000.0:0.#} 秒；这是被限流惩罚，不是作业本身慢"
+            : $"节流在基准附近（{ms}ms），采样慢是场次多而不是被限流";
+
+    return Results.Ok(new
+    {
+        throttleMs = ms,
+        baseMs,
+        maxMs = OddsHttp.ThrottleMaxMs,
+        penalized,
+        ok = OddsHttp.StatOk,
+        http428 = OddsHttp.Stat428,
+        http429 = OddsHttp.Stat429,
+        challenge = OddsHttp.StatChallenge,
+        verify,
+        verdict,
+        note = "进程累计值，重启清零"
+    });
+});
+
 app.MapGet("/api/health", (JobScheduler scheduler) =>
 {
     var tick = scheduler.LastTickAt;

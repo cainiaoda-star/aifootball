@@ -16,6 +16,12 @@ public static class OddsHttp
 
     public static int ThrottleIntervalMs => Throttle.CurrentIntervalMs;
 
+    /// <summary>节流基线（全部请求成功时会回落到这里）。报出去用于判断「慢」是不是被限流惩罚。</summary>
+    public static int ThrottleBaseMs => Throttle.BaseIntervalMs;
+
+    /// <summary>节流上限。</summary>
+    public static int ThrottleMaxMs => Throttle.MaxIntervalMs;
+
     public static void ResetStats()
     {
         Interlocked.Exchange(ref StatOk, 0);
