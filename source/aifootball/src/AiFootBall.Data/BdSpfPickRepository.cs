@@ -115,7 +115,7 @@ public sealed class BdSpfPickRepository
                      RatioHome, RatioAway, PnlIdxHome, PnlIdxAway, Reason, Confidence)
                   VALUES (@d, @kind, @mid, @no, @lg, @home, @away, @time,
                           @side, @sideName, @odds, @hcp, @hside, @hsideName,
-                          @hprob, @hodds, @hit, @market,
+                          @hprob, @hodds, @fo, @fa, @fs, @hit, @market,
                           @rh, @ra, @ph, @pa, @reason, @conf)",
                 new
                 {
@@ -124,6 +124,10 @@ public sealed class BdSpfPickRepository
                     side = p.Side.ToString(), sideName = p.SideName, odds = p.Odds,
                     hcp = p.Handicap, hside = p.HandicapSide?.ToString(), hsideName = p.HandicapSideName,
                     hprob = p.HandicapProbability, hodds = p.HandicapOdds,
+                    // 2026-11-10 修：这三列在列名里、VALUES 里却没有，Dapper 直接把
+                    // 「列的数目大于 VALUES 子句」抛回来，北单从 20:41 起一条都写不进库。
+                    // 加终版价三列时只改了 INSERT 列表，没同步参数 —— 这种错编译期抓不到。
+                    fo = p.FinalOdds, fa = p.FinalAt, fs = p.FinalSource,
                     hit = p.HitProbability, market = p.MarketProb,
                     rh = p.RatioHome, ra = p.RatioAway, ph = p.PnlIdxHome, pa = p.PnlIdxAway,
                     reason = p.Reason, conf = p.Confidence
