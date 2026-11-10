@@ -885,7 +885,19 @@ public sealed class JobScheduler
                 break;
             }
 
-            // 临场加密采样：只盯住 90 分钟内即将开赛的场次
+            // 临场加密采样。2026-11-10 起在 jobs.json 里 Enabled=false，分支保留以便随时重启。
+            //
+            // 停用理由（不是"没用"，是"永远抢不到活"）：
+            //   · 窗口是 now+1.5h ~ now-0.5h，而 water-sample 是 now+6h ~ now-1h —— 严格子集
+            //   · recheck 15 分钟，而 water-sample 每 10 分钟一轮、recheck 1 分钟，
+            //     每轮都把窗口内场次的 FbMatch.OddsSampledAt 刷新一遍
+            //   · 于是它每 20 分钟醒来一次，看到的永远是"刚被采过"，报「无待采样赛事」
+            // 实测：今天它每一轮都是空跑。而它想保护的临场场次（未来 6 小时内）
+            // 实测只有 27 场，water-sample 的 Limit=30 一轮就能覆盖完，不存在缺口。
+            //
+            // 如果将来临场场次超过 30：先看 water-sample 是不是持续"无待采样赛事"或
+            // 有场次长时间没更新，再去调它的 Limit —— 不要靠复活这个作业来兜底，
+            // 两个作业抢同一批场次只会让 OddsSampledAt 互相压制，看上去都正常、实际都没采全。
             case "odds-sample-late":
                 result = await _collection.SampleOddsAsync(1.5, Math.Max(0.5, job.HoursBehind),
                     job.RecheckMinutes <= 0 ? 8 : job.RecheckMinutes, job.Limit, null, ct);
@@ -935,7 +947,7 @@ public sealed class JobScheduler
                 // dbo.FbOdds 当前盘）。所以每 10 分钟抓一遍是给一张没人查的表续命，
                 // 30 分钟粒度对当前盘判据足够。
                 var resOdds = await _collection.SampleOddsAsync(hours, job.HoursBehind, recheck,
-                    job.Limit, null, ct, euroOnly: euroOnly);
+                    job.Limit, null, ct, euroOnly: euroOnly, logTask: "water-sample:odds");
                 sw.Stop();
                 // 用 with 改写消息而不是自己拼一句：内部那句「token 失效已提前中止」
                 // 「本轮验证拦截 N 次，需更换 500-cookie.txt」是排障的唯一线索，不许丢。
@@ -963,7 +975,7 @@ public sealed class JobScheduler
                 var recheck = job.RecheckMinutes <= 0 ? 1 : job.RecheckMinutes;
                 var sw = Stopwatch.StartNew();
                 var resEx = await _collection.CollectExchangeAsync(hours, job.HoursBehind, recheck,
-                    job.Limit, null, ct);
+                    job.Limit, null, ct, logTask: "exchange-late:exchange");
                 sw.Stop();
                 result = resEx with
                 {
@@ -1001,17 +1013,20 @@ public sealed class JobScheduler
                     result = CollectionResult.Fail("推荐服务未注入");
                     break;
                 }
-                var total = 0;
                 var parts = new List<string>();
+                var sub = new List<CollectionResult>();
                 for (var back = 1; back <= BackfillJcDays; back++)
                 {
                     var day = DateOnly.FromDateTime(DateTime.Today.AddDays(-back));
                     var r = await _recommendation.BackfillJcDayAsync(day, ct);
-                    total += r.Rows;
                     parts.Add(r.Message);
+                    sub.Add(r);
                     if (back < BackfillJcDays) await Task.Delay(1500, ct);
                 }
-                result = CollectionResult.Ok(total, string.Join("；", parts));
+                // 原来是无条件 Ok(total, ...)：三天里哪天失败都会被另外两天的成功掩掉。
+                // 这正是本项目反复踩的那一类（叶子报 FAILED → 上一层 Ok 包住 → 页面全绿）。
+                // 回补是「补历史」的作业，一天没补上就等于那天永远缺价，必须报红。
+                result = CollectionResult.Combine(string.Join("；", parts), sub.ToArray());
                 break;
             }
 

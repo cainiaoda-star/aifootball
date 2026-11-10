@@ -1,0 +1,100 @@
+{
+  "Jobs": {
+    "Enabled": true,
+    "Jobs": [
+      {
+        "Name": "lotto-daily",
+        "Cron": "45 21 * * *",
+        "Type": "lotto",
+        "Enabled": true
+      },
+      {
+        "Name": "football-daily",
+        "Cron": "10 8 * * *",
+        "Type": "football",
+        "Enabled": true,
+        "Days": 2
+      },
+      {
+        "Name": "odds-sample",
+        "Cron": "5 * * * *",
+        "Type": "odds-sample",
+        "Enabled": true,
+        "Hours": 72,
+        "HoursBehind": 1,
+        "RecheckMinutes": 55,
+        "Limit": 400
+      },
+      {
+        "Name": "odds-sample-late",
+        "Cron": "*/20 * * * *",
+        "Type": "odds-sample-late",
+        "Enabled": false,
+        "HoursBehind": 0.5,
+        "RecheckMinutes": 15,
+        "Limit": 60
+      },
+      {
+        "Name": "exchange",
+        "Cron": "12,42 * * * *",
+        "Type": "exchange",
+        "Enabled": true,
+        "Hours": 72,
+        "HoursBehind": 200,
+        "RecheckMinutes": 25,
+        "Limit": 200
+      },
+      {
+        "Name": "water-sample",
+        "Cron": "* * * * *",
+        "Type": "water-sample",
+        "Enabled": true,
+        "Hours": 6,
+        "HoursBehind": 1,
+        "RecheckMinutes": 1,
+        "Limit": 30
+      },
+      {
+        "Name": "exchange-late",
+        "Cron": "*/10 * * * *",
+        "Type": "exchange-late",
+        "Enabled": true,
+        "Hours": 6,
+        "HoursBehind": 1,
+        "RecheckMinutes": 1,
+        "Limit": 30
+      },
+      {
+        "Name": "jc-odds-sample",
+        "Cron": "*/2 * * * *",
+        "Type": "jc-odds-sample",
+        "Enabled": true
+      },
+      {
+        "Name": "odds-backfill",
+        "Cron": "20 3 * * *",
+        "Type": "odds-backfill",
+        "Enabled": true,
+        "Limit": 1200
+      },
+      {
+        "Name": "cards-daily",
+        "Cron": "30 8,16 * * *",
+        "Type": "cards",
+        "Enabled": true
+      },
+      {
+        "Name": "save-recommendations",
+        "Cron": "40 8,16 * * *",
+        "Type": "save-recommendations",
+        "Enabled": true
+      },
+      {
+        "Name": "settle-recommendations",
+        "Cron": "0 4 * * *",
+        "Type": "settle-recommendations",
+        "Enabled": true
+      }
+    ]
+  }
+}

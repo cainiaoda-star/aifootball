@@ -372,7 +372,7 @@ public sealed class CollectionService
     /// <param name="recheckMinutes">同一场两次采样最小间隔</param>
     public async Task<CollectionResult> SampleOddsAsync(double hoursAhead, double hoursBehind,
         int recheckMinutes, int limit, IProgress<string>? log = null, CancellationToken ct = default,
-        bool euroOnly = false)
+        bool euroOnly = false, string? logTask = null)
     {
         var now = DateTime.Now;
         var from = now.AddHours(-hoursBehind);
@@ -453,9 +453,9 @@ public sealed class CollectionService
         // 行数一律写真实写入行数 points。
         var allFailed = CollectionResult.AllFailed(done, failed);
 
-        await _sync.WriteAsync("odds-sample", source.Name, allFailed ? "FAILED" : "SUCCESS", points,
+        await _sync.WriteAsync(logTask ?? "odds-sample", source.Name, allFailed ? "FAILED" : "SUCCESS", points,
             $"轨迹采样 {done} 场，失败 {failed}，写入 {points} 行"
-            + (abortedByVerify ? "（token 失效已提前中止）" : ""), ct);
+            + (abortedByVerify ? "（token 失效已提前中止）" : ""), ct, startedAt: now);
 
         // StatVerify 是进程内累计值，不是本轮。原来直接报它，日志里写着「拦截 2326 次」，
         // 让人以为是这一轮被拦了 2326 次；实际是当天累计。改成本轮增量。
@@ -475,7 +475,8 @@ public sealed class CollectionService
     /// 单场 1 个请求，成本低；高频采样即可还原资金流过程。
     /// </summary>
     public async Task<CollectionResult> CollectExchangeAsync(double hoursAhead, double hoursBehind,
-        int recheckMinutes, int limit, IProgress<string>? log = null, CancellationToken ct = default)
+        int recheckMinutes, int limit, IProgress<string>? log = null, CancellationToken ct = default,
+        string? logTask = null)
     {
         var now = DateTime.Now;
         var from = now.AddHours(-hoursBehind);
@@ -489,7 +490,7 @@ public sealed class CollectionService
         }
 
         log?.Report($"必发采集 {matches.Count} 场（{from:MM-dd HH:mm}~{to:MM-dd HH:mm}，间隔 {recheckMinutes} 分钟）");
-        return await FetchExchangeAsync(matches, log, ct);
+        return await FetchExchangeAsync(matches, log, ct, logTask);
     }
 
     /// <summary>
@@ -510,11 +511,18 @@ public sealed class CollectionService
     }
 
     private async Task<CollectionResult> FetchExchangeAsync(
-        List<MatchBrief> matches, IProgress<string>? log, CancellationToken ct)
+        List<MatchBrief> matches, IProgress<string>? log, CancellationToken ct, string? logTask = null)
     {
         var source = new FiveHundredExchangeSource(_http);
         var concurrency = Math.Max(1, _opt.OddsConcurrency);
         var batchSize = Math.Max(concurrency, _opt.OddsBatchSize);
+
+        // 日志行要能说出这段采集属于哪一次执行。原来固定写 "exchange"，
+        // 于是 exchange-late / water-sample 内部的子采集也顶着 exchange 的名字进日志，
+        // 库里那一列看起来是「exchange 作业频繁失败」，实际是另外两个作业在写。
+        // 传 null 时保持旧名（单独跑 exchange / 回补时行为不变）。
+        var taskName = logTask ?? "exchange";
+        var startedAt = DateTime.Now;
 
         int written = 0, done = 0, withData = 0, noData = 0, failed = 0;
         var bigTrades = 0;
@@ -574,9 +582,9 @@ public sealed class CollectionService
 
         var allFailed = CollectionResult.AllFailed(done, failed);
 
-        await _sync.WriteAsync("exchange", source.Name, allFailed ? "FAILED" : "SUCCESS", written,
+        await _sync.WriteAsync(taskName, source.Name, allFailed ? "FAILED" : "SUCCESS", written,
             $"{done} 场，有必发 {withData}，写入 {written}"
-            + (abortedByVerify ? "（token 失效已提前中止）" : ""), ct);
+            + (abortedByVerify ? "（token 失效已提前中止）" : ""), ct, startedAt: startedAt);
 
         var verifyDelta = OddsHttp.StatVerify - verifyBefore;
         var msg = $"必发采集完成：{done} 场（有数据 {withData} / 无盘口 {noData} / 失败 {failed}），大额明细 {bigTrades} 条"

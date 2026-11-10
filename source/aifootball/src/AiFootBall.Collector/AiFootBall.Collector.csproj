@@ -10,6 +10,10 @@
     <None Update="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <!-- 作业清单。appsettings.json 含连接串、被 .gitignore 排除，作业定义已拆到这里。 -->
+    <None Update="jobs.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
   <PropertyGroup>

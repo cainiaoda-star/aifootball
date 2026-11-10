@@ -50,7 +50,13 @@ public sealed class MilkPickRepository
               IF COL_LENGTH('dbo.FbTurnAlert','PlayType') IS NULL
                   ALTER TABLE dbo.FbTurnAlert ADD PlayType varchar(10) NULL;
               IF COL_LENGTH('dbo.FbTurnAlert','OptionCode') IS NULL
-                  ALTER TABLE dbo.FbTurnAlert ADD OptionCode varchar(20) NULL;",
+                  ALTER TABLE dbo.FbTurnAlert ADD OptionCode varchar(20) NULL;
+              -- 告警软删除（2026-11-10）：原来信号一消失就 DELETE 整行，
+              -- 于是「这注在 18:30 触发过高危、19:10 又消失了」这件事在库里完全不留痕。
+              -- 撤注判据因此永远无法回测：要回答「撤对了没有」，必须先能重建
+              -- 「出票时它到底有没有高危告警」，而那个信息只在被删掉的那一刻存在过。
+              IF COL_LENGTH('dbo.FbTurnAlert','ClearedAt') IS NULL
+                  ALTER TABLE dbo.FbTurnAlert ADD ClearedAt datetime2 NULL;",
             cancellationToken: ct));
         _columnsReady = true;
     }
@@ -559,7 +565,8 @@ WHERE t.TradeDate=@d
                     @"UPDATE dbo.FbTurnAlert
                       SET AlertDate=@ad, Reason=@reason, Severity=@sev, SignalCode=@sig, ScoreDiagTag=@tag,
                           ExpGdOpen=@open, ExpGdNow=@now, ExpGdMove=@move, PickId=@pid,
-                          PickOption=@pick, MatchTime=@time, LastSeenAt=SYSDATETIME()
+                          PickOption=@pick, MatchTime=@time, LastSeenAt=SYSDATETIME(),
+                          ClearedAt=NULL
                       WHERE AlertId=@id",
                     new
                     {
@@ -597,6 +604,10 @@ WHERE t.TradeDate=@d
 
         // 信号消失就撤掉告警行——否则「早上的高危」会一直挂在榜上，用户以为现在还是高危。
         // 只清「还没开赛」的场次：已开赛的场次不再重算，保留告警作为事后凭证。
+        //
+        // 2026-11-10 起改为软删除（打 ClearedAt，不再 DELETE 整行）。理由见 DDL 里那段：
+        // 物理删除让「这注曾经高危过、后来又消失」彻底不可考，撤注判据因此永远攒不出回测样本。
+        // 所有读告警的地方都必须加 ClearedAt IS NULL，否则消失的告警会复活。
         var stale = existing
             .Where(x => !keep.Contains(KeyOf(x.MatchId, x.PlayType, x.OptionCode)))
             .Where(x => x.MatchTime is null || x.MatchTime > DateTime.Now)
@@ -604,7 +615,9 @@ WHERE t.TradeDate=@d
             .ToList();
         foreach (var id in stale)
             await conn.ExecuteAsync(new CommandDefinition(
-                "DELETE FROM dbo.FbTurnAlert WHERE AlertId=@id", new { id }, tx, cancellationToken: ct));
+                @"UPDATE dbo.FbTurnAlert
+                  SET ClearedAt = SYSDATETIME()
+                  WHERE AlertId = @id AND ClearedAt IS NULL", new { id }, tx, cancellationToken: ct));
 
         await tx.CommitAsync(ct);
         return new TurnAlertSaveResult
@@ -659,6 +672,7 @@ WHERE t.TradeDate=@d
                                             ORDER BY AlertId DESC) AS rn
                   FROM dbo.FbTurnAlert
                   WHERE AlertDate >= DATEADD(day, -1, @d) AND AlertDate <= DATEADD(day, 1, @d)
+                    AND ClearedAt IS NULL
               )
               UPDATE p
                  SET p.AlertSeverity = a.Severity,
@@ -689,7 +703,11 @@ WHERE t.TradeDate=@d
                                   WHERE a.MatchId=p.MatchId
                                     AND a.PlayType=p.PlayType AND a.OptionCode=p.OptionCode
                                     AND a.AlertDate >= DATEADD(day, -1, @d)
-                                    AND a.AlertDate <= DATEADD(day, 1, @d))",
+                                    AND a.AlertDate <= DATEADD(day, 1, @d)
+                                    -- 2026-11-10 软删除配套：必须排除已清除的告警行。
+                                    -- 漏了这一句，NOT EXISTS 永远为假，红标将永远清不掉，
+                                    -- 而且看起来完全像「信号一直还在」——不报错、不告警。
+                                    AND a.ClearedAt IS NULL)",
             new { d }, cancellationToken: ct));
 
         var voided = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
@@ -714,7 +732,8 @@ WHERE t.TradeDate=@d
                      ISNULL(PickId,0) AS PickId, ISNULL(PlayType,'') AS PlayType,
                      ISNULL(OptionCode,'') AS OptionCode, SignalCode, LastSeenAt
               FROM dbo.FbTurnAlert
-              WHERE AlertDate=@d AND (MatchTime IS NULL OR MatchTime > SYSDATETIME())
+              WHERE AlertDate=@d AND ClearedAt IS NULL
+                AND (MatchTime IS NULL OR MatchTime > SYSDATETIME())
               ORDER BY CASE WHEN Severity='high' THEN 0 ELSE 1 END, MatchTime, MatchNo",
             new { d }, cancellationToken: ct))).ToList();
     }

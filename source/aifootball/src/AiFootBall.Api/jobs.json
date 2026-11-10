@@ -1,0 +1,239 @@
+{
+  "Jobs": {
+    "Enabled": true,
+    "Jobs": [
+      {
+        "Name": "lotto-daily",
+        "Cron": "45 21 * * *",
+        "Type": "lotto",
+        "Enabled": true
+      },
+      {
+        "Name": "lotto-recommend",
+        "Cron": "50 21 * * *",
+        "Type": "lotto-recommend",
+        "Enabled": true
+      },
+      {
+        "Name": "football-daily",
+        "Cron": "10 8 * * *",
+        "Type": "football",
+        "Enabled": true,
+        "Days": 2
+      },
+      {
+        "Name": "football-night",
+        "Cron": "0 22-23,0-6 * * *",
+        "Type": "football",
+        "Enabled": true,
+        "Days": 2
+      },
+      {
+        "Name": "odds-sample",
+        "Cron": "5 * * * *",
+        "Type": "odds-sample",
+        "Enabled": true,
+        "Hours": 72,
+        "HoursBehind": 1,
+        "RecheckMinutes": 55,
+        "Limit": 400
+      },
+      {
+        "Name": "odds-sample-late",
+        "Cron": "*/20 * * * *",
+        "Type": "odds-sample-late",
+        "Enabled": false,
+        "HoursBehind": 0.5,
+        "RecheckMinutes": 15,
+        "Limit": 60
+      },
+      {
+        "Name": "exchange",
+        "Cron": "12,42 * * * *",
+        "Type": "exchange",
+        "Enabled": true,
+        "Hours": 72,
+        "HoursBehind": 200,
+        "RecheckMinutes": 15,
+        "Limit": 350
+      },
+      {
+        "Name": "water-sample",
+        "Cron": "*/10 * * * *",
+        "Type": "water-sample",
+        "Enabled": true,
+        "Hours": 6,
+        "HoursBehind": 1,
+        "RecheckMinutes": 1,
+        "Limit": 30
+      },
+      {
+        "Name": "exchange-late",
+        "Cron": "*/10 * * * *",
+        "Type": "exchange-late",
+        "Enabled": true,
+        "Hours": 6,
+        "HoursBehind": 1,
+        "RecheckMinutes": 1,
+        "Limit": 30
+      },
+      {
+        "Name": "jc-odds-sample",
+        "Cron": "*/2 * * * *",
+        "Type": "jc-odds-sample",
+        "Enabled": true
+      },
+      {
+        "Name": "jc-odds-backfill",
+        "Cron": "35 4 * * *",
+        "Type": "jc-odds-backfill",
+        "Enabled": true
+      },
+      {
+        "Name": "odds-backfill",
+        "Cron": "20 3,12 * * *",
+        "Type": "odds-backfill",
+        "Enabled": true,
+        "Limit": 900
+      },
+      {
+        "Name": "cards-daily",
+        "Cron": "30 8,11,16,20 * * *",
+        "Type": "cards",
+        "Enabled": true
+      },
+      {
+        "Name": "save-recommendations",
+        "Cron": "40 8,11,16,20 * * *",
+        "Type": "save-recommendations",
+        "Enabled": true
+      },
+      {
+        "Name": "bd-spf-pick",
+        "Cron": "40 8,11,16,20 * * *",
+        "Type": "bd-spf-pick",
+        "Enabled": true
+      },
+      {
+        "Name": "bd-spf-settle",
+        "Cron": "10,40 * * * *",
+        "Type": "bd-spf-settle",
+        "Enabled": true
+      },
+      {
+        "Name": "save-steady-picks",
+        "Cron": "50 8,11,16,20 * * *",
+        "Type": "save-steady-picks",
+        "Enabled": true
+      },
+      {
+        "Name": "steady-settle",
+        "Cron": "15 * * * *",
+        "Type": "steady-settle",
+        "Enabled": true
+      },
+      {
+        "Name": "save-final-weekday",
+        "Cron": "50 21 * * 1-5",
+        "Type": "save-recommendations",
+        "Enabled": true
+      },
+      {
+        "Name": "save-final-weekend",
+        "Cron": "50 22 * * 6,0",
+        "Type": "save-recommendations",
+        "Enabled": true
+      },
+      {
+        "Name": "refresh-near-kickoff",
+        "Cron": "*/10 * * * *",
+        "Type": "refresh-near-kickoff",
+        "Enabled": true
+      },
+      {
+        "Name": "turn-guard",
+        "Cron": "*/10 * * * *",
+        "Type": "turn-guard",
+        "Enabled": true
+      },
+      {
+        "Name": "settle-recommendations",
+        "Cron": "0 4 * * *",
+        "Type": "settle-recommendations",
+        "Enabled": true
+      },
+      {
+        "Name": "settle-hourly",
+        "Cron": "0 * * * *",
+        "Type": "settle-hourly",
+        "Enabled": true
+      },
+      {
+        "Name": "settle-purchases",
+        "Cron": "10 * * * *",
+        "Type": "settle-purchases",
+        "Enabled": true
+      },
+      {
+        "Name": "paper-freeze",
+        "Cron": "*/10 * * * *",
+        "Type": "paper-freeze",
+        "Enabled": true
+      },
+      {
+        "Name": "paper-settle",
+        "Cron": "40 * * * *",
+        "Type": "paper-settle",
+        "Enabled": true
+      },
+      {
+        "Name": "recommend-evidence",
+        "Cron": "25 9-23 * * *",
+        "Type": "recommend-evidence",
+        "Enabled": true
+      },
+      {
+        "Name": "rebuild-standings",
+        "Cron": "10 8 * * *",
+        "Type": "rebuild-standings",
+        "Enabled": true
+      },
+      {
+        "Name": "daily-review",
+        "Cron": "20 8 * * *",
+        "Type": "daily-review",
+        "Enabled": true
+      },
+      {
+        "Name": "daily-follow-build",
+        "Cron": "*/30 9-23 * * *",
+        "Type": "daily-follow-build",
+        "Enabled": true
+      },
+      {
+        "Name": "daily-follow-settle",
+        "Cron": "*/20 * * * *",
+        "Type": "daily-follow-settle",
+        "Enabled": true
+      },
+      {
+        "Name": "daily-follow-skill",
+        "Cron": "30 8 * * *",
+        "Type": "daily-follow-skill",
+        "Enabled": true
+      },
+      {
+        "Name": "finalize-prices",
+        "Cron": "*/20 * * * *",
+        "Type": "finalize-prices",
+        "Enabled": true
+      },
+      {
+        "Name": "bd-history",
+        "Cron": "25 5 * * *",
+        "Type": "bd-history",
+        "Enabled": true
+      }
+    ]
+  }
+}

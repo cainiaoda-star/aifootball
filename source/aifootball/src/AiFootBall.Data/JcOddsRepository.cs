@@ -21,10 +21,14 @@ public sealed class JcOddsRepository
     public const decimal MoveThreshold = 0.05m;
 
     /// <summary>
-    /// 读 FbJcOddsHistory 的命令超时（秒）。默认 30s 不够：这张表 540 万行、每 2 分钟
-    /// 被 jc-odds-sample 写入 1600 行，数据库又没开 RCSI，读者可能在锁等待上耗掉半分钟以上。
+    /// 读 FbJcOddsHistory 的命令超时（秒）。默认 30s 不够：这张表 600 万行、每 2 分钟
+    /// 被 jc-odds-sample 写入 1600 行，单条查询经常要扫几十万行。
     /// 2026-11-08 实测 /api/milk/turn-guard/scan 就是这么挂的（500），
     /// 同一路径的 turn-guard 作业一旦超时就是「静默无告警」。
+    ///
+    /// 注：当年把根因记成「数据库没开 RCSI」是错的。2026-11-10 实测
+    /// is_read_committed_snapshot_on = 1（早就开着），读根本没被写阻塞，
+    /// 慢是因为查询本身要扫的数据量大。别再拿 RCSI 解释这张表上的任何超时。
     /// </summary>
     private const int OddsReadTimeoutSeconds = 120;
 
@@ -73,18 +77,7 @@ public sealed class JcOddsRepository
             @"DELETE FROM dbo.FbJcOddsHistory WHERE CapturedAt = @at AND MatchNo IN @nos",
             new { at = capturedAt, nos = matchNos }, tx, cancellationToken: ct));
 
-        var affected = 0;
-        foreach (var p in points)
-        {
-            affected += await conn.ExecuteAsync(new CommandDefinition(
-                @"INSERT INTO dbo.FbJcOddsHistory (MatchId, MatchNo, PlayType, OptionCode, OptionName, Odds, CapturedAt)
-                  VALUES (@mid, @no, @pt, @code, @name, @odds, @at)",
-                new
-                {
-                    mid = p.MatchId, no = p.MatchNo, pt = p.PlayType, code = p.OptionCode,
-                    name = p.OptionName, odds = p.Odds, at = p.CapturedAt
-                }, tx, cancellationToken: ct));
-        }
+        var affected = await InsertPointsAsync(conn, tx, points, ct);
 
         var moves = watchMoves
             ? await RecordMovesAsync(conn, tx, points, capturedAt, prev, ct)
@@ -104,6 +97,54 @@ public sealed class JcOddsRepository
             (int)sw.ElapsedMilliseconds, ct);
 
         await tx.CommitAsync(ct);
+        return affected;
+    }
+
+    /// <summary>
+    /// 每个多值 INSERT 带多少行。7 列 × 250 = 1750 个参数，低于 SQL Server 的 2100 上限；
+    /// 留出余量是因为 Dapper 自己也可能加参数。调大不会更快多少（瓶颈在索引维护），
+    /// 调小则往返次数线性上升。
+    /// </summary>
+    private const int InsertBatchSize = 250;
+
+    /// <summary>
+    /// 批量插入快照点。
+    ///
+    /// 原来是 foreach 里一条一行。2026-11-10 查 jc-odds-backfill 反复「执行超时已过期」时量到：
+    /// 这张表 600 万行、身上挂着 6 个 B 树（1 聚簇 + 5 非聚簇），一行一条语句意味着
+    /// 每一行都要走一次网络往返、一次解析、一次日志分配。一轮回补 3 天 = 3000 行 = 3000 次往返，
+    /// 事务从头到尾都开着，jc-odds-sample 每 2 分钟还要进来写同一张表。
+    /// 改成多值 INSERT 后往返次数从 3000 降到 12 次，事务持锁时间同比缩短。
+    ///
+    /// 索引的维护总量不变（那是行数的函数，不是语句数的函数），所以这不是「变快 250 倍」，
+    /// 而是「把一小时的锁窗口压到秒级」。真正的热点在 RefreshTrendAsync，见那里的分批。
+    /// </summary>
+    private static async Task<int> InsertPointsAsync(
+        SqlConnection conn, SqlTransaction tx, List<JcOddsHistoryPoint> points, CancellationToken ct)
+    {
+        var affected = 0;
+        for (var start = 0; start < points.Count; start += InsertBatchSize)
+        {
+            var slice = points.GetRange(start, Math.Min(InsertBatchSize, points.Count - start));
+            var values = new List<string>(slice.Count);
+            var args = new DynamicParameters();
+            for (var i = 0; i < slice.Count; i++)
+            {
+                values.Add($"(@mid{i},@no{i},@pt{i},@code{i},@name{i},@odds{i},@at{i})");
+                var p = slice[i];
+                args.Add($"mid{i}", p.MatchId);
+                args.Add($"no{i}", p.MatchNo);
+                args.Add($"pt{i}", p.PlayType);
+                args.Add($"code{i}", p.OptionCode);
+                args.Add($"name{i}", p.OptionName);
+                args.Add($"odds{i}", p.Odds);
+                args.Add($"at{i}", p.CapturedAt);
+            }
+
+            var sql = "INSERT INTO dbo.FbJcOddsHistory (MatchId, MatchNo, PlayType, OptionCode, OptionName, Odds, CapturedAt) VALUES "
+                      + string.Join(",", values);
+            affected += await conn.ExecuteAsync(new CommandDefinition(sql, args, tx, cancellationToken: ct));
+        }
         return affected;
     }
 
@@ -155,11 +196,36 @@ public sealed class JcOddsRepository
     ///
     /// 口径必须和 db/19_odds_capture.sql 的历史回填完全一致，否则老数据和新数据接不上。
     /// </summary>
+    /// <summary>
+    /// 走向重算一次带多少场。
+    ///
+    /// 2026-11-10 量的数：这条 SQL 是对每个 MatchId 的**全历史**做三遍窗口函数
+    /// （首价、末价、聚合），而不是只扫最近几轮。全表 600 万行、628 场、平均 9552 行/场，
+    /// 但近期场次的行数远高于均值（它们还在被持续采样），所以「3 天内完场的 67 场」
+    /// 一次性带出 **374 万行 = 全表 62%**。
+    ///
+    /// 这就是 jc-odds-backfill 反复「执行超时已过期」的真正原因：不是锁等待，是单条命令
+    /// 要对 374 万行排序三遍，30 秒的命令超时到了。11-08 08:00 与 11-09 04:35 那两次都报这个。
+    /// 分成 8 场一批后每批约 45 万行，单条命令回到几秒量级。
+    ///
+    /// 为什么不在 SQL 里加 CapturedAt 下界：首价定义就是「这张场最早的那个价」，
+    /// 加下界会把历史场次的首价算成窗口内的第一个价，走向整列失真。
+    /// 分批只是把同一份计算结果切片提交，口径不变。
+    /// </summary>
+    private const int TrendBatchMatches = 8;
+
     private static async Task RefreshTrendAsync(
         SqlConnection conn, SqlTransaction tx, long[] matchIds, CancellationToken ct)
     {
-        await conn.ExecuteAsync(new CommandDefinition(TrendSql,
-            new { ids = matchIds }, tx, cancellationToken: ct));
+        foreach (var chunk in Chunk(matchIds, TrendBatchMatches))
+            await conn.ExecuteAsync(new CommandDefinition(TrendSql,
+                new { ids = chunk }, tx, cancellationToken: ct));
+    }
+
+    private static IEnumerable<long[]> Chunk(long[] ids, int size)
+    {
+        for (var i = 0; i < ids.Length; i += size)
+            yield return ids.Skip(i).Take(size).ToArray();
     }
 
     private const string TrendSql = @"
@@ -272,8 +338,12 @@ LEFT JOIN mv ON mv.MatchId = p.MatchId AND mv.PlayType = p.PlayType;";
     private static async Task RefreshScoreDiagAsync(
         SqlConnection conn, SqlTransaction tx, long[] matchIds, CancellationToken ct)
     {
-        await conn.ExecuteAsync(new CommandDefinition(ScoreDiagSql,
-            new { ids = matchIds }, tx, cancellationToken: ct));
+        // 同样分批。这条只扫 PlayType='BF'，行数比走向那条少，但也是全历史，
+        // 且 474 个比分档的归一化更吃 CPU。和 RefreshTrend 用同一个批次大小，
+        // 是为了让两段在同一个事务里交替推进时不会一边 8 场一边 67 场。
+        foreach (var chunk in Chunk(matchIds, TrendBatchMatches))
+            await conn.ExecuteAsync(new CommandDefinition(ScoreDiagSql,
+                new { ids = chunk }, tx, cancellationToken: ct));
     }
 
     private const string ScoreDiagSql = @"

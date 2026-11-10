@@ -7,6 +7,21 @@ using AiFootBall.Sources;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// 作业清单住在 jobs.json，不在 appsettings.json 里（2026-11-10 拆出来）。
+//
+// 为什么必须拆：appsettings.json 含数据库密码，所以整个文件被 .gitignore 排除
+// （见 .gitignore 第 17 行 **/appsettings.json）。作业定义顺手跟着进了黑箱 ——
+// 版本库里查不到有哪些作业、cron 是什么、Limit 多少，换台机器恢复配置时
+// 只能凭记忆重敲一遍，漏掉的作业不会报任何错。
+//
+// 这不是理论风险，拆的时候已经在生产上抓到一例：运行时的 appsettings 里少了
+// rebuild-standings，FbMatchRank 从 2026-11-08 13:07 起再没更新过，
+// 而 SyncLog 里连一行记录都没有 —— 少一个作业的表现就是「安静」。
+//
+// optional: false 是刻意的。文件不见了就起不来，好过带着 0 个作业跑起来：
+// 0 个作业的调度器不看任何日志跟正常工作一模一样，只是什么都不采。
+builder.Configuration.AddJsonFile("jobs.json", optional: false, reloadOnChange: false);
+
 // 监听 127.0.0.1（本机环回），去酒店等外网环境下 IP 不变，仅本机浏览器可访问
 builder.WebHost.ConfigureKestrel(k =>
 {
@@ -44,6 +59,13 @@ var collectorOptions = new CollectorOptions();
 builder.Configuration.GetSection("Collector").Bind(collectorOptions);
 var jobsOptions = new JobsOptions();
 builder.Configuration.GetSection("Jobs").Bind(jobsOptions);
+
+// 0 个作业比缺一个作业更隐蔽：调度器照常启动、页面照常打开、日志一行不报，
+// 只是什么都不采。凡是「配置读不到」，都要在这一层就炸掉，不要留到运行时。
+if (jobsOptions.Jobs.Count == 0)
+    throw new InvalidOperationException(
+        "jobs.json 里没有任何作业定义（配置节 Jobs:Jobs 为空）。" +
+        "该文件是唯一的作业清单来源，缺失或格式不对时必须让服务起不来，否则会静默空转。");
 
 builder.Services.AddSingleton(collectorOptions);
 builder.Services.AddSingleton(jobsOptions);

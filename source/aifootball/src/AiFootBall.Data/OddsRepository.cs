@@ -225,12 +225,38 @@ ORDER BY
     }
 
     /// <summary>
+    /// 盘口薄的场次（< 8 家公司、不在售）最长多久必须重采一次。
+    ///
+    /// 存在的意义：这类场次原来被三条筛选条件一起排除，采过一次就永久出局，
+    /// 价格停在开盘那一刻。生产上表现为「今晚开踢的越南国奥 vs 泰国国奥，
+    /// 欧赔还是 50 小时前的」。
+    ///
+    /// 公开成常量是因为判据侧要用它：RecommendationService 的盘口新鲜度容忍窗口
+    /// 必须大于这个周期，否则会出现「刚采回来就被判为过期」的抖动 —— 采了等于没采。
+    /// </summary>
+    public const int StaleResampleHours = 6;
+
+    /// <summary>
     /// 取需要做赔率轨迹采样的赛事。
     /// 时间窗内的场次 + 当前在售受注场（竞彩/北单/胜负彩），避免窗口太短漏掉周六日精选。
     /// 首次采样（OddsSampledAt IS NULL）不设公司数门槛；之后优先采多家公司报价的场次。
+    ///
+    /// staleHours（2026-11-10 加）：盘口薄的场次也要按长间隔重采。
+    ///
+    /// 原来三条筛选是纯「或」关系，且第二条要求 OddsCompanyCount >= 8、第三条要求在售，
+    /// 于是「公司数不足 8 家 + 不在售」的场次被永久排除：它们第一次被采时 OddsSampledAt
+    /// 被打上时间戳，之后三条分支全不成立，再也不会被选中。
+    ///
+    /// 实测代价（2026-11-10 18:00）：今晚 20:00 的越南国奥 vs 泰国国奥，欧赔停在 11-08 16:05，
+    /// 也就是 50 小时前的价，而它 2 小时后就开踢；同批还有卡卡瓦蒂克、加蓬女足等 8 场。
+    /// 这些正是小联赛/国家队/女足 —— 开盘的公司本来就只有 1~3 家，恰恰最需要临场价。
+    ///
+    /// 现在补一条兜底：不管公司数和在售状态，超过 staleHours 就必须重采一次。
+    /// 这不是「多采」，是「原来一条都没采到过」。
     /// </summary>
     public async Task<List<MatchBrief>> GetMatchesForSamplingAsync(DateTime from, DateTime to, int take,
-        int recheckMinutes, int minCompanies = 8, CancellationToken ct = default)
+        int recheckMinutes, int minCompanies = 8, CancellationToken ct = default,
+        int staleHours = StaleResampleHours)
     {
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<MatchBrief>(@"
@@ -259,6 +285,9 @@ WHERE m.MatchTime > DATEADD(HOUR, -2, SYSDATETIME())
             )
             AND m.OddsSampledAt < DATEADD(MINUTE, -@Recheck, SYSDATETIME())
         )
+        -- 兜底：盘口薄（< MinCompanies）又不在售的场次。
+        -- 上面三条都不认它们，它们就会一直停在第一次采样的价格上。
+        OR m.OddsSampledAt < DATEADD(HOUR, -@Stale, SYSDATETIME())
       )
 ORDER BY CASE
            WHEN EXISTS (
@@ -273,7 +302,8 @@ ORDER BY CASE
             From = from,
             To = to,
             Recheck = recheckMinutes,
-            MinCompanies = minCompanies
+            MinCompanies = minCompanies,
+            Stale = staleHours <= 0 ? 6 : staleHours
         });
         return rows.ToList();
     }

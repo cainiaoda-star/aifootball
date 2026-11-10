@@ -78,6 +78,12 @@ public sealed class PaperTradeRow
 ///
 /// 后三个参数是终版价口径（2026-11-10 加）：<see cref="Roi"/> 用冻结价，
 /// <see cref="RoiFinal"/> 用停售前最后采样。跟单评价看 RoiFinal。
+///
+/// 再后两个是撤注对照组（2026-11-10 加）：<see cref="VoidedSettled"/> /
+/// <see cref="VoidedHits"/> 回答的是「撤掉的那些注，如果没撤会怎样」。
+/// 撤注判据一直无法回测，卡的就是这个数从来没有被算出来过——
+/// 撤注行照常结算、Hit 照常写，但报表把它们整个排除在分母外，
+/// 于是「撤对了没有」这个问题在页面上没有任何答案。
 /// </summary>
 public sealed record PaperSlice(
     string Key,
@@ -91,8 +97,14 @@ public sealed record PaperSlice(
     decimal Roi,
     int FinalHits = 0,
     decimal ReturnFinal = 0m,
-    decimal RoiFinal = 0m)
+    decimal RoiFinal = 0m,
+    int VoidedSettled = 0,
+    int VoidedHits = 0)
 {
+    /// <summary>撤注对照命中率（%）。分母 = 已撤注但有赛果的注数，样本不足时不要当结论。</summary>
+    public decimal VoidedHitPct => VoidedSettled == 0
+        ? 0m
+        : Math.Round(VoidedHits * 100m / VoidedSettled, 2);
     public static PaperSlice Empty(string key) => new(key, 0, 0, 0, 0, 0m, 0m, 0m, 0m);
 
     /// <summary>终版价覆盖率（%，分母 = 命中注数）。</summary>

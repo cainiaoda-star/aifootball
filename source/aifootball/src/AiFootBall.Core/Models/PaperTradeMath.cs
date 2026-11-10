@@ -61,6 +61,11 @@ public static class PaperTradeMath
         var finalHits = hits.Count(r => r.FinalOdds is not null);
         var retFinal = hits.Sum(r => r.FinalOdds ?? 0m);
 
+        // 撤注对照组：撤掉的注也照常结算、照常写 Hit（SettleAsync 里 pending 不排除 Voided），
+        // 只是不算钱。把它们单独数出来，「撤注判得对不对」才有分母。
+        var voidedSettled = rows.Where(r => r.Voided && r.Hit is not null).ToList();
+        var voidedHits = voidedSettled.Count(r => r.Hit == true);
+
         return new PaperSlice(
             key,
             rows.Count,
@@ -73,9 +78,18 @@ public static class PaperTradeMath
             stake == 0 ? 0m : Math.Round(ret / stake, 4),
             finalHits,
             retFinal,
-            stake == 0 ? 0m : Math.Round(retFinal / stake, 4));
+            stake == 0 ? 0m : Math.Round(retFinal / stake, 4),
+            voidedSettled.Count,
+            voidedHits);
     }
 
     /// <summary>样本够不够下结论：已结算未撤注 ≥ 150 注（用户 2026-11-08 拍板）。</summary>
     public const int EnoughSettled = 150;
+
+    /// <summary>
+    /// 撤注对照组够不够下结论。比主口径低一档（50）但绝不下探到个位数：
+    /// 撤注事件本身稀疏（生产上至今 0 例），10 注以内的命中率差异纯属噪声，
+    /// 拿它去调阈值等于用抛硬币的结果改规则。
+    /// </summary>
+    public const int EnoughVoided = 50;
 }

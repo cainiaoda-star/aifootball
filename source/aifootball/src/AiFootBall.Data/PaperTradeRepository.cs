@@ -347,7 +347,23 @@ END";
                 Slice("常规注", final.Where(r => !r.CounterHigh && !r.ModelOverconfident && !r.ModelLowConfidence).ToList()),
                 Slice("高赔单列", final.Where(r => r.CounterHigh).ToList()),
                 Slice("模型高估", final.Where(r => r.ModelOverconfident).ToList()),
-                Slice("模型低可信", final.Where(r => r.ModelLowConfidence).ToList())
+                Slice("模型低可信", final.Where(r => r.ModelLowConfidence).ToList()),
+
+                // ---- 撤注判据回测对照组（2026-11-10 加）----
+                //
+                // 撤注判据从上线至今没做过回测，因为「撤掉的注后来中没中」这个数
+                // 在报表里根本不存在：撤注行被排除在主线分母之外，只留一个计数。
+                // 现在把它们单列出来，配 VoidedHitPct 和 VoidedSettled。
+                //
+                // 什么时候能下结论：VoidedSettled ≥ PaperTradeMath.EnoughVoided（50）。
+                // 在那之前，这里的数字只能用来发现「撤了反而更准」这种方向性问题，
+                // 不足以支撑调阈值 —— 生产上至今一例撤注都没有（Voided 全表为 0），
+                // 与其现在猜，不如先把对照组留在报表上。
+                Slice("撤注未下注（仅记赛果对照）", final.Where(r => r.Voided).ToList()),
+                // mid 不撤注是 2026-11-08 定的（单信号不足以下撤注决心）。这条切片就是给
+                // 那个决定提供账本的：如果它长期显著差于「常规注」，说明当时该撤；
+                // 如果一样，说明 mid 只标红是对的。没有这条，那个决定永远无法被检验。
+                Slice("有告警未撤（mid）", final.Where(r => !r.Voided && r.AlertSeverity is not null).ToList())
             },
             superseded);
     }

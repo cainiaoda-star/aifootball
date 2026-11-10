@@ -61,6 +61,15 @@ foreach ($n in $webFiles) {
     if (Test-Path $f) { Copy-Item $f -Destination (Join-Path $api "wwwroot\$n") -Force }
 }
 
+# 作业清单（2026-11-10 起从 appsettings.json 拆出，因为那份文件含连接串、被 git 忽略）。
+# 这是唯一的作业来源，没拷过去就等于 0 个作业 —— 而 0 个作业的站点看起来完全正常：
+# 页面能开、日志不报、只是什么都不采。所以这里宁可让部署失败。
+$jobFile = 'jobs.json'
+$jobSrc = Join-Path $pub $jobFile
+if (-not (Test-Path $jobSrc)) { throw "publish 输出里没有 $jobFile，拒绝部署（否则作业清单会静默缺失）" }
+Copy-Item $jobSrc -Destination (Join-Path $api $jobFile) -Force
+Write-Output "   作业清单已同步：$jobFile"
+
 Write-Output '== 4/4 启动并探活 =='
 Start-ScheduledTask -TaskName 'AiFootBall-API'
 Start-Sleep -Seconds 14

@@ -18,4 +18,10 @@
     <ProjectReference Include="..\AiFootBall.Sources\AiFootBall.Sources.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 作业清单。appsettings.json 含连接串、被 .gitignore 排除，作业定义已拆到这里。
+         Missing 时宁可构建失败：没有 jobs.json 的站点起来后 0 个作业，看起来一切正常。 -->
+    <Content Update="jobs.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

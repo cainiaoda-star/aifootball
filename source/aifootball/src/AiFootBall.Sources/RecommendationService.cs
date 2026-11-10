@@ -14,7 +14,27 @@ public sealed class RecommendationService
     /// 而 12 小时以上的盘往往来自前一晚，用它算「升/降」等于把旧盘当现盘。
     /// 待采集覆盖度上来以后（待赛场次基本都有 1 小时内的盘），可以收紧到 6。
     /// </summary>
-    private const double MarketTtlHours = 12;
+    /// <summary>
+    /// 盘口新鲜度容忍窗口（小时）。超过这个时长的采样不再当作「现盘」，
+    /// 用它算出来的升降/资金流一律当没有（宁可少一个信号，也不要凭空造一个）。
+    ///
+    /// 2026-11-10 从 12 收到 8。依据不是调参，是两条约束：
+    ///   · 下限：必须大于 OddsRepository.StaleResampleHours（6 小时）。
+    ///     那是「盘口薄的场次最长多久重采一次」，容忍窗口比它小的话，
+    ///     刚采回来的价会立刻被判成过期，采了等于没采，而且会出现时有时无的抖动。
+    ///   · 上限：欧赔已经是 30 分钟粒度（water-sample 每 10 分钟一轮、每 3 轮一次三页全量），
+    ///     8 小时相当于容忍 16 个刷新周期。再宽就没有「临场」的意义了 ——
+    ///     12 小时的本意是「昨晚采的今天还能用」，但那正是这次要否掉的东西。
+    ///
+    /// 没有做「按玩法分档」（欧赔严、必发松）：那需要逐判据回测，
+    /// 而现在必发的问题根本不在这 —— 夜间大量场次压根没有必发盘口，收紧 TTL
+    /// 只会把「没数据」变成「判为过期」，两者结果都是 null，改了等于没改。
+    ///
+    /// 写成算式而不是字面量 8，是为了不让两个数脱钩：改 StaleResampleHours 时
+    /// 这里自动跟着走，不会再出现「采样周期改了、容忍窗口忘了改」这种只有
+    /// 跑一晚才发现的问题。6 × 4/3 = 8。
+    /// </summary>
+    private const double MarketTtlHours = OddsRepository.StaleResampleHours * 4.0 / 3.0;
 
     private readonly BettingCardSource _cardSource;
     private readonly BettingRepository _repo;
