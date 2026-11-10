@@ -51,19 +51,29 @@ public static class PaperTradeMath
     public static PaperSlice Slice(string key, IReadOnlyList<PaperTradeRow> rows)
     {
         var settled = rows.Where(r => !r.Voided && r.Hit is not null).ToList();
-        var hits = settled.Count(r => r.Hit == true);
+        var hits = settled.Where(r => r.Hit == true).ToList();
         var stake = settled.Count;                                  // 平注 1 个单位
-        var ret = settled.Where(r => r.Hit == true).Sum(r => r.Odds);
+        var ret = hits.Sum(r => r.Odds);
+
+        // 终版价口径（2026-11-10）：分子只累加「有终版价」的命中注，分母仍是全部已结算注数——
+        // 缺终版价的是数据缺口，不是没中，把它们从分母剔掉会虚抬回报。
+        // 覆盖率因此单列出来，低于 95% 时这个回报只能当参考。
+        var finalHits = hits.Count(r => r.FinalOdds is not null);
+        var retFinal = hits.Sum(r => r.FinalOdds ?? 0m);
+
         return new PaperSlice(
             key,
             rows.Count,
             rows.Count(r => r.Voided),
             settled.Count,
-            hits,
-            settled.Count == 0 ? 0m : Math.Round(hits * 100m / settled.Count, 2),
+            hits.Count,
+            settled.Count == 0 ? 0m : Math.Round(hits.Count * 100m / settled.Count, 2),
             stake,
             ret,
-            stake == 0 ? 0m : Math.Round(ret / stake, 4));
+            stake == 0 ? 0m : Math.Round(ret / stake, 4),
+            finalHits,
+            retFinal,
+            stake == 0 ? 0m : Math.Round(retFinal / stake, 4));
     }
 
     /// <summary>样本够不够下结论：已结算未撤注 ≥ 150 注（用户 2026-11-08 拍板）。</summary>

@@ -20,8 +20,21 @@ public sealed class BdSpfPick
     public string? HandicapSideName { get; set; }
     /// <summary>让球盘该方向打出的概率（0~100，引擎算的）。</summary>
     public decimal? HandicapProbability { get; set; }
-    /// <summary>让球盘 SP 赔率（开奖前会变，参考值）。</summary>
+    /// <summary>让球盘 SP 赔率（**推荐生成那一刻**的价，开奖前会变，不是实购价）。</summary>
     public decimal? HandicapOdds { get; set; }
+
+    /// <summary>
+    /// 终版价（2026-11-10 加）：命中的注取开奖 SP（FbBdHistory.ResultSp），
+    /// 未命中的注没有终版价——没开出的选项本来就没有 SP。
+    /// 详情见 <see cref="FinalPriceSource"/>。
+    /// </summary>
+    public decimal? FinalOdds { get; set; }
+
+    /// <summary>终版价对应的时刻（开奖采集时间）。</summary>
+    public DateTime? FinalAt { get; set; }
+
+    /// <summary>终版价来源：bd-resultsp。NULL = 没有终版价。</summary>
+    public string? FinalSource { get; set; }
     public decimal? HitProbability { get; set; }
     public decimal? MarketProb { get; set; }
     public decimal? RatioHome { get; set; }
@@ -57,14 +70,29 @@ public sealed class BdSpfRecordGroup
     /// <summary>还没结算的注数（今晚待开赛 + 缺赛果）。</summary>
     public int Pending { get; set; }
     public decimal HitPct { get; set; }
-    /// <summary>平注 1 单位：命中赔率合计 ÷ 注数。</summary>
+
+    /// <summary>推荐价口径的平注回报（= 命中注推荐价比合计 ÷ 注数）。历史口径，保留。</summary>
     public decimal Roi { get; set; }
     public decimal? AvgOdds { get; set; }
+
+    /// <summary>
+    /// 开奖SP口径的回报（2026-11-10 加）= 命中注开奖SP合计 ÷ 已结算注数。
+    /// **这是真实赔付**：北单按 SP 派奖，中多少付多少，不是「假设按推荐价买到」。
+    /// </summary>
+    public decimal RoiFinal { get; set; }
+
+    /// <summary>命中注里拿得到开奖 SP 的注数。</summary>
+    public int FinalHits { get; set; }
+
+    /// <summary>开奖SP覆盖率（%，分母 = 命中注数）。北单理论上应接近 100，低了说明开奖期次没采到。</summary>
+    public decimal FinalCoverage { get; set; }
+
+    public bool FinalVerified => FinalPriceMath.Trustworthy(Hits, FinalHits);
 }
 
 /// <summary>
-/// 北单战绩（近 N 天）。★ Roi 用的是**推荐时点 SP**，与实购终版 SP 常有 10~46% 差距，
-/// 只能看方向，不能当账本。
+/// 北单战绩（近 N 天）。★ 现在有两栏：<c>Roi</c> 是推荐时点 SP、<c>RoiFinal</c> 是开奖 SP。
+/// 跟单能不能赚只看 RoiFinal——那是真实赔付价；Roi 只用来和历史数字衔接。
 /// </summary>
 public sealed class BdSpfRecord
 {
@@ -76,7 +104,8 @@ public sealed class BdSpfRecord
     public BdSpfRecordGroup? Reverse { get; set; }
     public List<BdSpfPickRecordItem> Rows { get; set; } = new();
     public string Note { get; set; } =
-        "Roi = 命中赔率合计 ÷ 已结算注数；赔率为推荐时点 SP，实购终版与之有差距，仅作方向参考。";
+        "Roi = 推荐时点 SP 口径，RoiFinal = 开奖 SP 口径（真实赔付）。跟单看 RoiFinal；" +
+        "开奖 SP 只有命中的注才有（未开出的选项没有 SP），所以覆盖率按命中注算。";
 }
 
 /// <summary>北单战绩逐注行（前端表格用）。</summary>
@@ -92,6 +121,8 @@ public sealed class BdSpfPickRecordItem
     public decimal? Handicap { get; set; }
     public string? SideName { get; set; }
     public decimal? Odds { get; set; }
+    /// <summary>开奖 SP（终版价）。只有命中的注有值。</summary>
+    public decimal? FinalOdds { get; set; }
     public string? ActualScore { get; set; }
     public bool? Hit { get; set; }
 }

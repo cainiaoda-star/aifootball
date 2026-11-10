@@ -39,6 +39,9 @@ public sealed class SteadyPickRepository
                   Side        CHAR(1) NOT NULL,          -- 3 主胜 / 1 平 / 0 客胜（竞彩胜平负，不让球）
                   SideName    NVARCHAR(10) NULL,
                   Odds        DECIMAL(8,2) NOT NULL,
+                  FinalOdds   DECIMAL(8,2) NULL,           -- 终版价（开赛前最后一次采样），2026-11-10 加
+                  FinalAt     DATETIME2(0) NULL,           -- 终版价对应时刻
+                  FinalSource NVARCHAR(12) NULL,           -- jc-close
                   MarketPct   DECIMAL(6,2) NULL,         -- 市场去水概率，选它的唯一依据
                   [Rank]      INT NULL,                  -- 当日 1..3，1 = 首选
                   Note        NVARCHAR(200) NULL,
@@ -47,6 +50,13 @@ public sealed class SteadyPickRepository
                   SettledAt   DATETIME2(0) NULL,
                   CreatedAt   DATETIME2(0) NOT NULL DEFAULT SYSDATETIME()
               );
+              -- 老表兜底（2026-11-10 终版价增列，逐列判断，幂等）
+              IF COL_LENGTH('dbo.FbSteadyPick','FinalOdds') IS NULL
+                  ALTER TABLE dbo.FbSteadyPick ADD FinalOdds DECIMAL(8,2) NULL;
+              IF COL_LENGTH('dbo.FbSteadyPick','FinalAt') IS NULL
+                  ALTER TABLE dbo.FbSteadyPick ADD FinalAt DATETIME2(0) NULL;
+              IF COL_LENGTH('dbo.FbSteadyPick','FinalSource') IS NULL
+                  ALTER TABLE dbo.FbSteadyPick ADD FinalSource NVARCHAR(12) NULL;
               IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_SteadyPick_Date'
                              AND object_id=OBJECT_ID('dbo.FbSteadyPick'))
                   CREATE INDEX IX_SteadyPick_Date ON dbo.FbSteadyPick (PickDate, MatchId);",
@@ -185,7 +195,8 @@ public sealed class SteadyPickRepository
         System.Data.Common.DbConnection conn, DateTime d, CancellationToken ct)
         => (await conn.QueryAsync<SteadyPick>(new CommandDefinition(
             @"SELECT PickDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
-                     Side, SideName, Odds, MarketPct, [Rank], Note, ActualScore, Hit, SettledAt
+                     Side, SideName, Odds, FinalOdds, FinalAt, FinalSource,
+                     MarketPct, [Rank], Note, ActualScore, Hit, SettledAt
               FROM dbo.FbSteadyPick
               WHERE PickDate=@d
               ORDER BY ISNULL([Rank], 99), Odds",
@@ -194,6 +205,10 @@ public sealed class SteadyPickRepository
     /// <summary>
     /// 近 N 天战绩。口径与主榜台账一致：
     /// 分母 = 已结算注数，回报 = 命中赔率合计 ÷ 注数（平注 1 单位），未结算单独计数。
+    ///
+    /// **两栏（2026-11-10 加）**：Roi 用推荐价、RoiFinal 用终版价（停售前最后采样）。
+    /// 稳胆赔率只有 1.0~1.75，3% 的价差就能翻转结论，所以跟单评价一律看 RoiFinal，
+    /// Roi 只用于和 11-09 之前的历史数字衔接。
     /// </summary>
     public async Task<SteadyStats> GetStatsAsync(int days = 30, CancellationToken ct = default)
     {
@@ -213,11 +228,15 @@ public sealed class SteadyPickRepository
                      CAST(ISNULL(SUM(CASE WHEN Hit = 1 THEN Odds ELSE 0 END) * 100.0
                           / NULLIF(COUNT(CASE WHEN Hit IS NOT NULL THEN 1 END), 0), 0) AS DECIMAL(6,1)) AS HitPct,
                      CAST(ISNULL(SUM(CASE WHEN Hit = 1 THEN Odds ELSE 0 END)
-                          / NULLIF(COUNT(CASE WHEN Hit IS NOT NULL THEN 1 END), 0), 0) AS DECIMAL(6,3)) AS Roi
+                          / NULLIF(COUNT(CASE WHEN Hit IS NOT NULL THEN 1 END), 0), 0) AS DECIMAL(6,3)) AS Roi,
+                     ISNULL(SUM(CASE WHEN Hit = 1 AND FinalOdds IS NOT NULL THEN 1 ELSE 0 END), 0) AS FinalHits,
+                     CAST(ISNULL(SUM(CASE WHEN Hit = 1 THEN ISNULL(FinalOdds, 0) ELSE 0 END)
+                          / NULLIF(COUNT(CASE WHEN Hit IS NOT NULL THEN 1 END), 0), 0) AS DECIMAL(6,3)) AS RoiFinal
               FROM dbo.FbSteadyPick
               WHERE PickDate >= DATEADD(day, -@n, CAST(SYSDATETIME() AS DATE))",
             new { n }, cancellationToken: ct));
         stats.Days = n;
+        stats.FinalCoverage = FinalPriceMath.HitCoverage(stats.Hits, stats.FinalHits);
         return stats;
     }
 
@@ -228,7 +247,8 @@ public sealed class SteadyPickRepository
         await using var conn = await _factory.OpenAsync(ct);
         return (await conn.QueryAsync<SteadyPick>(new CommandDefinition(
             @"SELECT PickDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
-                     Side, SideName, Odds, MarketPct, [Rank], Note, ActualScore, Hit, SettledAt
+                     Side, SideName, Odds, FinalOdds, FinalAt, FinalSource,
+                     MarketPct, [Rank], Note, ActualScore, Hit, SettledAt
               FROM dbo.FbSteadyPick
               WHERE PickDate >= DATEADD(day, -@n, CAST(SYSDATETIME() AS DATE))
               ORDER BY PickDate DESC, ISNULL([Rank], 99)",

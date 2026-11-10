@@ -36,6 +36,9 @@ BEGIN
         OptionCode           VARCHAR(20) NOT NULL,
         OptionName           NVARCHAR(64) NOT NULL,
         Odds                 DECIMAL(10,3) NOT NULL,
+        FinalOdds            DECIMAL(10,3) NULL,
+        FinalAt              DATETIME2(0) NULL,
+        FinalSource          NVARCHAR(12) NULL,
         ModelProbability     DECIMAL(10,4) NULL,
         BaselineProbability  DECIMAL(10,4) NULL,
         BaselineEv           DECIMAL(10,4) NULL,
@@ -56,6 +59,16 @@ BEGIN
         CONSTRAINT UQ_FbPaperTrade UNIQUE (TradeDate, MatchId, PlayType, OptionCode)
     );
     CREATE INDEX IX_FbPaperTrade_Date ON dbo.FbPaperTrade (TradeDate) INCLUDE (PlayType, Odds, Hit, Voided);
+END
+-- 老表兜底：终版价三列（2026-11-10 加，逐列判断，幂等）
+IF OBJECT_ID(N'dbo.FbPaperTrade', N'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('dbo.FbPaperTrade','FinalOdds') IS NULL
+        ALTER TABLE dbo.FbPaperTrade ADD FinalOdds DECIMAL(10,3) NULL;
+    IF COL_LENGTH('dbo.FbPaperTrade','FinalAt') IS NULL
+        ALTER TABLE dbo.FbPaperTrade ADD FinalAt DATETIME2(0) NULL;
+    IF COL_LENGTH('dbo.FbPaperTrade','FinalSource') IS NULL
+        ALTER TABLE dbo.FbPaperTrade ADD FinalSource NVARCHAR(12) NULL;
 END";
 
     /// <summary>确保表存在（幂等）。</summary>
@@ -288,6 +301,7 @@ END";
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, BaselineProbability,
                      BaselineEv, ModelEv, CounterHigh, ModelOverconfident, ModelLowConfidence,
                      Voided, AlertSeverity, AlertReason, FrozenAt,
+                     FinalOdds, FinalAt, FinalSource,
                      ActualScore, ActualHalfScore, Hit, SettledAt, Pnl
               FROM dbo.FbPaperTrade
               WHERE TradeDate >= @from AND TradeDate <= @to
@@ -333,6 +347,7 @@ END";
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, BaselineProbability,
                      BaselineEv, ModelEv, CounterHigh, ModelOverconfident, ModelLowConfidence,
                      Voided, AlertSeverity, AlertReason, FrozenAt,
+                     FinalOdds, FinalAt, FinalSource,
                      ActualScore, ActualHalfScore, Hit, SettledAt, Pnl
               FROM dbo.FbPaperTrade
               WHERE TradeDate >= @from AND TradeDate <= @to

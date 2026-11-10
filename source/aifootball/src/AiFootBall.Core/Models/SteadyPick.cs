@@ -41,8 +41,21 @@ public sealed class SteadyPick
         _ => "客胜"
     };
 
-    /// <summary>该档的竞彩固定奖金（赛前最后快照）。</summary>
+    /// <summary>该档的竞彩固定奖金（**推荐生成那一刻**的价，不是实购价）。</summary>
     public decimal Odds { get; set; }
+
+    /// <summary>
+    /// 终版价（2026-11-10 加）：开赛前最后一次采样，也就是能真正买到的价。
+    /// NULL = 还没回填（未开赛，或该场不在采样覆盖内）。来源见 <see cref="FinalPriceSource"/>。
+    /// ★ 不改 <see cref="Odds"/>：推荐价是「当时页面上写的」，改了就是篡改历史。
+    /// </summary>
+    public decimal? FinalOdds { get; set; }
+
+    /// <summary>终版价对应的采样时间。距开赛越近越可信。</summary>
+    public DateTime? FinalAt { get; set; }
+
+    /// <summary>终版价来源：jc-close / bd-resultsp。NULL = 没有终版价。</summary>
+    public string? FinalSource { get; set; }
 
     /// <summary>市场去水后的概率（%）。这是「为什么选它」的唯一依据——它就是市场最看好的那一档。</summary>
     public decimal MarketPct { get; set; }
@@ -70,7 +83,13 @@ public sealed class SteadyPickDay
     public SteadyStats Stats { get; set; } = new();
 }
 
-/// <summary>稳胆战绩。口径与主榜台账一致：分母 = 已结算注数，回报 = 命中赔率合计 ÷ 注数。</summary>
+/// <summary>
+/// 稳胆战绩。口径与主榜台账一致：分母 = 已结算注数，回报 = 命中赔率合计 ÷ 注数。
+///
+/// **两栏（2026-11-10 加）**：<see cref="Roi"/> 用推荐价、<see cref="RoiFinal"/> 用终版价。
+/// 稳胆赔率只有 1.0~1.75，回报贴着 0.95~1.00 走，3% 的价差就能让结论从「打平」变「亏 5%」，
+/// 所以跟单评价一律看 RoiFinal；Roi 只用于和历史数字衔接。
+/// </summary>
 public sealed class SteadyStats
 {
     public int Days { get; set; }
@@ -79,7 +98,21 @@ public sealed class SteadyStats
     public int Pending { get; set; }
     public decimal? AvgOdds { get; set; }
     public decimal HitPct { get; set; }
+
+    /// <summary>推荐价口径的回报（历史口径，保留）。</summary>
     public decimal Roi { get; set; }
+
+    /// <summary>终版价口径的回报 = 命中注终版价合计 ÷ 已结算注数。跟单评价看这个。</summary>
+    public decimal RoiFinal { get; set; }
+
+    /// <summary>命中注里拿得到终版价的注数。</summary>
+    public int FinalHits { get; set; }
+
+    /// <summary>终版价覆盖率（%，分母 = 命中注数）。低于 95 时 RoiFinal 会低估，只能参考。</summary>
+    public decimal FinalCoverage { get; set; }
+
+    /// <summary>终版价口径能不能当账本（覆盖率 ≥95%）。</summary>
+    public bool FinalVerified => FinalPriceMath.Trustworthy(Hits, FinalHits);
 }
 
 /// <summary>

@@ -22,6 +22,9 @@ public sealed class JobScheduler
     private readonly StandingService? _standing;
     private readonly PaperTradeRepository? _paper;
     private readonly SteadyPickRepository? _steady;
+    private readonly FinalPriceRepository? _finalPrice;
+    private readonly BdHistoryRepository? _bdHistory;
+    private readonly BettingCardSource? _cards;
     private readonly Action<string>? _log;
     private readonly object _gate = new();
     private readonly List<Entry> _entries = new();
@@ -31,7 +34,9 @@ public sealed class JobScheduler
         Action<string>? log = null, LottoRecommendationService? lottoRec = null,
         DailyFollowService? dailyFollow = null, BdSpfPickService? bdSpfPick = null,
         BdSpfPickRepository? bdSpfRepo = null, StandingService? standing = null,
-        PaperTradeRepository? paper = null, SteadyPickRepository? steady = null)
+        PaperTradeRepository? paper = null, SteadyPickRepository? steady = null,
+        FinalPriceRepository? finalPrice = null, BdHistoryRepository? bdHistory = null,
+        BettingCardSource? cards = null)
     {
         _options = options;
         _collection = collection;
@@ -45,6 +50,9 @@ public sealed class JobScheduler
         _standing = standing;
         _paper = paper;
         _steady = steady;
+        _finalPrice = finalPrice;
+        _bdHistory = bdHistory;
+        _cards = cards;
         _log = log;
     }
 
@@ -105,6 +113,10 @@ public sealed class JobScheduler
         // 结算只读写本库，10 分钟足够，多给纯属兜底。
         ["save-steady-picks"] = TimeSpan.FromMinutes(30),
         ["steady-settle"] = TimeSpan.FromMinutes(10),
+        // 2026-11-10 加：终版价回填只读写本库（两条按索引 seek 的 UPDATE），秒级完成。
+        ["finalize-prices"] = TimeSpan.FromMinutes(10),
+        // 2026-11-10 加：北单开奖补采要打 500.com，每期一次请求 + 1.5s 间隔，一次最多 6 期。
+        ["bd-history"] = TimeSpan.FromMinutes(20),
         ["rebuild-standings"] = TimeSpan.FromMinutes(30)
     };
 
@@ -547,7 +559,11 @@ public sealed class JobScheduler
         // 两者和主榜的 save-recommendations 一样是 DELETE+INSERT 形态，**必须串行**，
         // 否则同一天两次重算交错会把「赔率最低的三场」写成两批（库上同样没有唯一约束兜底）。
         "save-steady-picks",
-        "steady-settle"
+        "steady-settle",
+        // 2026-11-10 加：终版价回填写的就是这三张台账（稳胆 / 空跑 / 北单）。
+        // 它只 UPDATE FinalOdds 列、不删行，但仍然必须和 DELETE + INSERT 的两个出榜作业串行，
+        // 否则「先插行、再被对方的 DELETE 删掉、最后回填落空」这一串完全无声。
+        "finalize-prices"
     };
 
     /// <summary>超时中止后补一条运行记录，方便页面上查。写日志本身失败不再抛出。</summary>
@@ -993,6 +1009,82 @@ public sealed class JobScheduler
                     ? $"稳胆结算：没有新的可判注单（近 30 天已结算 {st2.Settled} 注、待结算 {st2.Pending} 注）"
                     : $"稳胆结算：补判 {settled2} 注；近 30 天累计 {st2.Settled} 注 {st2.Hits} 中"
                       + $"（{st2.HitPct:0.0}%），回报 {st2.Roi:0.000}");
+                break;
+            }
+
+            // 终版价回填（2026-11-10 加，用户拍板做「B：终版价口径」）。
+            //
+            // 三张台账存的都是「推荐生成那一刻」的价，而用户真正买到的/拿到的不是那个价：
+            // 北单实测差 10~46%（阿尔杰什 2.91→4.25），稳胆赔率只有 1.0~1.75，差 3% 就能翻转结论。
+            // 这条作业把「停售前最后可得价」补进 FinalOdds，战绩从此能分两栏报。
+            //
+            // 只写 FinalOdds IS NULL 的行，所以高频跑安全；已回填的价永不被覆盖。
+            // 进 _recommendLane：save-recommendations / save-steady-picks 都是 DELETE + INSERT，
+            // 同一张表的写入串起来才不会被对方的删除撞掉。
+            case "finalize-prices":
+            {
+                if (_finalPrice is null)
+                {
+                    result = CollectionResult.Fail("终版价仓储未注入");
+                    break;
+                }
+                var (s1, p1, b1) = await _finalPrice.FinalizeAsync(60, ct);
+                var total = s1 + p1 + b1;
+                result = CollectionResult.Ok(total, total == 0
+                    ? "终版价回填：没有新的可回填注单（已开赛的注都已有终版价，或采样未覆盖）"
+                    : $"终版价回填：稳胆 {s1} 注、空跑 {p1} 注、北单 {b1} 注"
+                      + "（竞彩取停售前最后采样，北单取开奖 SP）");
+                break;
+            }
+
+            // 北单开奖补采（2026-11-10 加）。
+            //
+            // 为什么必须有这条：开奖 SP 是北单唯一真实的赔付价，而它只能从「开奖页」按**期号**抓。
+            // 在此之前只有手动 `bdback` CLI 会去抓，最后一次是 11-05（期 26107），
+            // 于是 11-06 之后的 45 注北单全部拿不到开奖 SP —— 终版价口径有一半是空的。
+            // 自动补采把这个缺口焊死：每天跑一次，只抓「库里没有的期」和「还没开完奖的期」。
+            //
+            // 期号 = 两位年 + 两位月 + 期序（26091 = 2026 年 9 月第 1 期）。所以只扫本月和上月。
+            case "bd-history":
+            {
+                if (_bdHistory is null || _cards is null)
+                {
+                    result = CollectionResult.Fail("北单开奖补采依赖未注入");
+                    break;
+                }
+                var done = await _bdHistory.GetExpectsAsync(ct);
+                // 一次最多抓 6 期，避免把 500.com 惹毛（每期之间 1.5s 间隔）。
+                const int MaxFetchPerRun = 6;
+                var fetched = 0;
+                var saved = 0;
+                var misses = 0;
+                for (var back = 0; back <= 1 && fetched < MaxFetchPerRun; back++)
+                {
+                    var month = DateTime.Today.AddMonths(-back);
+                    var prefix = int.Parse($"{month:yyMM}");
+                    misses = 0;
+                    for (var k = 1; k <= 9 && misses < 2 && fetched < MaxFetchPerRun; k++)
+                    {
+                        var expect = prefix * 10 + k;
+                        if (done.Contains(expect)) { misses = 0; continue; }
+                        var rows = await _cards.FetchBdIssueAsync(expect, ct);
+                        await Task.Delay(1500, ct);
+                        // 被限流时页面也是空的，和「期号不存在」分不开：等一会再试一次。
+                        if (rows.Count == 0)
+                        {
+                            await Task.Delay(5000, ct);
+                            rows = await _cards.FetchBdIssueAsync(expect, ct);
+                            await Task.Delay(1500, ct);
+                        }
+                        fetched++;
+                        if (rows.Count == 0) { misses++; continue; }
+                        misses = 0;
+                        saved += await _bdHistory.UpsertAsync(rows, ct);
+                    }
+                }
+                result = CollectionResult.Ok(saved, saved == 0
+                    ? $"北单开奖：本月及上月没有待补的期（已收完 {done.Count} 期，本次试抓 {fetched} 期）"
+                    : $"北单开奖：补采 {fetched} 期、写入 {saved} 场");
                 break;
             }
 

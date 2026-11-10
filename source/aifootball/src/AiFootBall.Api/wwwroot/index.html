@@ -1893,6 +1893,7 @@ async function loadSteadyBoard(){
               <div class="league">${esc(it.leagueName||'')}</div></td>
           <td class="result-cell"><span class="${sideCls(it.side)}">${esc(it.sideName||'')}</span></td>
           <td class="mono">${num(it.odds,2)}</td>
+          <td class="mono">${it.finalOdds != null ? num(it.finalOdds,2) : '<span class="dim">—</span>'}</td>
           <td class="mono">${num(it.marketPct,1)}%</td>
           <td class="mono">${esc(it.actualScore||'')}</td>
           <td class="hit-cell">${res}</td>
@@ -1902,19 +1903,26 @@ async function loadSteadyBoard(){
           <div class="m-teams">${esc(it.homeTeam||'')}<span class="vs">VS</span>${esc(it.awayTeam||'')}</div>
           <div class="m-time">${esc(it.leagueName||'')}</div>
           <div class="m-row"><span class="lbl">方向</span><span class="val">${esc(it.sideName||'')}</span></div>
-          <div class="m-row"><span class="lbl">赔率</span><span class="val">${num(it.odds,2)}</span></div>
+          <div class="m-row"><span class="lbl">赔率</span><span class="val">${num(it.odds,2)}${it.finalOdds != null ? ` → <b>${num(it.finalOdds,2)}</b>` : ''}</span></div>
           <div class="m-row"><span class="lbl">市场概率</span><span class="val">${num(it.marketPct,1)}%</span></div>
           <div class="m-row"><span class="lbl">比分</span><span class="val">${esc(it.actualScore||'-')}</span></div>
           <div class="m-row"><span class="lbl">结果</span><span class="val">${res}</span></div>
         </div>`;
       }
       body = `<div class="board-scroll"><table class="tbl"><thead><tr>
-          <th>序</th><th>场次</th><th>对阵</th><th>方向</th><th>赔率</th><th>市场概率</th><th>比分</th><th>结果</th>
+          <th>序</th><th>场次</th><th>对阵</th><th>方向</th><th>赔率</th><th>终版</th><th>市场概率</th><th>比分</th><th>结果</th>
         </tr></thead><tbody>${rows}</tbody></table></div>${cards}`;
     }
 
+    // 两栏（2026-11-10 加）： roi = 推荐价口径（历史口径），roiFinal = 停售前最后采样口径。
+    // 稳胆赔率只有 1.0~1.75、回报贴着 0.95~1.00 走，3% 的价差就能把结论从「打平」翻成「亏 5%」，
+    // 所以跟单评价只认 roiFinal；覆盖率不足 95% 时打星号。
+    const cov = Number(st.finalCoverage || 0);
     const statLine = st.settled
-      ? `近 ${st.days} 天已结算 <b>${st.settled}</b> 注 · 命中 <b>${st.hits}</b> 注 · 命中率 <b>${num(st.hitPct,1)}%</b> · 均赔 <b>${num(st.avgOdds,2)}</b> · 回报 <b>${num(st.roi,3)}</b>`
+      ? `近 ${st.days} 天已结算 <b>${st.settled}</b> 注 · 命中 <b>${st.hits}</b> 注 · 命中率 <b>${num(st.hitPct,1)}%</b> · 均赔 <b>${num(st.avgOdds,2)}</b>`
+        + ` · 回报(推荐价) <b>${num(st.roi,3)}</b>`
+        + ` · 回报(终版价) <b>${num(st.roiFinal,3)}</b>${cov >= 95 ? '' : `<span class="dim">*</span>`}`
+        + `<span class="dim">（终版覆盖 ${num(cov,0)}%）</span>`
       : '还没有已结算样本';
 
     box.innerHTML = `<div class="board bd-spf-board">
@@ -1929,6 +1937,8 @@ async function loadSteadyBoard(){
         本栏是<b>命中导向</b>：目标是「经常能中」，不是「赚更多」。回测 382 注：每日前 3 注 77.6% 命中、回报 0.993；
         每日前 1 注 90.9%、回报 1.102（33 注）。<b>长期回报仍被竞彩胜平负返奖率 0.878 压着，别把它当盈利来源。</b>
         与大奶主榜完全分开记账——主榜按 EV 挑价值（命中率 12~15%），两者不可混看。
+        <br><b>看跟单亏赚只认「回报(终版价)」</b>：稳胆赔率只有 1.0~1.75、回报贴着 0.95~1.00 走，
+        3% 的价差就能把「打平」算成「亏 5%」。终版价 = 开赛前最后一次竞彩赔率采样，也就是真正能买到的价。
       </div>
     </div>`;
   }catch(err){
@@ -1952,10 +1962,17 @@ async function loadBdSpfRecord(){
     const t = r.total || {};
     if(!t.settled){ box.innerHTML = ''; return; }
     const num = (v, d) => Number(v || 0).toFixed(d);
+    // 两栏（2026-11-10 加）：roi = 推荐时点 SP，roiFinal = 开奖 SP（真实赔付）。
+    // 覆盖率 <95% 时打星号——那说明开奖期次没采全，这一栏会低估。
+    const roi2 = g => {
+      const v = `<b>${num(g.roiFinal,3)}</b>`;
+      return (Number(g.finalCoverage||0) >= 95) ? v : `${v}<span class="dim">*</span>`;
+    };
     const row = (g, name) => (g && g.settled)
       ? `<tr><td>${name}</td><td class="mono">${g.settled}</td><td class="mono">${g.hits}</td>
            <td class="mono">${num(g.hitPct,1)}%</td><td class="mono">${num(g.avgOdds,2)}</td>
-           <td class="mono">${num(g.roi,3)}</td><td class="mono">${g.pending||0}</td></tr>`
+           <td class="mono">${num(g.roi,3)}</td><td class="mono">${roi2(g)}</td>
+           <td class="mono dim">${num(g.finalCoverage,0)}%</td><td class="mono">${g.pending||0}</td></tr>`
       : '';
     box.innerHTML = `<div class="board bd-spf-board">
       <div class="board-head">
@@ -1963,14 +1980,22 @@ async function loadBdSpfRecord(){
         <span class="meta">近 <b>${r.days}</b> 天 · 已结算 <b>${t.settled}</b> 注 · 待结算 <b>${t.pending||0}</b> 注</span>
       </div>
       <div class="board-scroll"><table class="tbl"><thead><tr>
-        <th>分组</th><th>已结算</th><th>命中</th><th>命中率</th><th>均赔</th><th>回报</th><th>待结算</th>
+        <th>分组</th><th>已结算</th><th>命中</th><th>命中率</th><th>均赔</th>
+        <th>回报<br><span class="dim">推荐价</span></th><th>回报<br><span class="dim">开奖SP</span></th>
+        <th>SP覆盖</th><th>待结算</th>
       </tr></thead><tbody>
         ${row(r.steady,'串关正路')}${row(r.reverse,'爆冷参考')}
         <tr><td><b>合计</b></td><td class="mono"><b>${t.settled}</b></td><td class="mono"><b>${t.hits}</b></td>
           <td class="mono"><b>${num(t.hitPct,1)}%</b></td><td class="mono"><b>${num(t.avgOdds,2)}</b></td>
-          <td class="mono"><b>${num(t.roi,3)}</b></td><td class="mono">${t.pending||0}</td></tr>
+          <td class="mono">${num(t.roi,3)}</td><td class="mono">${roi2(t)}</td>
+          <td class="mono dim">${num(t.finalCoverage,0)}%</td><td class="mono">${t.pending||0}</td></tr>
       </tbody></table></div>
-      <div class="dim" style="margin:6px 2px 10px">回报 = 命中赔率合计 ÷ 已结算注数（平注 1 单位）。<b>赔率是推荐时点 SP，实购终版与之有 10~46% 差距，只能看方向，不是账本。</b>单注命中率也不等于串关中奖率（10 串 1 ≈ 0.585 的 10 次方）。</div>
+      <div class="dim" style="margin:6px 2px 10px">
+        回报 = 命中赔率合计 ÷ 已结算注数（平注 1 单位）。<b>「推荐价」是发榜那一刻的 SP，实购价与它差 10~46%，只能看方向；
+        「开奖SP」取的是北单开奖页的实际派奖赔率（ResultSp），这就是中多少付多少的真实金额，看跟单亏赚只认这一栏。</b>
+        开奖 SP 只有命中的那注才有（没开出的选项本来就没有 SP），所以覆盖率按命中注算；
+        带 * 表示覆盖率不足 95%，那一栏会低估。单注命中率也不等于串关中奖率（10 串 1 ≈ 0.585 的 10 次方）。
+      </div>
     </div>`;
   }catch(err){
     if(err.message === 'unauthorized') return;

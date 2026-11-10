@@ -81,6 +81,9 @@ builder.Services.AddSingleton<DailyFollowService>();
 builder.Services.AddSingleton<BdSpfPickRepository>();
 builder.Services.AddSingleton<BdSpfPickService>();
 builder.Services.AddSingleton<SteadyPickRepository>();
+// 终版价回填 + 北单开奖补采（2026-11-10 加，配套 finalize-prices / bd-history 作业）。
+builder.Services.AddSingleton<FinalPriceRepository>();
+builder.Services.AddSingleton<BdHistoryRepository>();
 builder.Services.AddSingleton<AuthService>();
 builder.Services.AddSingleton<PurchaseSettlementService>();
 builder.Services.AddSingleton<StandingService>();
@@ -97,7 +100,10 @@ builder.Services.AddSingleton(sp => new JobScheduler(
     sp.GetRequiredService<BdSpfPickRepository>(),
     sp.GetRequiredService<StandingService>(),
     sp.GetRequiredService<PaperTradeRepository>(),
-    sp.GetRequiredService<SteadyPickRepository>()));
+    sp.GetRequiredService<SteadyPickRepository>(),
+    sp.GetRequiredService<FinalPriceRepository>(),
+    sp.GetRequiredService<BdHistoryRepository>(),
+    sp.GetRequiredService<BettingCardSource>()));
 builder.Services.AddHostedService<SchedulerHostedService>();
 // token 健康守护：连续被人机验证拦截时自动用本机浏览器续期，避免回补空转
 builder.Services.AddHostedService<TokenHealthService>();

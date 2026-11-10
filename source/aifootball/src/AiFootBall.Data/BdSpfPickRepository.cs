@@ -38,7 +38,10 @@ public sealed class BdSpfPickRepository
                   HandicapSide  CHAR(1) NULL,               -- 让球盘方向 3 让胜/1 让平/0 让负
                   HandicapSideName NVARCHAR(10) NULL,
                   HandicapProbability DECIMAL(6,2) NULL,    -- 让球方向打出概率 0~100
-                  HandicapOdds  DECIMAL(8,2) NULL,          -- 让球盘 SP
+                  HandicapOdds  DECIMAL(8,2) NULL,          -- 让球盘 SP（推荐时点）
+                  FinalOdds     DECIMAL(8,2) NULL,          -- 开奖 SP（终版价，只有命中的注有），2026-11-10 加
+                  FinalAt       DATETIME2(0) NULL,
+                  FinalSource   NVARCHAR(12) NULL,
                   HitProbability DECIMAL(6,2) NULL,
                   MarketProb    DECIMAL(6,2) NULL,
                   RatioHome     DECIMAL(6,2) NULL,
@@ -74,6 +77,18 @@ public sealed class BdSpfPickRepository
                 IF COL_LENGTH('dbo.FbBdSpfPick','HandicapOdds') IS NULL
                   ALTER TABLE dbo.FbBdSpfPick ADD HandicapOdds DECIMAL(8,2) NULL;
               END;", cancellationToken: ct));
+
+        // 老表兜底：终版价三列（2026-11-10 加，逐列判断，幂等）。
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"IF OBJECT_ID('dbo.FbBdSpfPick') IS NOT NULL
+              BEGIN
+                IF COL_LENGTH('dbo.FbBdSpfPick','FinalOdds') IS NULL
+                  ALTER TABLE dbo.FbBdSpfPick ADD FinalOdds DECIMAL(8,2) NULL;
+                IF COL_LENGTH('dbo.FbBdSpfPick','FinalAt') IS NULL
+                  ALTER TABLE dbo.FbBdSpfPick ADD FinalAt DATETIME2(0) NULL;
+                IF COL_LENGTH('dbo.FbBdSpfPick','FinalSource') IS NULL
+                  ALTER TABLE dbo.FbBdSpfPick ADD FinalSource NVARCHAR(12) NULL;
+              END;", cancellationToken: ct));
     }
 
     /// <summary>重写当日北单推荐（先删当日未结算行再写）。</summary>
@@ -96,7 +111,7 @@ public sealed class BdSpfPickRepository
                 @"INSERT INTO dbo.FbBdSpfPick
                     (PickDate, Kind, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      Side, SideName, Odds, Handicap, HandicapSide, HandicapSideName,
-                     HandicapProbability, HandicapOdds, HitProbability, MarketProb,
+                     HandicapProbability, HandicapOdds, FinalOdds, FinalAt, FinalSource, HitProbability, MarketProb,
                      RatioHome, RatioAway, PnlIdxHome, PnlIdxAway, Reason, Confidence)
                   VALUES (@d, @kind, @mid, @no, @lg, @home, @away, @time,
                           @side, @sideName, @odds, @hcp, @hside, @hsideName,
@@ -180,10 +195,14 @@ public sealed class BdSpfPickRepository
     /// <summary>
     /// 北单战绩（近 N 天，按 steady / reverse 分组）。
     ///
-    /// ★ 口径：分母只算**已结算**注数（Hit 非空），回报 = 命中赔率合计 ÷ 注数（平注 1 单位）。
-    /// ★ 赔率警示：`Odds` 存的是推荐生成那一刻的 SP，实际能买到的终版 SP 与它常有 10~46% 的差距
-    ///   （场16 让胜 2.91→实购 4.25、场36 让负 2.07→3.74），所以这个 ROI 只能当方向参考，
-    ///   不能当账本。要精确到分必须另存终版 SP，目前没有。
+    /// ★ 口径：分母只算**已结算**注数（Hit 非空）。
+    /// ★ 两栏（2026-11-10 加）：
+    ///   · <c>Roi</c> = 命中注**推荐时点 SP** 合计 ÷ 注数。实购终版 SP 与它常有 10~46% 差距，
+    ///     只能看方向，不能当账本（场16 让胜 2.91→实购 4.25、场36 让负 2.07→3.74）。
+    ///   · <c>RoiFinal</c> = 命中注**开奖 SP**（FbBdHistory.ResultSp）合计 ÷ 注数。
+    ///     北单按 SP 派奖，这是**真实赔付**，跟单能不能赚只看这一栏。
+    ///     只有命中的注有开奖 SP（没开出的选项没有 SP），未命中赔付本来就是 0，
+    ///     分母仍是全部已结算注数，所以这个回报是精确值而非估计值。
     /// </summary>
     public async Task<BdSpfRecord> GetRecordAsync(int days = 30, CancellationToken ct = default)
     {
@@ -196,6 +215,8 @@ public sealed class BdSpfPickRepository
                      SUM(CASE WHEN Hit IS NULL THEN 1 ELSE 0 END) AS Pending,
                      CAST(AVG(CASE WHEN Hit IS NOT NULL THEN Odds END) AS DECIMAL(8,2)) AS AvgOdds,
                      CAST(SUM(CASE WHEN Hit = 1 THEN ISNULL(Odds, 0) ELSE 0 END) AS DECIMAL(10,2)) AS HitOddsSum,
+                     SUM(CASE WHEN Hit = 1 AND FinalOdds IS NOT NULL THEN 1 ELSE 0 END) AS FinalHits,
+                     CAST(SUM(CASE WHEN Hit = 1 THEN ISNULL(FinalOdds, 0) ELSE 0 END) AS DECIMAL(10,2)) AS FinalOddsSum,
                      MIN(PickDate) AS FromDate, MAX(PickDate) AS ToDate
               FROM dbo.FbBdSpfPick
               WHERE PickDate >= DATEADD(day, -@n, CAST(SYSDATETIME() AS DATE))
@@ -213,7 +234,10 @@ public sealed class BdSpfPickRepository
                 Pending = r.Pending,
                 AvgOdds = r.AvgOdds,
                 HitPct = r.Settled > 0 ? Math.Round(r.Hits * 100m / r.Settled, 1) : 0m,
-                Roi = r.Settled > 0 ? Math.Round(r.HitOddsSum / r.Settled, 3) : 0m
+                Roi = FinalPriceMath.Roi(r.Settled, r.HitOddsSum),
+                RoiFinal = FinalPriceMath.Roi(r.Settled, r.FinalOddsSum),
+                FinalHits = r.FinalHits,
+                FinalCoverage = FinalPriceMath.HitCoverage(r.Hits, r.FinalHits)
             };
             if (r.Kind == "reverse") record.Reverse = g; else record.Steady = g;
             record.From ??= r.FromDate;
@@ -228,10 +252,14 @@ public sealed class BdSpfPickRepository
             sum.Settled += g.Settled;
             sum.Hits += g.Hits;
             sum.Pending += g.Pending;
+            sum.FinalHits += g.FinalHits;
         }
         var oddsSum = rows.Sum(r => r.HitOddsSum);
+        var finalOddsSum = rows.Sum(r => r.FinalOddsSum);
         sum.HitPct = sum.Settled > 0 ? Math.Round(sum.Hits * 100m / sum.Settled, 1) : 0m;
-        sum.Roi = sum.Settled > 0 ? Math.Round(oddsSum / sum.Settled, 3) : 0m;
+        sum.Roi = FinalPriceMath.Roi(sum.Settled, oddsSum);
+        sum.RoiFinal = FinalPriceMath.Roi(sum.Settled, finalOddsSum);
+        sum.FinalCoverage = FinalPriceMath.HitCoverage(sum.Hits, sum.FinalHits);
         sum.AvgOdds = sum.Settled > 0
             ? Math.Round(rows.Where(r => r.AvgOdds is not null)
                              .Select(r => r.AvgOdds!.Value * r.Settled).Sum() / sum.Settled, 2)
@@ -239,7 +267,7 @@ public sealed class BdSpfPickRepository
         record.Total = sum;
         record.Rows = (await conn.QueryAsync<BdSpfPickRecordItem>(new CommandDefinition(
             @"SELECT PickDate, Kind, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
-                     Handicap, SideName, Odds, ActualScore, Hit
+                     Handicap, SideName, Odds, FinalOdds, ActualScore, Hit
               FROM dbo.FbBdSpfPick
               WHERE PickDate >= DATEADD(day, -@n, CAST(SYSDATETIME() AS DATE))
               ORDER BY PickDate DESC, MatchTime DESC",
@@ -265,6 +293,10 @@ public sealed class BdSpfPickRepository
         public int Pending { get; set; }
         public decimal? AvgOdds { get; set; }
         public decimal HitOddsSum { get; set; }
+        /// <summary>命中注里拿得到开奖 SP 的注数（2026-11-10 加）。</summary>
+        public int FinalHits { get; set; }
+        /// <summary>命中注开奖 SP 合计。</summary>
+        public decimal FinalOddsSum { get; set; }
         public DateTime? FromDate { get; set; }
         public DateTime? ToDate { get; set; }
     }
@@ -277,7 +309,7 @@ public sealed class BdSpfPickRepository
         var rows = (await conn.QueryAsync<BdSpfPickRow>(new CommandDefinition(
             @"SELECT Kind, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      Side, SideName, Odds, Handicap, HandicapSide, HandicapSideName,
-                     HandicapProbability, HandicapOdds, HitProbability, MarketProb,
+                     HandicapProbability, HandicapOdds, FinalOdds, FinalAt, FinalSource, HitProbability, MarketProb,
                      RatioHome, RatioAway, PnlIdxHome, PnlIdxAway, Reason, Confidence,
                      ActualScore, Hit, SettledAt
               FROM dbo.FbBdSpfPick WHERE PickDate=@d
@@ -299,7 +331,7 @@ public sealed class BdSpfPickRepository
                 rows = (await conn.QueryAsync<BdSpfPickRow>(new CommandDefinition(
                     @"SELECT Kind, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                              Side, SideName, Odds, Handicap, HandicapSide, HandicapSideName,
-                             HandicapProbability, HandicapOdds, HitProbability, MarketProb,
+                             HandicapProbability, HandicapOdds, FinalOdds, FinalAt, FinalSource, HitProbability, MarketProb,
                              RatioHome, RatioAway, PnlIdxHome, PnlIdxAway, Reason, Confidence,
                              ActualScore, Hit, SettledAt
                       FROM dbo.FbBdSpfPick WHERE PickDate=@d
@@ -331,6 +363,9 @@ public sealed class BdSpfPickRepository
                 HandicapSideName = r.HandicapSideName,
                 HandicapProbability = r.HandicapProbability,
                 HandicapOdds = r.HandicapOdds,
+                FinalOdds = r.FinalOdds,
+                FinalAt = r.FinalAt,
+                FinalSource = r.FinalSource,
                 HitProbability = r.HitProbability,
                 MarketProb = r.MarketProb,
                 RatioHome = r.RatioHome,
@@ -363,6 +398,9 @@ public sealed class BdSpfPickRepository
         public string? HandicapSideName { get; set; }
         public decimal? HandicapProbability { get; set; }
         public decimal? HandicapOdds { get; set; }
+        public decimal? FinalOdds { get; set; }
+        public DateTime? FinalAt { get; set; }
+        public string? FinalSource { get; set; }
         public decimal? HitProbability { get; set; }
         public decimal? MarketProb { get; set; }
         public decimal? RatioHome { get; set; }

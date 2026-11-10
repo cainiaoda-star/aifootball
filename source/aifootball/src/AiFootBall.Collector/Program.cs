@@ -160,7 +160,12 @@ internal static class Program
                         // 免得用 `scheduler --once bd-spf-settle` 手动补跑时撞上「未注入」。
                         bdSpfRepo: new BdSpfPickRepository(factory),
                         // 2026-11-09：稳胆同理，手动 `scheduler --once save-steady-picks` 时要能跑。
-                        steady: new SteadyPickRepository(factory));
+                        steady: new SteadyPickRepository(factory),
+                        // 2026-11-10：终版价回填与北单开奖补采，采集器这一侧也给一份，
+                        // 手动 `scheduler --once finalize-prices` / `bd-history` 才不会报「未注入」。
+                        finalPrice: new FinalPriceRepository(factory),
+                        bdHistory: new BdHistoryRepository(factory),
+                        cards: cardSource);
                     await scheduler.InitializeAsync();
                     if (opts.TryGetValue("once", out var once))
                     {

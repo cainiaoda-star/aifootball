@@ -28,7 +28,17 @@ public sealed class PaperTradeRow
     public string PlayType { get; set; } = string.Empty;
     public string OptionCode { get; set; } = string.Empty;
     public string OptionName { get; set; } = string.Empty;
+
+    /// <summary>冻结那一刻榜面上的价（= 上场前的价，不是停售价）。</summary>
     public decimal Odds { get; set; }
+
+    /// <summary>
+    /// 终版价（2026-11-10 加）：开赛前最后一次采样。NULL = 还没回填。
+    /// ★ 不改 <see cref="Odds"/>：台账只增不改，冻结价是「当时榜面写的价」。
+    /// </summary>
+    public decimal? FinalOdds { get; set; }
+    public DateTime? FinalAt { get; set; }
+    public string? FinalSource { get; set; }
 
     /// <summary>落库时是 Blend 值（0.7 模型 + 0.3 市场），不是纯模型。</summary>
     public decimal? ModelProbability { get; set; }
@@ -65,6 +75,9 @@ public sealed class PaperTradeRow
 /// <summary>
 /// 空跑战绩的一个分组切片。分母统一用「已结算且未撤注」的注数，
 /// 撤注单独计数——撤注判得对不对要另算，不能混进命中率。
+///
+/// 后三个参数是终版价口径（2026-11-10 加）：<see cref="Roi"/> 用冻结价，
+/// <see cref="RoiFinal"/> 用停售前最后采样。跟单评价看 RoiFinal。
 /// </summary>
 public sealed record PaperSlice(
     string Key,
@@ -75,9 +88,18 @@ public sealed record PaperSlice(
     decimal HitPct,
     decimal Stake,
     decimal Return,
-    decimal Roi)
+    decimal Roi,
+    int FinalHits = 0,
+    decimal ReturnFinal = 0m,
+    decimal RoiFinal = 0m)
 {
     public static PaperSlice Empty(string key) => new(key, 0, 0, 0, 0, 0m, 0m, 0m, 0m);
+
+    /// <summary>终版价覆盖率（%，分母 = 命中注数）。</summary>
+    public decimal FinalCoverage => FinalPriceMath.HitCoverage(Hits, FinalHits);
+
+    /// <summary>RoiFinal 能不能当账本。</summary>
+    public bool FinalVerified => FinalPriceMath.Trustworthy(Hits, FinalHits);
 }
 
 /// <summary>空跑战绩报表：整体 + 按玩法 + 按日 + 按标记。</summary>
