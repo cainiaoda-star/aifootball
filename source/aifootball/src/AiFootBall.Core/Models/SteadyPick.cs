@@ -140,6 +140,55 @@ public static class SteadyPickRules
 
     /// <summary>三档都算不出来时，最低可接受的热门程度（去水概率）。低于此值说明这是一场均衡局，不配叫稳胆。</summary>
     public const decimal MinMarketPct = 40m;
+
+    /// <summary>
+    /// 竞彩受注日：由场次号前缀「周x」判定，**不看开赛日期**。
+    ///
+    /// 2026-11-10 修：作业原来一律用 <c>DateTime.Today</c> 落库。20:50 那轮页面已经
+    /// 切到次日期号（实测 22:06 预览拿到「周三005 11-12 03:00」「周三006」），
+    /// 存进去就把次日的注记成了今天 —— 受注日错位一天，台账、结算、复盘全跟着错。
+    /// 更糟的是 <c>SaveDayAsync</c> 会先删「当天未结算且未开赛」的行，
+    /// 于是同一批行先被删再被另一期的注覆盖，榜面看起来在跳，其实是两个期在抢一个日期。
+    ///
+    /// 口径与 <c>HalfDrawRepository</c> / <c>MilkPickRepository</c> 一致：期号说了算。
+    /// 「周三005」开球在 11-12 03:00，属于 **11-11** 那一期，不是 11-10、也不是 11-12。
+    ///
+    /// 解析不出前缀（北单纯数字场次号）时退回开赛时间规则：12:00 前开球归前一日，
+    /// 这正是判据库里「受注日 ≠ 开赛日」那条。
+    /// </summary>
+    public static DateTime SalesDate(string? matchNo, DateTime? matchTime, DateTime fallback)
+    {
+        if (matchTime is not DateTime mt) return fallback.Date;
+
+        var want = WeekdayOfMatchNo(matchNo);
+        if (want == 0)
+            return mt.Hour < 12 ? mt.Date.AddDays(-1) : mt.Date;
+
+        // 从开赛日往回找最近的那个星期几。找满 7 天说明数据坏了，交给 fallback。
+        var d = mt.Date;
+        for (var i = 0; i < 7; i++, d = d.AddDays(-1))
+            if (WeekdayNumber(d.DayOfWeek) == want) return d;
+
+        return fallback.Date;
+    }
+
+    /// <summary>1=周一 … 7=周日。和场次号前缀同一套编号。</summary>
+    public static int WeekdayNumber(DayOfWeek w) => w == DayOfWeek.Sunday ? 7 : (int)w;
+
+    /// <summary>场次号前缀 → 1=周一 … 7=周日；解析不出返回 0。</summary>
+    public static int WeekdayOfMatchNo(string? matchNo)
+    {
+        if (string.IsNullOrWhiteSpace(matchNo)) return 0;
+        var s = matchNo;
+        if (s.Contains("一", StringComparison.Ordinal)) return 1;
+        if (s.Contains("二", StringComparison.Ordinal)) return 2;
+        if (s.Contains("三", StringComparison.Ordinal)) return 3;
+        if (s.Contains("四", StringComparison.Ordinal)) return 4;
+        if (s.Contains("五", StringComparison.Ordinal)) return 5;
+        if (s.Contains("六", StringComparison.Ordinal)) return 6;
+        if (s.Contains("日", StringComparison.Ordinal)) return 7;
+        return 0;
+    }
 }
 
 /// <summary>

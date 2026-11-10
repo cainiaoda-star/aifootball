@@ -242,6 +242,62 @@ public class SteadyPickTests
     private static JcOddsHistoryPoint Point(long mid, string code, decimal odds)
         => new() { MatchId = mid, MatchNo = "", PlayType = JcPlayTypes.Spf, OptionCode = code, Odds = odds };
 
+    // ---------- 受注日（2026-11-10 修：不再一律用 DateTime.Today） ----------
+
+    /// <summary>
+    /// 「周三005」开球 11-12 03:00，属于 11-11 那一期。
+    /// 修之前作业一律存 DateTime.Today，20:50 那轮会把它记成 11-10 —— 错一天，
+    /// 而且 SaveDayAsync 会先删当天的未结算行，等于用次日的注覆盖当天的注。
+    /// </summary>
+    [Fact]
+    public void SalesDate_Follows_MatchNo_Period_Not_Kickoff_Date()
+    {
+        var d = SteadyPickRules.SalesDate("周三005", new DateTime(2026, 11, 12, 3, 0, 0), new DateTime(2026, 11, 10));
+        Assert.Equal(new DateTime(2026, 11, 11), d);
+    }
+
+    /// <summary>同一天的晚场（20:00 开球）仍属于当天那一期，不能往前推。</summary>
+    [Fact]
+    public void SalesDate_Keeps_Same_Day_For_Evening_Kickoff()
+    {
+        var d = SteadyPickRules.SalesDate("周三001", new DateTime(2026, 11, 11, 20, 0, 0), new DateTime(2026, 11, 10));
+        Assert.Equal(new DateTime(2026, 11, 11), d);
+    }
+
+    /// <summary>凌晨 03:00 的周二场属于 11-10（周二）那一期。</summary>
+    [Fact]
+    public void SalesDate_Tuesday_PreDawn_Is_Monday_Period()
+    {
+        var d = SteadyPickRules.SalesDate("周二001", new DateTime(2026, 11, 11, 3, 0, 0), new DateTime(2026, 11, 11));
+        Assert.Equal(new DateTime(2026, 11, 10), d);
+    }
+
+    /// <summary>北单纯数字场次号没有期号前缀，退回「12:00 前开球归前一日」。</summary>
+    [Fact]
+    public void SalesDate_No_Period_Prefix_Falls_Back_To_Kickoff_Rule()
+    {
+        Assert.Equal(new DateTime(2026, 11, 10),
+            SteadyPickRules.SalesDate("123", new DateTime(2026, 11, 11, 3, 0, 0), new DateTime(2026, 11, 1)));
+        Assert.Equal(new DateTime(2026, 11, 11),
+            SteadyPickRules.SalesDate("123", new DateTime(2026, 11, 11, 20, 0, 0), new DateTime(2026, 11, 1)));
+    }
+
+    /// <summary>完全没有开赛时间时只能信 fallback，但绝不许抛。</summary>
+    [Fact]
+    public void SalesDate_Null_MatchTime_Uses_Fallback()
+    {
+        Assert.Equal(new DateTime(2026, 11, 10), SteadyPickRules.SalesDate("周三005", null, new DateTime(2026, 11, 10)));
+    }
+
+    [Theory]
+    [InlineData("周一001", 1)]
+    [InlineData("周日023", 7)]
+    [InlineData("周三005", 3)]
+    [InlineData("123", 0)]
+    [InlineData("", 0)]
+    public void WeekdayOfMatchNo_Parses_Prefix(string matchNo, int expected)
+        => Assert.Equal(expected, SteadyPickRules.WeekdayOfMatchNo(matchNo));
+
     private static Dictionary<long, List<JcOddsHistoryPoint>> Odds(long mid, (decimal H, decimal D, decimal A) o)
         => new()
         {

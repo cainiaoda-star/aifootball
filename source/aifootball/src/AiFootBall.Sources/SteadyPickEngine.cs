@@ -118,6 +118,8 @@ public static class SteadyPickEngine
 
             pool.Add(new SteadyPick
             {
+                // 受注日跟着期号走，不跟作业运行日走（2026-11-10 修，见 SteadyPickRules.SalesDate）。
+                PickDate = SteadyPickRules.SalesDate(r.MatchNo, r.MatchTime, DateTime.Today),
                 MatchId = mid,
                 MatchNo = r.MatchNo,
                 LeagueName = r.LeagueName,

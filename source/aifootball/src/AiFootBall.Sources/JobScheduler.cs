@@ -1226,14 +1226,20 @@ public sealed class JobScheduler
                 await _steady.EnsureTableAsync(ct);
                 // 一张都没出时不要执行 DELETE：否则一次「快照还没到」的早跑会把当天已发的注清空。
                 // 稳胆的规则是「赔率最低的三场」，早跑和晚跑可能完全不同，清空代价很大。
-                var saved = steady.Picks.Count == 0
-                    ? 0
-                    : await _steady.SaveDayAsync(DateTime.Today, steady.Picks, ct);
+                //
+                // 2026-11-10 修：按**注单自己的受注日**分组落库，不再一律用 DateTime.Today。
+                // 20:50 那轮页面已经切到次日期号，原来的写法会把「周三」的注存成「周二」，
+                // 而 SaveDayAsync 会先删当天的未结算行 —— 等于用次日的注覆盖当天的注。
+                var saved = 0;
+                foreach (var g in steady.Picks.GroupBy(p => p.PickDate ?? DateTime.Today))
+                    saved += await _steady.SaveDayAsync(g.Key, g.ToList(), ct);
                 var st = await _steady.GetStatsAsync(30, ct);
+                var dates = string.Join("/", steady.Picks.Select(p => p.PickDate ?? DateTime.Today)
+                    .Distinct().OrderBy(x => x).Select(x => x.ToString("MM-dd")));
                 result = CollectionResult.Ok(saved, steady.Picks.Count == 0
                     ? $"稳胆：今日无符合条件场次（候选 {steady.Candidates}、名单外 {steady.Excluded}、"
                       + $"超赔率上限 {steady.OverOdds}）；近 30 天 {st.Settled} 注 {st.Hits} 中（{st.HitPct:0.0}%）"
-                    : $"稳胆：{steady.Picks.Count} 注已落库（候选 {steady.Candidates}，"
+                    : $"稳胆：{steady.Picks.Count} 注已落库（受注日 {dates}；候选 {steady.Candidates}，"
                       + $"被每日上限截掉 {steady.CutByRank}）；近 30 天 {st.Settled} 注 {st.Hits} 中"
                       + $"（{st.HitPct:0.0}%），回报 {st.Roi:0.000}");
                 break;
@@ -1343,12 +1349,20 @@ public sealed class JobScheduler
                 }
                 var all = await _recommendation.RecommendAllAndSaveAsync(ct);
                 var sample = all.Values.Sum(v => v.Count);
+                // 2026-11-10 加：榜空时必须留下漏斗数字。原本文案是一句固定的
+                // 「今天没有可算的胜平负方向」，11-09 一整天 0 注，事后谁也说不清是
+                // 「没有场次」还是「有场次但一条都没过」—— FbMilkGate 那天同样一行没有
+                // （闸诊断只对进入流程的场次写行），凭证全丢。
+                // 现在每次跑都报一遍分盘口条数：Jc 0 就说明抓取/赛程这一层就断了。
+                var funnel = all.Count == 0
+                    ? "无盘口"
+                    : string.Join("/", all.Select(kv => $"{kv.Key} {kv.Value.Count}"));
                 // 2026-11-04 用户拍板：胜平负/让球不再对外发布（「发出来还是错的，浪费」）。
                 // 这批行只是校准样本 + 否决台账的分母，所以文案不再说「已保存今日推荐」——
                 // 那句话会让人以为页面上真能照着买。对外只有大奶。
                 result = CollectionResult.Ok(sample, sample == 0
-                    ? "大奶榜已刷新；今天没有可算的胜平负方向（不影响大奶）"
-                    : $"大奶榜已刷新；胜平负方向 {sample} 场只作校准样本，不对外发布");
+                    ? $"大奶榜已刷新；今天没有可算的胜平负方向（不影响大奶）；漏斗 {funnel}"
+                    : $"大奶榜已刷新；胜平负方向 {sample} 场只作校准样本，不对外发布；漏斗 {funnel}");
                 break;
             }
 
