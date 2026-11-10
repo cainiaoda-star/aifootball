@@ -881,7 +881,24 @@ public sealed class RecommendationService
         if (_milkPicks is null || _tickets is null) return;
 
         var build = await RecommendMilkWithGateAsync(jcRecs, ct);
-        await _milkPicks.SaveDayAsync(DateTime.Today, build.Picks, ct);
+
+        // 2026-11-10 修：按**注单自己的受注日**分组落库，不再一律用 DateTime.Today。
+        //
+        // 出错形态（当晚实测）：22:11 手动重算时页面已切到「周三」期号，算出 3 注周三场次，
+        // 却全部记成 PickDate=11-10。而 SaveDayAsync 是先 DELETE 当日未结算行再 INSERT，
+        // 于是 21:50 定版的周二两注（伯顿 半全场平负 @7.20）从榜面消失，只剩台账里那一份。
+        // 用户 21:50 看到的榜和 22:11 之后的榜是两套东西，日志里却都叫「已刷新」。
+        //
+        // 口径与稳胆一致：**期号说了算**（见 SteadyPickRules.SalesDate）。
+        // 「周三005」开球在 11-12 03:00，属于 11-11 那一期，不该记在 11-10 名下。
+        // 分组之后，每一期只删自己那天，不同期互不覆盖。
+        var today = DateTime.Today;
+        var bySalesDate = build.Picks
+            .GroupBy(p => SteadyPickRules.SalesDate(
+                string.IsNullOrWhiteSpace(p.MatchNo) ? null : p.MatchNo, p.MatchTime, today))
+            .ToList();
+        foreach (var g in bySalesDate)
+            await _milkPicks.SaveDayAsync(g.Key, g.ToList(), ct);
 
         // 方向闸的诊断与榜同批落库（2026-11-05）。存下来才回答得了
         // 「11-04 那三场当时模型指哪、市场指哪」——快照一滚就再也追不回来了。
@@ -896,7 +913,15 @@ public sealed class RecommendationService
         catch (OperationCanceledException) { throw; }
         catch { /* 同上：判定表写不进去不能挡住出票 */ }
 
-        var draft = MilkPickEngine.BuildTicket(build.Picks, DateTime.Today);
+        // 票只装**当日受注**的那批注（2026-11-10 随上面的分组一起改）。
+        // 跨期混票会把「明天才开售/才停售」的场次塞进今天的方案：用户照着买，
+        // 其中一半根本不在今天这一期里。榜可以同时挂着两期（页面按日期分区显示），
+        // 但购买方案必须只对应一期，否则它既不是今天的方案也不是明天的。
+        var todayPicks = bySalesDate
+            .Where(g => g.Key == today)
+            .SelectMany(g => g)
+            .ToList();
+        var draft = MilkPickEngine.BuildTicket(todayPicks, today);
         if (draft is null) return;
         await _tickets.UpsertAsync(draft, ct);
     }

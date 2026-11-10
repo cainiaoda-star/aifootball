@@ -59,6 +59,26 @@ public sealed class JcOddsRepository
                 points.Add(o);
             }
         }
+
+        // 赔率 1.00 不是报价，是「已停售 / 未开盘」的占位值（2026-11-10 加）。
+        //
+        // 实测形态：1430601 不伦瑞克 vs 科特布斯，01:30 开赛；01:30 那轮还是
+        // 3.600 / 3.860 / 1.660，**01:32（开赛后 2 分钟）写进来 1.000 / 1.000 / 1.000**。
+        // 全库 207 行、56 场，集中在凌晨几个作业窗口。
+        //
+        // 危害只发生在**读最新价**的地方：SPF 三档全 1.00 → 隐含概率 100% → 去水后 33.3%，
+        // 模型 Blend 看起来就像「大幅低估市场」，凭空造出一个大 edge。
+        // 线上读取点都有 `Odds > 1` 兜底（GetLatestAsync / GetLatestPlayAsync / TrendSql），
+        // 所以真票没被污染（7 注脏场次全是赛前正常出票）—— **但分析侧没有这个兜底**：
+        // 2026-11-10 那次「SPF 热门被高估 18 个点、客胜 <1.50 只有 76% 回报」的结论，
+        // 就是被 32 场 × 3 档这 96 行 1.00 带出来的；按赛前有效价重算后直接反转
+        // （主胜 <1.50 由 81.3% → 89.7%，客胜由 76.2% → 104.1%）。
+        //
+        // 在写入口堵住，比要求每个读取点各自记得过滤可靠。
+        var valid = points.Where(p => p.Odds > 1m).ToList();
+        if (valid.Count < points.Count)
+            log?.Report($"    丢弃无效赔率 {points.Count - valid.Count} 行（Odds<=1，多为开赛后占位值）");
+        points = valid;
         if (points.Count == 0) return 0;
 
         await using var conn = await _factory.OpenAsync(ct);

@@ -145,7 +145,7 @@ public class SteadyPickTests
 
     /// <summary>每日最多 3 注，按赔率升序；第 4 注起只计数不返回。</summary>
     [Fact]
-    public void Build_CapsAtThreePerDay()
+    public void Build_CapsAtTwoPerDay()
     {
         var recs = new[]
         {
@@ -173,12 +173,20 @@ public class SteadyPickTests
 
         var built = SteadyPickEngine.Build(recs, odds);
 
-        Assert.Equal(3, built.Picks.Count);
+        Assert.Equal(2, built.Picks.Count);
         Assert.Equal(5, built.Candidates);
-        Assert.Equal(2, built.CutByRank);
-        // 按赔率升序：1.20 → 1.30 → 1.50
-        Assert.Equal(new[] { 1.20m, 1.30m, 1.50m }, built.Picks.Select(p => p.Odds).ToArray());
-        Assert.Equal(new[] { 1, 2, 3 }, built.Picks.Select(p => p.Rank).ToArray());
+        Assert.Equal(3, built.CutByRank);
+
+        // 留下的是赔率最低的两注（1.20 的 14 号、1.30 的 12 号），按 Rank 升序。
+        // 这条钉住「按赔率升序取前 N」，不是按开赛时间或场次号 —— 回测的 1.108 回报
+        // 全部建立在这个排序上（见 SteadyPickRules.MaxPerDay 的注释）。
+        Assert.Equal(14, built.Picks[0].MatchId);
+        Assert.Equal(1, built.Picks[0].Rank);
+        Assert.Equal(12, built.Picks[1].MatchId);
+        Assert.Equal(2, built.Picks[1].Rank);
+        // 按赔率升序：1.20 → 1.30（上限 2 注，1.50 那注被截掉）
+        Assert.Equal(new[] { 1.20m, 1.30m }, built.Picks.Select(p => p.Odds).ToArray());
+        Assert.Equal(new[] { 1, 2 }, built.Picks.Select(p => p.Rank).ToArray());
     }
 
     /// <summary>同赔率时按开赛时间再按场次号排序——否则每次重算顺序都可能变，用户看到注单乱跳。</summary>
@@ -222,7 +230,10 @@ public class SteadyPickTests
     public void Rules_ArePinned()
     {
         Assert.Equal(1.75m, SteadyPickRules.MaxOdds);
-        Assert.Equal(3, SteadyPickRules.MaxPerDay);
+        // 2026-11-10 由 3 改 2：按「每日排名」切，回报随注数单调下降
+        // （前 1 注 1.108 / 前 2 注 1.011 / 前 3 注 0.983）。改回 3 等于把第三注
+        // 当天勉强算热门的场次放进来，回报掉到 1 以下。这个数不是随便调的。
+        Assert.Equal(2, SteadyPickRules.MaxPerDay);
     }
 
     // ---------- 构造辅助 ----------
