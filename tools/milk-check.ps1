@@ -449,6 +449,38 @@ WHERE StartedAt >= @d;
     Warn ("token refresh check skipped - " + $_.Exception.Message)
 }
 
+# --- 4g. stuck jobs: hung vs queued -------------------------------------------
+# 2026-11-10: the watchdog used to stamp "stuck N minutes" on both a job that hung
+# inside a call and a job that never got its turn in the lane. 11-09 produced 60
+# of those in one night and not one could be classified, so the single question
+# that mattered - is the code stuck, or is the lane oversubscribed - was unanswerable.
+# The scheduler now prefixes the message with [hung] or [queued].
+# Rule: [hung] is a real defect (an uncancellable call inside the job) and always
+# warns. [queued] is capacity pressure, reported only as context.
+try {
+    $h = @(Sql @"
+DECLARE @d datetime = DATEADD(hour, -24, GETDATE());
+SELECT ISNULL(CAST(SUM(CASE WHEN Message LIKE '[[]hung]%' THEN 1 ELSE 0 END) AS varchar(10)), '0') + '|'
+     + ISNULL(CAST(SUM(CASE WHEN Message LIKE '[[]queued]%' THEN 1 ELSE 0 END) AS varchar(10)), '0')
+FROM dbo.SyncLog
+WHERE StartedAt >= @d AND Status = 'STUCK';
+"@)
+    $p = @($h)[0]
+    if ($p -is [string] -and $p.Contains('|')) {
+        $q = $p -split '\|'
+        $hung = [int]$q[0]; $queued = [int]$q[1]
+        if ($hung -gt 0) {
+            Warn ("a job hung inside a call " + $hung + "x in 24h ([hung] STUCK): it did not respond to cancellation, the lane was held past its hard limit - check that job for a blocking call without a token (" + $queued + " queue waits alongside)")
+        } else {
+            Ok ("no hung jobs in 24h; " + $queued + " lane queue waits (capacity, not a defect)")
+        }
+    } else {
+        Warn "stuck classification skipped - unexpected result shape"
+    }
+} catch {
+    Warn ("stuck classification skipped - " + $_.Exception.Message)
+}
+
 # --- 5. decision --------------------------------------------------------------
 Write-Output "=== result ==="
 if ($fail -eq 0) { Write-Output "PASS"; exit 0 } else { Write-Output "FAIL"; exit 1 }

@@ -9,15 +9,49 @@ public sealed class SyncLogRepository
 
     public SyncLogRepository(SqlConnectionFactory factory) => _factory = factory;
 
+    /// <summary>
+    /// 列宽上限：Message nvarchar(1000)、TaskName/Source nvarchar(100)。
+    ///
+    /// 必须在这里截断，不能指望调用方自觉。超长时 SQL Server 直接抛 2628
+    /// 「字符串或二进制数据将被截断」，INSERT 整个失败——而最可能写出超长消息的时刻，
+    /// 恰恰是正在拼接多个失败原因的时候（旁路结算失败 / 两段采集同时失败）。
+    /// 也就是说：**最需要留下记录的那一刻，日志自己先写不进去**。
+    /// </summary>
+    private const int MaxTaskLen = 100;
+    private const int MaxMessageLen = 1000;
+
+    /// <summary>按列宽截断。public 是为了让另一处直写 SyncLog 的代码（LotteryRepository）复用同一份实现。</summary>
+    public static string? Clip(string? s, int max)
+        => s is null || s.Length <= max ? s : s[..(max - 1)] + "…";
+
+    public static string? ClipTask(string? s) => Clip(s, MaxTaskLen);
+    public static string? ClipMessage(string? s) => Clip(s, MaxMessageLen);
+
     public async Task<long> WriteAsync(string task, string? source, string status, int? rows, string? message,
-        CancellationToken ct = default)
+        CancellationToken ct = default, DateTime? startedAt = null)
     {
         await using var conn = await _factory.OpenAsync(ct);
         return await conn.ExecuteScalarAsync<long>(
-            @"INSERT INTO dbo.SyncLog (TaskName, Source, FinishedAt, Status, RowsAffected, Message)
-              VALUES (@task, @source, SYSDATETIME(), @status, @rows, @message);
+            // StartedAt 必须显式写。
+            //
+            // 2026-11-10 之前这里只写 FinishedAt，StartedAt 靠表上的默认约束兜底，
+            // 于是每一行的 StartedAt 都精确等于 FinishedAt —— 全库 12733 行，
+            // DATEDIFF 秒数全部为 0。后果不是「少一个字段」，而是
+            // **作业真实耗时在任何地方都不存在**：通道被谁占住、哪一轮真的跑了 8 分钟，
+            // 事后一律查不出来，只能靠 STUCK 条数猜。
+            // 调度器明明手里就有开始时刻（entry.RunningSince），却没传下来。
+            @"INSERT INTO dbo.SyncLog (TaskName, Source, StartedAt, FinishedAt, Status, RowsAffected, Message)
+              VALUES (@task, @source, ISNULL(@startedAt, SYSDATETIME()), SYSDATETIME(), @status, @rows, @message);
               SELECT CAST(SCOPE_IDENTITY() AS BIGINT);",
-            new { task, source, status, rows, message });
+            new
+            {
+                task = ClipTask(task),
+                source = ClipTask(source),
+                startedAt,
+                status,
+                rows,
+                message = ClipMessage(message)
+            });
     }
 
     /// <summary>

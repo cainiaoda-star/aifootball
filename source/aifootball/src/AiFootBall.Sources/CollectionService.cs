@@ -24,6 +24,51 @@ public sealed record CollectionResult(bool Success, int Rows, string Message)
     /// 必须 done &gt; 0：没有待采场次（done=0, failed=0）是正常闲时，绝不能判失败。
     /// </summary>
     public static bool AllFailed(int done, int failed) => done > 0 && failed == done;
+
+    /// <summary>
+    /// 本轮是否该因为「token 已被打回验证状态」提前中止。
+    ///
+    /// 必须同时满足两条：**本轮零产出** 且 **本轮拦截达到阈值**。
+    ///
+    /// 只按拦截次数判会误伤：无盘口场次本来就会被拦，偶发几次是常态，
+    /// 那时中止等于自己把还能采的场次丢掉。反过来只按零产出判更糟——
+    /// 凌晨大批小联赛本来就没有必发盘口，零产出是正常结果，不能当故障。
+    ///
+    /// 零产出 **且** 连续被拦，才是「这个 token 已经不能用了」的硬信号：
+    /// 一整轮跑下来一行都没落库，继续跑只是逐场白等 10 秒冷却。
+    /// 2026-11-10 实测：夜间没有这条短路时，odds-sample 每轮跑满 10 分钟、
+    /// exchange 跑满 15 分钟、odds-sample-late 跑满 8 分钟，三个作业轮流把
+    /// 单槽主通道占死，water-sample 一夜被看门狗判 STUCK 21 次。
+    /// </summary>
+    public static bool ShouldAbortOnVerify(int produced, long verifyDelta, int threshold = 6)
+        => produced == 0 && verifyDelta >= threshold;
+
+    /// <summary>
+    /// 多段采集合成一个结果：**任意一段失败，整体就是失败**，行数相加，失败原因全部带上。
+    ///
+    /// water-sample 一轮里跑了两段（赔率轨迹 + 必发成交），原来无条件写
+    /// <c>CollectionResult.Ok(resOdds.Rows + resEx.Rows, ...)</c>：
+    /// 赔率段已经如实返回 Fail，这一句把结论丢掉了。三层链路
+    /// （叶子 → 组合 → 作业）只要有一层用 Ok 无脑包装，上面修的全都白做。
+    ///
+    /// 不做「部分成功就算成功」：两段是两个不同的数据源，等赔率的和等必发的不是同一批人。
+    /// 宁可让这一轮报红，也不要让必发断了三天没人知道。
+    /// </summary>
+    public static CollectionResult Combine(string prefix, params CollectionResult[] parts)
+    {
+        var rows = 0;
+        var failures = new List<string>();
+        foreach (var p in parts)
+        {
+            rows += p.Rows;
+            if (!p.Success && !string.IsNullOrWhiteSpace(p.Message)) failures.Add(p.Message);
+        }
+
+        var message = failures.Count == 0
+            ? prefix
+            : $"{prefix}；失败段：{string.Join("；", failures)}";
+        return failures.Count == 0 ? Ok(rows, message) : Fail(rows, message);
+    }
 }
 
 /// <summary>HttpClient 构造</summary>
@@ -340,6 +385,7 @@ public sealed class CollectionService
 
         int points = 0, done = 0, failed = 0;
         var verifyBefore = OddsHttp.StatVerify;
+        var abortedByVerify = false;
 
         for (var offset = 0; offset < matches.Count; offset += batchSize)
         {
@@ -372,6 +418,18 @@ public sealed class CollectionService
             done += results.Count;
             failed += results.Count(r => r.Status == 2);
             log?.Report($"  采样进度 {done}/{matches.Count}，失败 {failed}（节流 {OddsHttp.ThrottleIntervalMs}ms）");
+
+            // 和 CollectOddsAsync 同一条短路，但判据更严（零产出 + 拦截达阈值）。
+            // 采样这条路原来完全没有短路：token 被打掉之后，它仍然逐场去试，
+            // 每场白等 10 秒冷却，400 场的上限足够跑满 10 分钟超时。
+            // 而主通道只有一个槽位，它一占就是整轮，water-sample / exchange 全部排队到被看门狗判 STUCK。
+            if (CollectionResult.ShouldAbortOnVerify(points, OddsHttp.StatVerify - verifyBefore))
+            {
+                abortedByVerify = true;
+                log?.Report($"  ! 本轮 {done} 场零产出、被验证拦截 {OddsHttp.StatVerify - verifyBefore} 次，"
+                            + $"中止剩余 {matches.Count - done} 场，等待 token 续期");
+                break;
+            }
         }
 
         // 2026-11-10：这里原来硬编码 "SUCCESS"，RowsAffected 又填的是「场数」，
@@ -382,12 +440,14 @@ public sealed class CollectionService
         var allFailed = CollectionResult.AllFailed(done, failed);
 
         await _sync.WriteAsync("odds-sample", source.Name, allFailed ? "FAILED" : "SUCCESS", points,
-            $"轨迹采样 {done} 场，失败 {failed}，写入 {points} 行", ct);
+            $"轨迹采样 {done} 场，失败 {failed}，写入 {points} 行"
+            + (abortedByVerify ? "（token 失效已提前中止）" : ""), ct);
 
         // StatVerify 是进程内累计值，不是本轮。原来直接报它，日志里写着「拦截 2326 次」，
         // 让人以为是这一轮被拦了 2326 次；实际是当天累计。改成本轮增量。
         var verifyDelta = OddsHttp.StatVerify - verifyBefore;
         var msg = $"轨迹采样完成：{done} 场（失败 {failed}），赔率行 {points}"
+                  + (abortedByVerify ? $"，token 失效已提前中止（本轮拦截 {verifyDelta} 次）" : "")
                   + (verifyDelta > 0 ? $"；本轮验证拦截 {verifyDelta} 次，需更换 500-cookie.txt 里的 token" : "");
         log?.Report(msg);
         return allFailed ? CollectionResult.Fail(points, msg) : CollectionResult.Ok(points, msg);
@@ -444,6 +504,7 @@ public sealed class CollectionService
         int written = 0, done = 0, withData = 0, noData = 0, failed = 0;
         var bigTrades = 0;
         var verifyBefore = OddsHttp.StatVerify;
+        var abortedByVerify = false;
 
         for (var offset = 0; offset < matches.Count; offset += batchSize)
         {
@@ -483,15 +544,28 @@ public sealed class CollectionService
 
             foreach (var err in results.Where(r => r.Status == 2 && !string.IsNullOrEmpty(r.Error)).Take(2))
                 log?.Report($"  ! {err.MatchId} {err.Error}");
+
+            // 与赔率两条采集同一条短路。必发这里更容易被误判成「正常」：
+            // 凌晨大批小联赛本来就没有必发盘口，零产出是常态，所以判据里的
+            // 「被验证拦截」这一半不能省——无盘口的场次不会累加 StatVerify。
+            if (CollectionResult.ShouldAbortOnVerify(written, OddsHttp.StatVerify - verifyBefore))
+            {
+                abortedByVerify = true;
+                log?.Report($"  ! 本轮 {done} 场零写入、被验证拦截 {OddsHttp.StatVerify - verifyBefore} 次，"
+                            + $"中止剩余 {matches.Count - done} 场，等待 token 续期");
+                break;
+            }
         }
 
         var allFailed = CollectionResult.AllFailed(done, failed);
 
         await _sync.WriteAsync("exchange", source.Name, allFailed ? "FAILED" : "SUCCESS", written,
-            $"{done} 场，有必发 {withData}，写入 {written}", ct);
+            $"{done} 场，有必发 {withData}，写入 {written}"
+            + (abortedByVerify ? "（token 失效已提前中止）" : ""), ct);
 
         var verifyDelta = OddsHttp.StatVerify - verifyBefore;
         var msg = $"必发采集完成：{done} 场（有数据 {withData} / 无盘口 {noData} / 失败 {failed}），大额明细 {bigTrades} 条"
+                  + (abortedByVerify ? $"，token 失效已提前中止（本轮拦截 {verifyDelta} 次）" : "")
                   + (verifyDelta > 0 ? $"；本轮验证拦截 {verifyDelta} 次，需更换 500-cookie.txt 里的 token" : "");
         log?.Report(msg);
         return allFailed ? CollectionResult.Fail(written, msg) : CollectionResult.Ok(written, msg);

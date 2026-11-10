@@ -84,6 +84,154 @@ public class CollectionStatusTests
 }
 
 /// <summary>
+/// token 被打掉时该不该提前中止（2026-11-10 补）。
+///
+/// 只有 `CollectOddsAsync` 有这条短路，`SampleOddsAsync`（odds-sample /
+/// odds-sample-late / water-sample 的赔率段）和 `FetchExchangeAsync` 都没有。
+/// 后果不是「慢」，是**把单槽主通道占死**：夜间 token 失效后，
+/// odds-sample 每轮 400 场逐场白等 10 秒冷却 → 跑满 10 分钟超时，
+/// exchange 跑满 15 分钟、odds-sample-late 跑满 8 分钟，三个作业轮流占通道，
+/// water-sample 一夜被看门狗判 STUCK 21 次（11-10 实测）。
+///
+/// 判据必须是「零产出 **且** 连续被拦」，只按其中一个都会误判：
+///   · 只看拦截次数 —— 无盘口场次本来就会触发拦截，偶发几次是常态；
+///   · 只看零产出 —— 凌晨大批小联赛没有必发盘口，零产出是正常结果。
+/// </summary>
+public class VerifyAbortTests
+{
+    [Fact]
+    public void Abort_WhenNothingWrittenAndBlockedEnough()
+    {
+        // 真实形态：整轮零落库 + 拦截 15 次。
+        Assert.True(CollectionResult.ShouldAbortOnVerify(0, 15));
+        Assert.True(CollectionResult.ShouldAbortOnVerify(0, 6));
+    }
+
+    [Fact]
+    public void NoAbort_WhenSomeRowsLanded()
+    {
+        // 有数据写进去说明 token 还能用，跑完才是对的。
+        Assert.False(CollectionResult.ShouldAbortOnVerify(1, 300));
+        Assert.False(CollectionResult.ShouldAbortOnVerify(8700, 400));
+    }
+
+    [Fact]
+    public void NoAbort_WhenNoInterception()
+    {
+        // 没被拦却零产出 = 真的没有盘口（凌晨小联赛常态），不是 token 问题。
+        Assert.False(CollectionResult.ShouldAbortOnVerify(0, 0));
+        Assert.False(CollectionResult.ShouldAbortOnVerify(0, 5));
+    }
+
+    [Fact]
+    public void NoAbort_AtThresholdMinusOne()
+    {
+        Assert.False(CollectionResult.ShouldAbortOnVerify(0, 5));
+        Assert.True(CollectionResult.ShouldAbortOnVerify(0, 6));
+    }
+}
+
+/// <summary>
+/// 多段采集合成（2026-11-10 补）。
+///
+/// water-sample 一轮跑两段（赔率轨迹 + 必发成交），原来无条件
+/// `CollectionResult.Ok(resOdds.Rows + resEx.Rows, …)`：赔率段已经如实返回 Fail，
+/// 这一句把结论吃掉了，页面还是绿。三层链路里只要有**一层**用 Ok 无脑包装，
+/// 下面几层修得再对也没用。
+/// </summary>
+public class CollectionCombineTests
+{
+    [Fact]
+    public void Combine_AllOk_IsSuccessAndSumsRows()
+    {
+        var r = CollectionResult.Combine("水位采样",
+            CollectionResult.Ok(120, "赔率段"),
+            CollectionResult.Ok(34, "必发段"));
+
+        Assert.True(r.Success);
+        Assert.Equal(154, r.Rows);
+        Assert.Equal("水位采样", r.Message);
+    }
+
+    [Fact]
+    public void Combine_OneFails_IsFailureEvenIfOtherSucceeded()
+    {
+        // 必发段断了、赔率段正常 —— 整体必须报红，否则必发断三天没人知道。
+        var r = CollectionResult.Combine("水位采样",
+            CollectionResult.Ok(120, "赔率段"),
+            CollectionResult.Fail(0, "必发段：验证拦截 15 次"));
+
+        Assert.False(r.Success);
+        Assert.Equal(120, r.Rows);          // 行数照实累加，不抹成 0
+        Assert.Contains("必发段", r.Message);
+    }
+
+    [Fact]
+    public void Combine_BothFail_KeepsBothReasons()
+    {
+        var r = CollectionResult.Combine("水位采样",
+            CollectionResult.Fail(0, "赔率段：token 失效"),
+            CollectionResult.Fail(0, "必发段：token 失效"));
+
+        Assert.False(r.Success);
+        Assert.Contains("赔率段", r.Message);
+        Assert.Contains("必发段", r.Message);
+    }
+
+    [Fact]
+    public void Combine_IdleSegments_IsStillSuccess()
+    {
+        // 两段都「无待采场次」= 闲时，不能报红。
+        var r = CollectionResult.Combine("水位采样",
+            CollectionResult.Ok(0, "无待采样赛事"),
+            CollectionResult.Ok(0, "无待采集赛事"));
+
+        Assert.True(r.Success);
+        Assert.Equal(0, r.Rows);
+    }
+}
+
+/// <summary>
+/// SyncLog 列宽截断（2026-11-10 补）。
+///
+/// Message 是 nvarchar(1000)、TaskName/Source 是 nvarchar(100)，而 WriteAsync
+/// 原来一个字符都不截。超长时 SQL Server 抛 2628，整条 INSERT 失败 ——
+/// 而最可能写出超长消息的时刻，恰恰是正在拼接多个失败原因的时候。
+/// 也就是说：**最需要留下记录的那一刻，日志自己先写不进去**。
+/// 目前库内最长只有 170 字，所以这条是「还没踩到」，不是「已经坏了」。
+/// </summary>
+public class SyncLogClipTests
+{
+    [Fact]
+    public void Short_Untouched()
+    {
+        Assert.Equal("abc", AiFootBall.Data.SyncLogRepository.ClipMessage("abc"));
+        Assert.Null(AiFootBall.Data.SyncLogRepository.ClipMessage(null));
+    }
+
+    [Fact]
+    public void Long_TrimmedToColumnWidth()
+    {
+        var s = new string('x', 1500);
+        var clipped = AiFootBall.Data.SyncLogRepository.ClipMessage(s);
+
+        Assert.NotNull(clipped);
+        Assert.Equal(1000, clipped!.Length);
+        Assert.EndsWith("…", clipped);
+    }
+
+    [Fact]
+    public void TaskName_TrimmedTo100()
+    {
+        var s = new string('t', 260);
+        var clipped = AiFootBall.Data.SyncLogRepository.ClipTask(s);
+
+        Assert.NotNull(clipped);
+        Assert.Equal(100, clipped!.Length);
+    }
+}
+
+/// <summary>
 /// 「续期成功」不等于「token 能用」（2026-11-10 补）。
 ///
 /// 11-09 全天报了 41 次 token 续期成功（每 8 分钟一次，00:00~07:35 一刻没停），

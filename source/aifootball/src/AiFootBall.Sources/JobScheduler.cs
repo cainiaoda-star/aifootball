@@ -65,8 +65,16 @@ public sealed class JobScheduler
         public string? LastStatus { get; set; }
         public string? LastMessage { get; set; }
         public bool Running { get; set; }
-        /// <summary>本次开始执行的时刻，用于观测卡死时长和看门狗判定。</summary>
+        /// <summary>
+        /// 真正**拿到通道、开始执行**的时刻（2026-11-10 修正）。
+        ///
+        /// 以前这个字段在「入队」时就赋值了，于是看门狗把所有「排队久了」的作业
+        /// 都写成「执行超过 N 分钟未返回」——2026-11-09 夜里 60 条 STUCK 里绝大多数
+        /// 是排队，不是卡死。两者的处置完全不同：排队该看通道容量，卡死该查代码。
+        /// </summary>
         public DateTime? RunningSince { get; set; }
+        /// <summary>入队时刻。排队中 RunningSince 为 null，看门狗靠这个判「排太久」。</summary>
+        public DateTime? QueuedAt { get; set; }
         /// <summary>
         /// 本次排队的取消源。看门狗判定卡死时取消它，让还堵在通道里的那一份真正退出——
         /// 否则「已强制释放（本次未真正执行）」是假话：任务仍在通道里等着，稍后照样执行，
@@ -256,30 +264,41 @@ public sealed class JobScheduler
 
             List<Entry> due;
             var reclaimed = new List<string>();
-            var stuck = new List<(string Name, string Type, TimeSpan Elapsed)>();
+            var stuck = new List<(string Name, string Type, TimeSpan Elapsed, bool Executing)>();
             lock (_gate)
             {
-                // 看门狗：Running=true 但早该结束（执行超时后仍未复位）的作业强制释放，
-                // 否则串行队列会被一个挂死的任务永久拖住。
+                // 看门狗：Running=true 但早该结束（执行超时后仍未复位 / 排队一直没轮到）的作业强制释放，
+                // 否则串行通道会被一个挂死的任务永久拖住。
+                //
+                // 两种情形必须分开写：RunningSince 有值 = 已经在执行，那是「卡死」；
+                // RunningSince 为空 = 还在通道里排队，那是「堵住」。用同一个字段判，
+                // 就会把拥堵写成「执行超过 20 分钟未返回」，把人往错误的代码里带。
                 var now = DateTime.Now;
                 foreach (var entry in _entries)
                 {
-                    if (!entry.Running || entry.RunningSince is null) continue;
+                    if (!entry.Running) continue;
                     var limit = HardLimitFor(entry.Job);
-                    if (now - entry.RunningSince.Value <= limit) continue;
+                    var since = entry.RunningSince ?? entry.QueuedAt;
+                    if (since is null || now - since.Value <= limit) continue;
 
-                    var elapsed = now - entry.RunningSince.Value;
+                    var elapsed = now - since.Value;
+                    var executing = entry.RunningSince is not null;
                     entry.Running = false;
                     entry.RunningSince = null;
-                    // 真正取消还堵在通道里的那一份，否则下面那句「本次未真正执行」是假的
+                    entry.QueuedAt = null;
+                    // 真正取消还堵在通道里/执行中的那一份，否则下面那句「本次未真正执行」是假的
                     try { entry.Pending?.Cancel(); } catch (ObjectDisposedException) { }
                     entry.LastStatus = "STUCK";
-                    entry.LastMessage = $"执行超过 {limit.TotalMinutes:0} 分钟未返回，已强制释放运行标志";
+                    entry.LastMessage = executing
+                        ? $"执行超过 {limit.TotalMinutes:0} 分钟未返回，已强制释放运行标志"
+                        : $"排队超过 {limit.TotalMinutes:0} 分钟仍未轮到执行，已取消本次排队";
                     entry.Next = entry.Schedule.GetNextOccurrence(now);
-                    reclaimed.Add($"{entry.Job.Name}（已卡 {elapsed.TotalMinutes:0} 分钟）");
+                    reclaimed.Add(executing
+                        ? $"{entry.Job.Name}（执行卡住 {elapsed.TotalMinutes:0} 分钟）"
+                        : $"{entry.Job.Name}（排队 {elapsed.TotalMinutes:0} 分钟未轮到）");
                     // 被强制释放的作业连 RunGuardedAsync 都没进过，SyncLog 里不会留下任何痕迹。
                     // 2026-11-08 的复盘就是这么消失的：日志一片正常，页面上只有一句「还没写」。
-                    stuck.Add((entry.Job.Name, entry.Job.Type, elapsed));
+                    stuck.Add((entry.Job.Name, entry.Job.Type, elapsed, executing));
                 }
 
                 due = _entries.Where(x => x.Job.Enabled && !x.Running && DateTime.Now >= x.Next).ToList();
@@ -287,7 +306,9 @@ public sealed class JobScheduler
                 {
                     entry.Next = entry.Schedule.GetNextOccurrence(DateTime.Now);
                     entry.Running = true;
-                    entry.RunningSince = DateTime.Now;
+                    // 只记入队时刻。真正开始执行由 EnqueueAsync 在拿到通道后补上。
+                    entry.QueuedAt = DateTime.Now;
+                    entry.RunningSince = null;
                     // 每次排队一个新取消源；上一份若还没被回收（正常不会），先弃掉
                     try { entry.Pending?.Cancel(); } catch (ObjectDisposedException) { }
                     entry.Pending = new CancellationTokenSource();
@@ -302,14 +323,27 @@ public sealed class JobScheduler
             // 注意这里是在主循环里 await 的：写日志本身必须带上限，不能像以前那样用
             // CancellationToken.None —— DB 一旦不响应，整条主循环就永久停在这一句上，
             // 所有作业一起停摆，而端口和 /api/health 照常正常。
-            foreach (var (name, type, elapsed) in stuck)
+            foreach (var (name, type, elapsed, executing) in stuck)
             {
                 try
                 {
                     using var logCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    // 文案必须区分「排队」和「卡死」。以前两种情况都写「排队/执行卡住」，
+                    // 一句含糊的话让 11-09 那 60 条 STUCK 无法定性，等于白记。
+                    //
+                    // 前缀 [hung] / [queued] 是故意用 ASCII：tools/milk-check.ps1 必须
+                    // 保持纯 ASCII（PS5.1 按 ANSI 读无 BOM 的 UTF-8 会吞字节），
+                    // 所以自检只能在 SQL 里按 ASCII 标记筛，不能按中文文案筛。
+                    // 有了标记才能回答那个关键问题：这一夜到底有几个作业是真卡死，
+                    // 又有几个纯粹是通道拥堵的噪音。两者处置完全不同。
                     await _sync.WriteAsync($"job:{name}", type, "STUCK", 0,
-                        $"排队/执行卡住 {elapsed.TotalMinutes:0} 分钟未完成，已强制释放（本次未真正执行）",
-                        logCts.Token);
+                        (executing ? "[hung] " : "[queued] ")
+                        + (executing
+                            ? $"执行中超过上限 {elapsed.TotalMinutes:0} 分钟未返回，已强制释放（可能仍在后台跑，需查该作业是否有不可取消的调用）"
+                            : $"排队 {elapsed.TotalMinutes:0} 分钟仍未轮到执行，已取消本次排队（通道拥堵，非作业本身问题）"),
+                        logCts.Token,
+                        // 被强制释放时 Running 已清，用「现在 - 已过去多久」反推起点。
+                        startedAt: DateTime.Now - elapsed);
                 }
                 catch (Exception ex)
                 {
@@ -423,22 +457,45 @@ public sealed class JobScheduler
     /// 通道之间是并行的：竞彩采样不会因为必发在跑就推迟。
     /// </summary>
     private async Task EnqueueAsync(Entry entry, CancellationToken ct)
+        => await RunThroughLaneAsync(entry, entry.Pending, ct);
+
+    /// <summary>按作业类型选通道。</summary>
+    private SemaphoreSlim LaneOf(ScheduledJob job)
+        => RecommendJobTypes.Contains(job.Type) ? _recommendLane
+            : DetachedJobTypes.Contains(job.Type) ? _jcLane
+            : _mainLane;
+
+    /// <summary>
+    /// 走通道执行一份作业，返回真实结果（排队被取消/进程退出时返回 null）。
+    ///
+    /// 定时触发和**手动触发**都从这里走。手动触发原来直接
+    /// <c>await ExecuteAsync</c>，完全不拿通道 —— 那是个真问题：
+    /// 通道的唯一存在意义就是给「重写当日榜」的那批作业互斥
+    /// （save-recommendations / save-steady-picks / turn-guard / paper-freeze
+    /// 都是 DELETE 未结算行 + 重新 INSERT，库上没有唯一约束兜底）。
+    /// 手动点一次 turn-guard，同时定时那轮正在跑，两条 DELETE+INSERT 交错
+    /// 就会把榜写成两份。而「手动跑一下看看」正是排查时的常规动作。
+    /// </summary>
+    private async Task<CollectionResult?> RunThroughLaneAsync(
+        Entry entry, CancellationTokenSource? pending, CancellationToken ct)
     {
-        var pending = entry.Pending;
-        var lane = RecommendJobTypes.Contains(entry.Job.Type) ? _recommendLane
-            : DetachedJobTypes.Contains(entry.Job.Type) ? _jcLane : _mainLane;
+        var lane = LaneOf(entry.Job);
         using var linked = pending is null
             ? CancellationTokenSource.CreateLinkedTokenSource(ct)
             : CancellationTokenSource.CreateLinkedTokenSource(ct, pending.Token);
         try
         {
             await lane.WaitAsync(linked.Token);
+            // 到这里才是真正开始执行。之前一直在通道外排队，那段等待不能算进执行时长。
+            entry.RunningSince = DateTime.Now;
+            entry.QueuedAt = null;
             try
             {
-                await RunGuardedAsync(entry, linked.Token);
+                return await RunGuardedAsync(entry, linked.Token);
             }
             finally
             {
+                entry.RunningSince = null;
                 lane.Release();
             }
         }
@@ -446,11 +503,13 @@ public sealed class JobScheduler
         {
             // 进程退出，或看门狗已判定卡死并取消了这一份——排队中的作业直接丢弃，下轮会重新算。
             // 后者以前不生效：取消源没接进来，被「强制释放」的任务其实还在通道里等着，稍后照样跑。
+            return null;
         }
         finally
         {
             entry.Running = false;
             entry.RunningSince = null;
+            entry.QueuedAt = null;
             if (ReferenceEquals(entry.Pending, pending))
             {
                 pending?.Dispose();
@@ -461,9 +520,11 @@ public sealed class JobScheduler
 
     /// <summary>
     /// 单个作业的执行包装：超时、状态回填、异常兜底。
-    /// finally 里的 Running 复位是硬要求——漏一次，这个作业就永远触发不了。
+    /// 返回真实结果（手动触发要把它回给调用方）；超时/取消返回 null。
+    /// Running 的复位交给 <see cref="RunThroughLaneAsync"/> 统一负责，
+    /// 让「Running 生命周期」和「通道占用生命周期」严格一致。
     /// </summary>
-    private async Task RunGuardedAsync(Entry entry, CancellationToken ct)
+    private async Task<CollectionResult?> RunGuardedAsync(Entry entry, CancellationToken ct)
     {
         var job = entry.Job;
         var limit = TimeoutFor(job);
@@ -471,11 +532,12 @@ public sealed class JobScheduler
         runCts.CancelAfter(limit);
         try
         {
-            await ExecuteAsync(entry, runCts.Token);
+            return await ExecuteAsync(entry, runCts.Token);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // 进程退出，不算失败
+            return null;
         }
         catch (OperationCanceledException) when (runCts.IsCancellationRequested)
         {
@@ -483,17 +545,14 @@ public sealed class JobScheduler
             entry.LastMessage = $"执行超过 {limit.TotalMinutes:0} 分钟未完成，已中止";
             _log?.Invoke($"[{job.Name}] 执行超时（>{limit.TotalMinutes:0} 分钟），已中止");
             await LogTimeoutAsync(entry, limit);
+            return null;
         }
         catch (Exception ex)
         {
             entry.LastStatus = "FAILED";
             entry.LastMessage = ex.Message;
             _log?.Invoke($"[{job.Name}] 执行异常：{ex.Message}");
-        }
-        finally
-        {
-            entry.Running = false;
-            entry.RunningSince = null;
+            return CollectionResult.Fail(ex.Message);
         }
     }
 
@@ -575,7 +634,8 @@ public sealed class JobScheduler
             // DB 不响应就会把这个通道永久占住，后面排队的作业全部陪葬。
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await _sync.WriteAsync($"job:{entry.Job.Name}", entry.Job.Type, "TIMEOUT", 0,
-                $"执行超过 {limit.TotalMinutes:0} 分钟未完成，已中止", cts.Token);
+                $"执行超过 {limit.TotalMinutes:0} 分钟未完成，已中止", cts.Token,
+                startedAt: entry.RunningSince);
         }
         catch (Exception ex)
         {
@@ -618,30 +678,28 @@ public sealed class JobScheduler
     {
         var entry = _entries.FirstOrDefault(e => e.Job.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (entry is null) return (false, $"未找到作业 {name}");
-        if (entry.Running) return (false, $"作业 {name} 正在运行");
 
-        entry.Running = true;
-        entry.RunningSince = DateTime.Now;
-        var limit = TimeoutFor(entry.Job);
-        using var runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        runCts.CancelAfter(limit);
-        try
+        CancellationTokenSource pending;
+        lock (_gate)
         {
-            var result = await ExecuteAsync(entry, runCts.Token);
-            return (result.Success, result.Message);
-        }
-        catch (OperationCanceledException) when (runCts.IsCancellationRequested && !ct.IsCancellationRequested)
-        {
-            entry.LastStatus = "TIMEOUT";
-            entry.LastMessage = $"手动触发超过 {limit.TotalMinutes:0} 分钟未完成，已中止";
-            await LogTimeoutAsync(entry, limit);
-            return (false, entry.LastMessage);
-        }
-        finally
-        {
-            entry.Running = false;
+            if (entry.Running) return (false, $"作业 {name} 正在运行");
+            entry.Running = true;
+            entry.QueuedAt = DateTime.Now;
             entry.RunningSince = null;
+            try { entry.Pending?.Cancel(); } catch (ObjectDisposedException) { }
+            pending = new CancellationTokenSource();
+            entry.Pending = pending;
         }
+
+        // 必须走通道，不能再直接 ExecuteAsync。
+        //
+        // 2026-11-10 修正：原来这里绕过 lane，手动触发和定时作业可以同时对
+        // FbMilkPick 做 DELETE + INSERT。库上没有唯一约束兜底，两份交错就是两套榜。
+        // 手动「跑一下看看」恰恰是排查时的常规操作，踩中的概率比想象中高。
+        var result = await RunThroughLaneAsync(entry, pending, ct);
+        return result is null
+            ? (false, entry.LastMessage ?? "作业已中止（排队被取消或进程退出）")
+            : (result.Success, result.Message);
     }
 
     private async Task<CollectionResult> ExecuteAsync(Entry entry, CancellationToken ct)
@@ -740,8 +798,17 @@ public sealed class JobScheduler
                     job.Limit, null, ct);
                 var resEx = await _collection.CollectExchangeAsync(hours, job.HoursBehind, recheck,
                     job.Limit, null, ct);
-                result = CollectionResult.Ok(resOdds.Rows + resEx.Rows,
-                    $"水位采样：赔率 {resOdds.Rows} 点 / 必发 {resEx.Rows} 场（间隔 {recheck} 分钟）");
+
+                // 两段是两次独立采集，任一段失败都不该被另一段掩盖。
+                //
+                // 这里原来是无条件 CollectionResult.Ok(...)。后果和 11-10 修的
+                // 「叶子报 FAILED、job 层报 SUCCESS」一模一样，只是又高了一层：
+                // SampleOddsAsync 已经如实地返回 Fail，包装层立刻把它丢进 Ok 里，
+                // 页面和自检看到的还是绿的。三层链路（叶子 → 组合 → 作业）里，
+                // 只要有一层用 Ok 无脑包装，上面修的全都白做。
+                result = CollectionResult.Combine(
+                    $"水位采样：赔率 {resOdds.Rows} 点 / 必发 {resEx.Rows} 场（间隔 {recheck} 分钟）",
+                    resOdds, resEx);
                 break;
             }
 
@@ -1236,7 +1303,10 @@ public sealed class JobScheduler
         entry.LastMessage = result.Message;
 
         await _sync.WriteAsync($"job:{job.Name}", job.Type, result.Success ? "SUCCESS" : "FAILED",
-            result.Rows, result.Message, ct);
+            result.Rows, result.Message, ct,
+            // 真实开始执行时刻，让 SyncLog 里有耗时可查（以前 StartedAt 靠默认约束，
+            // 恒等于 FinishedAt，全库耗时都是 0 秒）。
+            startedAt: entry.RunningSince);
 
         _log?.Invoke($"[{DateTime.Now:HH:mm:ss}] 作业 {job.Name} 结束：{result.Message}");
         return result;

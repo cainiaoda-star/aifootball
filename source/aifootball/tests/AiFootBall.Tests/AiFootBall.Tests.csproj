@@ -15,6 +15,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\AiFootBall.Sources\AiFootBall.Sources.csproj" />
+    <!-- 2026-11-10 加：SyncLog 的列宽截断是可测的纯函数，而 SyncLogRepository 在 Data 层。
+         不加这条引用就只能靠「读代码确认」，那不是验证。 -->
+    <ProjectReference Include="..\..\src\AiFootBall.Data\AiFootBall.Data.csproj" />
   </ItemGroup>
 
 </Project>

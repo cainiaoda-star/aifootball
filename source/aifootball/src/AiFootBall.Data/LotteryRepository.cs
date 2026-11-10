@@ -205,6 +205,13 @@ ORDER BY t.LotteryId");
         await conn.ExecuteAsync(
             @"INSERT INTO dbo.SyncLog (TaskName, Source, FinishedAt, Status, RowsAffected, Message)
               VALUES (@task, @source, SYSDATETIME(), @status, @rows, @message)",
-            new { task, source, status, rows, message });
+            new
+            {
+                task = SyncLogRepository.ClipTask(task),
+                source = SyncLogRepository.ClipTask(source),
+                status,
+                rows,
+                message = SyncLogRepository.ClipMessage(message)
+            });
     }
 }
