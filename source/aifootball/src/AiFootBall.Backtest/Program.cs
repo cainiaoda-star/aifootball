@@ -157,6 +157,22 @@ public static class Program
             return await SteadyStudy.RunAsync(connStr, testStart, cap);
         }
 
+        // 竞彩赔率漂移研究（2026-11-10 加，死窗口里唯一不需要等新数据的方向）。
+        // 只读。用 FbJcOddsHistory 已有轨迹回答：临场价格「往哪边动」本身是不是信息。
+        if (args.Any(a => a.Equals("drift-probe", StringComparison.OrdinalIgnoreCase)))
+        {
+            var rest = args.SkipWhile(a => !a.Equals("drift-probe", StringComparison.OrdinalIgnoreCase))
+                           .Skip(1)
+                           .ToArray();
+            var startArg = rest.FirstOrDefault(a => DateTime.TryParse(a, out _));
+            var testStart = DateTime.TryParse(startArg, out var dts2) ? dts2 : new DateTime(2026, 10, 1);
+            // 可选：drift-probe <起日> <最小跨度小时> <最小快照数>
+            var nums = rest.Where(a => double.TryParse(a, out _)).Select(double.Parse).ToList();
+            var minSpan = nums.Count > 0 ? nums[0] : 6.0;
+            var minSnap = nums.Count > 1 ? (int)nums[1] : 10;
+            return await DriftStudy.RunAsync(connStr, testStart, minSpan, minSnap);
+        }
+
         // 稳胆线上引擎复核：把同一批历史数据喂给 SteadyPickEngine（线上那份代码），
         // 检验它和 steady-probe 的统计口径是否一致。只读。
         if (args.Any(a => a.Equals("steady-check", StringComparison.OrdinalIgnoreCase)))
