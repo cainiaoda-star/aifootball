@@ -435,6 +435,21 @@ public sealed class BettingCardSource
             var rec = new BettingCardRecord
             {
                 Board = Boards.Jc,
+                // ★ 受注日进 MERGE 键（2026-11-10 修）。
+                //
+                // 原来 jc/bd 的 Expect 从来不填，只有 sfc 填，于是 MERGE 键
+                // (Board, Expect, MatchNo) 退化成 (Board, MatchNo)，而「周二001」每周都重号——
+                // 下周二同一编号的卡片会把上周二那行**原地覆盖**，历史卡片凭空消失
+                // （2026-11-05 回测 11-04 六场欧冠只剩一场，就是这么丢的）。
+                //
+                // 页面给了现成的受注日：data-processdate="2026-11-10"。
+                // 实测该页 8 行，(processdate, matchnum) 8 个组合全不重复、无缺失；
+                // 北单同理（scheduleDate + index，31 行 31 个组合）。
+                //
+                // 附带效果：BettingCard 上那条 UQ_BettingCard(Board, Expect, MatchNo)
+                // 以前因为 Expect 全是 NULL 而形同虚设（SQL Server 认为多个 NULL 互不相同），
+                // 现在才真正开始拦重复。
+                Expect = NullIfEmpty(Attr(tr, "data-processdate")),
                 MatchNo = Attr(tr, "data-matchnum"),
                 MatchId = fid,
                 HomeTeam = Attr(tr, "data-homesxname"),
@@ -470,7 +485,8 @@ public sealed class BettingCardSource
 
     /* ---------------- 北单：value JS 对象 + fid 属性解析 ---------------- */
 
-    private static List<BettingCardRecord> ParseBd(string html)
+    /// <summary>北单受注页解析。公开是为了单测能锁住 Expect（受注日）这条 MERGE 键。</summary>
+    public static List<BettingCardRecord> ParseBd(string html)
     {
         var list = new List<BettingCardRecord>();
         var doc = new HtmlDocument();
@@ -490,6 +506,10 @@ public sealed class BettingCardSource
             var rec = new BettingCardRecord
             {
                 Board = Boards.Bd,
+                // 受注日进 MERGE 键，理由同 ParseJc（2026-11-10 修）。
+                // 北单没有 data-processdate，用 value 里的 scheduleDate（排期/受注日），
+                // 它与 MatchNo 一起实测 31 行 31 个组合、无一重复、无缺失。
+                Expect = NullIfEmpty(JsVal(value, "scheduleDate")),
                 MatchId = fid,
                 MatchNo = JsVal(value, "index"),
                 LeagueName = JsVal(value, "leagueName"),
@@ -599,6 +619,14 @@ public sealed class BettingCardSource
     }
 
     private static string Attr(HtmlNode n, string name) => n.GetAttributeValue(name, "")?.Trim() ?? "";
+
+    /// <summary>
+    /// 空串归一成 null（2026-11-10 加）。MERGE 的 ON 里用的是 ISNULL(Expect,'')，
+    /// 空串和 NULL 在那里等价；但唯一索引 UQ_BettingCard 不这么看——NULL 互不相同、空串会互撞。
+    /// 两种写法混用会让「同一张卡」在索引层面变成两种东西，所以统一成 NULL。
+    /// </summary>
+    private static string? NullIfEmpty(string? s)
+        => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
     private static long? AttrLong(HtmlNode n, string name)
     {

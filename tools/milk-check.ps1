@@ -111,7 +111,11 @@ Write-Output ("board date=" + $d + " rows=" + $nRows + " counterHigh=" + $nCount
 # "this match's away side was excluded". What must never exist is an AWAY
 # direction pick still carrying fake-hot-away; that means the veto did not run.
 # (Before 2026-11-08 this check counted every tagged row and produced a false
-#  alarm on 周日012 伊普斯, whose pick was 负胜 = home direction.)
+#  alarm on the Sunday-012 Ipswich row, whose pick was a home direction.)
+# NOTE: keep this file pure ASCII. PS 5.1 reads a BOM-less file as ANSI, and
+# UTF-8 Chinese in a comment can swallow the following bytes (including the
+# newline) and break parsing. This line used to hold Chinese and was the only
+# non-ASCII byte run left in the file.
 if ($nDivgAway -gt 0) {
     Fail ("$nDivgAway away-direction row(s) tagged fake-hot-away still on the board - divergence veto not applied")
 } elseif ($nDivg -gt 0) {
@@ -324,6 +328,88 @@ WHERE Status <> 'SUCCESS'
     }
 } catch {
     Warn ("job health check skipped - " + $_.Exception.Message)
+}
+
+# --- 4d. alert -> pick write-back must actually reach the pick ----------------
+# 2026-11-10: found that the whole turn-alert write-back chain had never once
+# reached a pick. ApplyTurnAlertsToPicksAsync filtered p.PickDate = today while
+# GetOpenDayAsync returns open picks regardless of date, so after midnight every
+# overnight match (03:00 kickoffs, the ones that matter most) got an alert row
+# that nobody applied: the monitoring tab showed the alert, the pick stayed clean.
+# Nothing anywhere could notice that, because both halves reported success.
+# This check is that missing alarm. It only asks about high alerts that are still
+# live AND still have a matching unsettled pick row: if such a row exists and was
+# not voided, the chain is broken. A pick that was recalculated away has no row
+# and is correctly skipped.
+try {
+    $h = @(Sql @"
+DECLARE @live int, @broken int;
+SELECT @live = COUNT(*) FROM dbo.FbTurnAlert a
+WHERE a.Severity = 'high' AND (a.MatchTime IS NULL OR a.MatchTime > GETDATE());
+
+SELECT @broken = COUNT(*)
+FROM dbo.FbTurnAlert a
+JOIN dbo.FbMilkPick p
+  ON p.MatchId = a.MatchId AND p.PlayType = a.PlayType AND p.OptionCode = a.OptionCode
+WHERE a.Severity = 'high'
+  AND (a.MatchTime IS NULL OR a.MatchTime > GETDATE())
+  AND p.SettledAt IS NULL
+  AND (p.AlertSeverity IS NULL OR ISNULL(p.Voided, 0) = 0);
+
+SELECT ISNULL(CAST(@live AS varchar(10)), '0') + '|' + ISNULL(CAST(@broken AS varchar(10)), '0');
+"@)
+    $p = @($h)[0]
+    if ($p -is [string] -and $p.Contains('|')) {
+        $q = $p -split '\|'
+        $live = [int]$q[0]; $broken = [int]$q[1]
+        if ($broken -gt 0) {
+            Fail ("turn alert was written but the pick was never voided: " + $broken + " of " + $live + " live high alerts - write-back chain broken (date mismatch class)")
+        } elseif ($live -eq 0) {
+            Ok "turn alert write-back: no live high alert right now, nothing to verify"
+        } else {
+            Ok ("turn alert write-back reached every pick: " + $live + " live high alerts, 0 left unvoided")
+        }
+    } else {
+        Warn "turn alert check skipped - unexpected result shape"
+    }
+} catch {
+    Warn ("turn alert check skipped - " + $_.Exception.Message)
+}
+
+# --- 4e. BettingCard.Expect must be filled for jc / bd ------------------------
+# 2026-11-10: jc and bd never wrote Expect (only sfc did), so the MERGE key
+# (Board, Expect, MatchNo) degenerated to (Board, MatchNo). "Tue001" repeats
+# every week, so last week's card was overwritten in place -- that is how the
+# 11-04 backtest ended up with one Champions League match out of six. The unique
+# index UQ_BettingCard was no help either: SQL Server treats multiple NULLs as
+# distinct, so it never fired while Expect was NULL for everything.
+# Rule: the newest batch per board must carry Expect on every row.
+try {
+    $h = @(Sql @"
+DECLARE @d date = CAST(GETDATE() AS date);
+SELECT ISNULL(CAST(SUM(CASE WHEN Expect IS NULL THEN 1 ELSE 0 END) AS varchar(10)), '0') + '|'
+     + ISNULL(CAST(COUNT(*) AS varchar(10)), '0')
+FROM dbo.BettingCard c
+WHERE c.Board IN ('jc', 'bd')
+  AND c.CapturedAt = (SELECT MAX(x.CapturedAt) FROM dbo.BettingCard x WHERE x.Board = c.Board)
+  AND c.MatchTime >= DATEADD(day, -1, @d);
+"@)
+    $p = @($h)[0]
+    if ($p -is [string] -and $p.Contains('|')) {
+        $q = $p -split '\|'
+        $miss = [int]$q[0]; $tot = [int]$q[1]
+        if ($tot -eq 0) {
+            Warn "BettingCard.Expect check skipped - no recent jc/bd card"
+        } elseif ($miss -gt 0) {
+            Fail ("BettingCard.Expect empty on " + $miss + " of " + $tot + " jc/bd rows - MERGE key degenerated to (Board, MatchNo), weekly overwrite is back")
+        } else {
+            Ok ("BettingCard.Expect filled on all " + $tot + " recent jc/bd rows")
+        }
+    } else {
+        Warn "BettingCard.Expect check skipped - unexpected result shape"
+    }
+} catch {
+    Warn ("BettingCard.Expect check skipped - " + $_.Exception.Message)
 }
 
 # --- 5. decision --------------------------------------------------------------

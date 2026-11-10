@@ -518,12 +518,20 @@ WHERE t.TradeDate=@d
         // 补列必须在开事务之前（否则命令要自带 Transaction，见 SaveDayAsync 注释）。
         await EnsureColumnsAsync(conn, ct);
 
+        // ★ 读取窗口必须是 ±1 天，不能只读 @d（2026-11-10 修）。
+        //
+        // 病因：通宵场次（03:00 开赛）的注是**前一天**落的，PickDate 停在前一天；
+        // 而 turn-guard 用的是 DateTime.Today。23:50 那次扫描写下的告警 AlertDate=昨天，
+        // 00:10 那次扫描 AlertDate=今天——只按 @d 读的话两次互相看不见，
+        // 同一注会被 INSERT 两行，而旧的那行永远进不了 stale 清理（清理只看 existing）。
+        // 结果是一场比赛在告警表里堆好几行，去重键 (MatchId,PlayType,OptionCode) 形同虚设。
         var existing = (await conn.QueryAsync<TurnAlertRow>(new CommandDefinition(
             @"SELECT AlertId, AlertDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      PickOption, Reason, Severity, ScoreDiagTag, ExpGdOpen, ExpGdNow, ExpGdMove, CreatedAt,
                      ISNULL(PickId,0) AS PickId, ISNULL(PlayType,'') AS PlayType,
                      ISNULL(OptionCode,'') AS OptionCode, SignalCode, LastSeenAt
-              FROM dbo.FbTurnAlert WHERE AlertDate=@d",
+              FROM dbo.FbTurnAlert
+              WHERE AlertDate >= DATEADD(day, -1, @d) AND AlertDate <= DATEADD(day, 1, @d)",
             new { d }, cancellationToken: ct))).ToList();
 
         // 键 = (MatchId, PlayType, OptionCode)：只认「哪一注」，不认 Reason 文案。
@@ -549,12 +557,15 @@ WHERE t.TradeDate=@d
             {
                 updated += await conn.ExecuteAsync(new CommandDefinition(
                     @"UPDATE dbo.FbTurnAlert
-                      SET Reason=@reason, Severity=@sev, SignalCode=@sig, ScoreDiagTag=@tag,
+                      SET AlertDate=@ad, Reason=@reason, Severity=@sev, SignalCode=@sig, ScoreDiagTag=@tag,
                           ExpGdOpen=@open, ExpGdNow=@now, ExpGdMove=@move, PickId=@pid,
                           PickOption=@pick, MatchTime=@time, LastSeenAt=SYSDATETIME()
                       WHERE AlertId=@id",
                     new
                     {
+                        // AlertDate 一起前移（2026-11-10）：告警是「当前还在触发」的状态，
+                        // 跟着滚动到今天，监控页（按 AlertDate=今天查）才不会在零点后把它漏掉。
+                        ad = d,
                         reason = a.Reason, sev = a.Severity, sig = a.SignalCode, tag = a.ScoreDiagTag,
                         open = a.ExpGdOpen, now = a.ExpGdNow, move = a.ExpGdMove, pid = a.PickId,
                         pick = a.PickOption, time = a.MatchTime, id = old.AlertId
@@ -622,13 +633,32 @@ WHERE t.TradeDate=@d
         await EnsureColumnsAsync(conn, ct);
 
         // 同一注可能有多行历史告警（早期无去重的数据），取最新一行。
+        //
+        // ★★ 这里**绝对不能**再按 p.PickDate=@d 过滤（2026-11-10 修，本条链路此前从未真正生效）。
+        //
+        // 病因是两个日期走的不是同一个钟：
+        //   FbMilkPick.PickDate  = SaveDayAsync 落库那一刻的日期（出注日）
+        //   GetOpenDayAsync      = 不按日期取，捞出所有「未结算 + 未开赛」的注（11-07 为跨午夜改的）
+        //   本方法的 @d          = DateTime.Today（扫描那一刻的日期）
+        // 于是每天 00:00 一过，通宵场次（03:00 开赛那批）就全部错位：
+        // 注的 PickDate 还是昨天，@d 已经是今天 → 告警写进 FbTurnAlert、监控页看得见，
+        // 但这一条 UPDATE 一行都匹配不上，推荐页那一注永远不会被红标、更不会被撤。
+        // 「监控到了却不动」的标准形态：告警页在喊，推荐页纹丝不动。
+        //
+        // 实测（事务内注入一条 AlertDate=次日 的 high 告警，同一注同一条告警）：
+        //   带 p.PickDate=@d  → 影响 0 行
+        //   去掉该条件        → 影响 1 行
+        //
+        // 匹配只靠 (MatchId, PlayType, OptionCode) 这个稳定三角：MatchId 全局唯一，
+        // 不可能误伤别的受注日；再加上 SettledAt IS NULL，已结算的历史行也不会被翻出来。
+        // 告警侧放宽到 ±1 天，是为了让「23:50 写下的告警」在 00:10 这一轮仍然生效。
         var marked = await conn.ExecuteAsync(new CommandDefinition(
             @"WITH latest AS (
                   SELECT MatchId, PlayType, OptionCode, Severity, Reason,
                          ROW_NUMBER() OVER (PARTITION BY MatchId, PlayType, OptionCode
                                             ORDER BY AlertId DESC) AS rn
                   FROM dbo.FbTurnAlert
-                  WHERE AlertDate=@d
+                  WHERE AlertDate >= DATEADD(day, -1, @d) AND AlertDate <= DATEADD(day, 1, @d)
               )
               UPDATE p
                  SET p.AlertSeverity = a.Severity,
@@ -640,25 +670,30 @@ WHERE t.TradeDate=@d
                 JOIN latest a
                   ON a.MatchId = p.MatchId AND a.PlayType = p.PlayType
                  AND a.OptionCode = p.OptionCode AND a.rn = 1
-               WHERE p.PickDate = @d AND p.SettledAt IS NULL",
+               WHERE p.SettledAt IS NULL",
             new { d }, cancellationToken: ct));
 
         // 告警消失 → 清红标（撤注不解除）。
         // 2026-11-09：已撤注（Voided=1）的行**不清原因**。撤注理由要留档，
         // 因为撤榜展示区就是靠 AlertReason 回答「为什么撤的」；清掉之后就只剩
         // 「未记录原因」，等于把撤注的唯一凭证也一起删了。未撤注的注照旧清。
+        //
+        // 2026-11-10：同样去掉 p.PickDate=@d —— 否则跨午夜那一批注永远不会被清标，
+        // 信号消失后红标会一直挂在榜上（用户以为还在危险中）。
         await conn.ExecuteAsync(new CommandDefinition(
             @"UPDATE p SET p.AlertSeverity = CASE WHEN ISNULL(p.Voided,0)=1 THEN p.AlertSeverity ELSE NULL END,
                           p.AlertReason   = CASE WHEN ISNULL(p.Voided,0)=1 THEN p.AlertReason   ELSE NULL END
                 FROM dbo.FbMilkPick p
-               WHERE p.PickDate=@d AND p.SettledAt IS NULL AND p.AlertSeverity IS NOT NULL
+               WHERE p.SettledAt IS NULL AND p.AlertSeverity IS NOT NULL
                  AND NOT EXISTS (SELECT 1 FROM dbo.FbTurnAlert a
-                                  WHERE a.AlertDate=@d AND a.MatchId=p.MatchId
-                                    AND a.PlayType=p.PlayType AND a.OptionCode=p.OptionCode)",
+                                  WHERE a.MatchId=p.MatchId
+                                    AND a.PlayType=p.PlayType AND a.OptionCode=p.OptionCode
+                                    AND a.AlertDate >= DATEADD(day, -1, @d)
+                                    AND a.AlertDate <= DATEADD(day, 1, @d))",
             new { d }, cancellationToken: ct));
 
         var voided = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
-            "SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate=@d AND Voided=1 AND SettledAt IS NULL",
+            "SELECT COUNT(*) FROM dbo.FbMilkPick WHERE Voided=1 AND SettledAt IS NULL",
             new { d }, cancellationToken: ct));
 
         return (marked, voided);
