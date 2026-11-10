@@ -10,6 +10,20 @@ public sealed record CollectionResult(bool Success, int Rows, string Message)
 {
     public static CollectionResult Ok(int rows, string message) => new(true, rows, message);
     public static CollectionResult Fail(string message) => new(false, 0, message);
+
+    /// <summary>
+    /// 失败但仍要如实报出写入行数。全失败时通常就是 0，但「部分批次成功后才被打断」
+    /// 也会走到这里——行数不能因为结论是失败就抹成 0，否则又变成另一种口径失真。
+    /// </summary>
+    public static CollectionResult Fail(int rows, string message) => new(false, rows, message);
+
+    /// <summary>
+    /// 「本轮有事要做，却一场都没成功」——只有这种才判失败。
+    ///
+    /// 部分失败仍算成功：反爬抖动是常态，逐次报红会把真问题淹掉，也会把人训练成不看告警。
+    /// 必须 done &gt; 0：没有待采场次（done=0, failed=0）是正常闲时，绝不能判失败。
+    /// </summary>
+    public static bool AllFailed(int done, int failed) => done > 0 && failed == done;
 }
 
 /// <summary>HttpClient 构造</summary>
@@ -284,11 +298,16 @@ public sealed class CollectionService
                           : verify > verifyBefore
                               ? $"；验证拦截 {verify - verifyBefore} 次"
                               : "");
-        await _sync.WriteAsync("odds", source.Name, failed == done && done > 0 ? "FAILED" : "SUCCESS",
+        // 与 SampleOddsAsync 同一条口径：全部失败时，内层记 FAILED 还不够——
+        // 返回 Ok 会让作业层（job:odds-backfill）写 SUCCESS，两套状态各说各话。
+        // 11-06~11-10 每天凌晨都是这个形态：odds FAILED + job:odds-backfill SUCCESS 0 行。
+        var allFailed = CollectionResult.AllFailed(done, failed);
+
+        await _sync.WriteAsync("odds", source.Name, allFailed ? "FAILED" : "SUCCESS",
             rows, message, ct);
         log?.Report(message);
 
-        return CollectionResult.Ok(rows, message);
+        return allFailed ? CollectionResult.Fail(rows, message) : CollectionResult.Ok(rows, message);
     }
 
     /// <summary>
@@ -320,6 +339,7 @@ public sealed class CollectionService
         var sampleAt = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0);
 
         int points = 0, done = 0, failed = 0;
+        var verifyBefore = OddsHttp.StatVerify;
 
         for (var offset = 0; offset < matches.Count; offset += batchSize)
         {
@@ -354,14 +374,23 @@ public sealed class CollectionService
             log?.Report($"  采样进度 {done}/{matches.Count}，失败 {failed}（节流 {OddsHttp.ThrottleIntervalMs}ms）");
         }
 
-        await _sync.WriteAsync("odds-sample", source.Name, "SUCCESS", done,
-            $"轨迹采样 {done} 场，失败 {failed}", ct);
+        // 2026-11-10：这里原来硬编码 "SUCCESS"，RowsAffected 又填的是「场数」，
+        // 于是「15 场全失败、赔率行 0」在两层都被读成绿灯：SyncLog 状态 SUCCESS，
+        // 行数 15（看着像有产出）。token 被打掉的整夜，监控页干干净净。
+        // 现在：全部失败才判 FAILED（部分失败仍算成功，避免偶发抖动刷告警），
+        // 行数一律写真实写入行数 points。
+        var allFailed = CollectionResult.AllFailed(done, failed);
 
-        var verify = OddsHttp.StatVerify;
+        await _sync.WriteAsync("odds-sample", source.Name, allFailed ? "FAILED" : "SUCCESS", points,
+            $"轨迹采样 {done} 场，失败 {failed}，写入 {points} 行", ct);
+
+        // StatVerify 是进程内累计值，不是本轮。原来直接报它，日志里写着「拦截 2326 次」，
+        // 让人以为是这一轮被拦了 2326 次；实际是当天累计。改成本轮增量。
+        var verifyDelta = OddsHttp.StatVerify - verifyBefore;
         var msg = $"轨迹采样完成：{done} 场（失败 {failed}），赔率行 {points}"
-                  + (verify > 0 ? $"；验证拦截 {verify} 次，需更换 500-cookie.txt 里的 token" : "");
+                  + (verifyDelta > 0 ? $"；本轮验证拦截 {verifyDelta} 次，需更换 500-cookie.txt 里的 token" : "");
         log?.Report(msg);
-        return CollectionResult.Ok(done, msg);
+        return allFailed ? CollectionResult.Fail(points, msg) : CollectionResult.Ok(points, msg);
     }
 
     /* ---------------- 必发（交易所）成交 ---------------- */
@@ -414,6 +443,7 @@ public sealed class CollectionService
 
         int written = 0, done = 0, withData = 0, noData = 0, failed = 0;
         var bigTrades = 0;
+        var verifyBefore = OddsHttp.StatVerify;
 
         for (var offset = 0; offset < matches.Count; offset += batchSize)
         {
@@ -455,13 +485,15 @@ public sealed class CollectionService
                 log?.Report($"  ! {err.MatchId} {err.Error}");
         }
 
-        await _sync.WriteAsync("exchange", source.Name, "SUCCESS", withData,
-            $"{done} 场，有必发 {withData}", ct);
+        var allFailed = CollectionResult.AllFailed(done, failed);
 
-        var verify = OddsHttp.StatVerify;
+        await _sync.WriteAsync("exchange", source.Name, allFailed ? "FAILED" : "SUCCESS", written,
+            $"{done} 场，有必发 {withData}，写入 {written}", ct);
+
+        var verifyDelta = OddsHttp.StatVerify - verifyBefore;
         var msg = $"必发采集完成：{done} 场（有数据 {withData} / 无盘口 {noData} / 失败 {failed}），大额明细 {bigTrades} 条"
-                  + (verify > 0 ? $"；验证拦截 {verify} 次，需更换 500-cookie.txt 里的 token" : "");
+                  + (verifyDelta > 0 ? $"；本轮验证拦截 {verifyDelta} 次，需更换 500-cookie.txt 里的 token" : "");
         log?.Report(msg);
-        return CollectionResult.Ok(withData, msg);
+        return allFailed ? CollectionResult.Fail(written, msg) : CollectionResult.Ok(written, msg);
     }
 }

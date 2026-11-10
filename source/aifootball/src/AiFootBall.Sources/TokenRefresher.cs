@@ -51,6 +51,41 @@ public static class TokenRefresher
     public static string? CookiePath => _cookiePath;
 
     /// <summary>
+    /// 最近一次「脚本跑完 + Cookie 装载成功」的时刻。
+    ///
+    /// ★ 这只证明续期流程走通了，**不证明新 token 能用**。11-09 全天报了 41 次
+    /// 「token 续期成功」（每 8 分钟一次，凌晨 00:00~07:35 从未断过），而
+    /// FbOddsHistory 当天首条仍等到 08:05——脚本每次都在写 cookie，站点每次都拒。
+    /// 要判断 token 是否真有效，只能看它装载之后还有没有被拦（见 TokenHealthService）。
+    /// </summary>
+    public static DateTime LastSuccessAt => _lastSuccess;
+
+    /// <summary>
+    /// 是否处于最小间隔冷却中。调用方应当先看这个再决定要不要调 TryRefreshAsync：
+    /// 原来每 30 秒就白试一次，一天刷出 913 行「累计 3 次拦截，开始自动续期」，
+    /// 其中 492 行被每小时上限挡回、其余被冷却挡回，纯空转还淹掉真日志。
+    /// </summary>
+    public static bool IsCoolingDown =>
+        _lastAttempt != DateTime.MinValue &&
+        (DateTime.Now - _lastAttempt).TotalMinutes < MinIntervalMinutes;
+
+    /// <summary>
+    /// 续期「假成功」判定：已经装过新 cookie，之后又被拦够一整轮。
+    ///
+    /// 为什么必须单独成一个可测函数：这个判据写错，两种后果都很糟——
+    /// 阈值太低，每隔几分钟就喊一次「需人工」，人会被训练成不看告警；
+    /// 阈值太高或条件写反，就是 11-09 那种整夜 41 次「成功」而数据一个字没进。
+    ///
+    /// <paramref name="successAt"/> 为 <see cref="DateTime.MinValue"/>（本次进程还从未续期成功）
+    /// 时一律判 false：没有「续期之后」这个基准，就无从谈「续期无效」。
+    /// 用 <c>Math.Max(0, ...)</c> 兜住进程重启后 StatVerify 归零导致差值为负的情况。
+    /// </summary>
+    public static bool RefreshProvenIneffective(DateTime successAt, long verifyNow,
+        long verifyAtSuccess, long threshold)
+        => successAt != DateTime.MinValue
+           && Math.Max(0, verifyNow - verifyAtSuccess) >= threshold;
+
+    /// <summary>
     /// 配置续期器。<paramref name="cookiePath"/> 是 secrets/500-cookie.txt，
     /// 脚本默认取仓库根的 _probe/harvest.mjs。
     /// </summary>

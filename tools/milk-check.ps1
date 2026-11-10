@@ -412,6 +412,43 @@ WHERE c.Board IN ('jc', 'bd')
     Warn ("BettingCard.Expect check skipped - " + $_.Exception.Message)
 }
 
+# --- 4f. token refresh effectiveness -----------------------------------------
+# 2026-11-10: the odds sampler reported SUCCESS while failing every single match.
+# Root cause was a hardcoded "SUCCESS" plus RowsAffected carrying the match count
+# instead of written rows, so a night of "15 matches, 15 failed, 0 rows" read as
+# green in both layers. Behind it: 41 "token refresh succeeded" lines in one day
+# (every 8 minutes, none missing through 00:00-07:35) while the first FbOddsHistory
+# row still waited until 08:05. Refresh success only proves harvest.mjs wrote a
+# cookie file, not that the site accepts the token.
+# Rule: a token-health FAILED row means refresh was proven ineffective and a human
+# must replace the cookie. Repeated fully-failed sampler rounds mean the same thing
+# even before the verdict lands.
+try {
+    $h = @(Sql @"
+DECLARE @d datetime = DATEADD(hour, -24, GETDATE());
+SELECT ISNULL(CAST(SUM(CASE WHEN TaskName = 'token-health' AND Status = 'FAILED' THEN 1 ELSE 0 END) AS varchar(10)), '0') + '|'
+     + ISNULL(CAST(SUM(CASE WHEN TaskName IN ('odds-sample', 'odds', 'odds-sample-late', 'exchange') AND Status = 'FAILED' THEN 1 ELSE 0 END) AS varchar(10)), '0')
+FROM dbo.SyncLog
+WHERE StartedAt >= @d;
+"@)
+    $p = @($h)[0]
+    if ($p -is [string] -and $p.Contains('|')) {
+        $q = $p -split '\|'
+        $tokenFail = [int]$q[0]; $oddsFail = [int]$q[1]
+        if ($tokenFail -gt 0) {
+            Warn ("token refresh proven ineffective (" + $tokenFail + " verdicts in 24h): sampler cannot read 500.com, overnight 02-07 kickoffs get no pre-match odds - replace secrets/500-cookie.txt by hand")
+        } elseif ($oddsFail -ge 3) {
+            Warn ("odds sampler fully failed on " + $oddsFail + " rounds in 24h - token is probably degraded, pre-match coverage is missing")
+        } else {
+            Ok ("token refresh looks fine: no ineffective verdict, " + $oddsFail + " fully-failed sampler rounds in 24h")
+        }
+    } else {
+        Warn "token refresh check skipped - unexpected result shape"
+    }
+} catch {
+    Warn ("token refresh check skipped - " + $_.Exception.Message)
+}
+
 # --- 5. decision --------------------------------------------------------------
 Write-Output "=== result ==="
 if ($fail -eq 0) { Write-Output "PASS"; exit 0 } else { Write-Output "FAIL"; exit 1 }

@@ -1,3 +1,4 @@
+using AiFootBall.Data;
 using AiFootBall.Sources;
 
 namespace AiFootBall.Api;
@@ -9,12 +10,20 @@ namespace AiFootBall.Api;
 ///   token 寿命由请求量决定，空闲时几小时都不失效，回补时二十分钟就可能被打掉。
 ///   按时间定时续期会白开浏览器窗口，按拦截次数触发则刚好在真正需要时动手。
 ///
-/// 阈值取 4：单场采集是 3 个页面，连续 4 次拦截基本可判定为 token 已被降级，
+/// 阈值取 3：单场采集是 3 个页面，连续 3 次拦截基本可判定为 token 已被降级，
 /// 而不是偶发的网络抖动。
+///
+/// 2026-11-10 补上的关键一环：**「续期成功」不等于「token 能用」**。
+/// 续期成功只证明 harvest.mjs 跑完并把 cookie 写进文件了；站点照样可以拒。
+/// 11-09 全天报了 41 次「token 续期成功」（每 8 分钟一次，凌晨一刻没停），
+/// 而 FbOddsHistory 当天首条仍等到 08:05 —— 也就是说整夜都在「成功」地空转。
+/// 现在若续期后又被拦够一整轮，就写一条 token-health/FAILED 进 SyncLog，
+/// 让「需人工更换 token」从日志文件里的一行字，变成监控页能看见的失败。
 /// </summary>
 public sealed class TokenHealthService : BackgroundService
 {
     private readonly ILogger<TokenHealthService> _logger;
+    private readonly SyncLogRepository _sync;
 
     /// <summary>连续拦截阈值：累计达到即续期</summary>
     private const long VerifyThreshold = 3;
@@ -25,7 +34,20 @@ public sealed class TokenHealthService : BackgroundService
     /// <summary>多久没有新的拦截就把累计清零（分钟），避免偶发拦截跨天累加成误判</summary>
     private const int DecayMinutes = 10;
 
-    public TokenHealthService(ILogger<TokenHealthService> logger) => _logger = logger;
+    /// <summary>
+    /// 「装了新 token 却仍被拦」的判定线。一轮采样 10~58 场，全被拦也就几十次；
+    /// 取 30 表示「整轮都打不开」，不是偶发抖动。低于这个数只会制造噪音。
+    /// </summary>
+    private const long IneffectiveAfterVerifies = 30;
+
+    /// <summary>同一条「需人工」告警的最小间隔（分钟），避免巡检每 30 秒写一行。</summary>
+    private const int ReportIntervalMinutes = 30;
+
+    public TokenHealthService(ILogger<TokenHealthService> logger, SyncLogRepository sync)
+    {
+        _logger = logger;
+        _sync = sync;
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -43,6 +65,11 @@ public sealed class TokenHealthService : BackgroundService
         var lastVerify = OddsHttp.StatVerify;
         long pending = 0;
         var lastHitAt = DateTime.MinValue;
+
+        // 假成功识别用：续期装载成功那一刻的拦截图样，以及上一次报「需人工」的时间。
+        var successSeen = DateTime.MinValue;
+        long verifyAtSuccess = 0;
+        var reportedAt = DateTime.MinValue;
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -74,7 +101,46 @@ public sealed class TokenHealthService : BackgroundService
                     pending = 0;
                 }
 
+                // 假成功识别：记住「续期装载成功」那一刻的拦截图样。之后每多拦一次，
+                // 都说明这个新 token 越不可用；攒够一整轮就判定它根本不能用。
+                var succAt = TokenRefresher.LastSuccessAt;
+                if (succAt != successSeen)
+                {
+                    successSeen = succAt;
+                    verifyAtSuccess = OddsHttp.StatVerify;
+                }
+
+                var blockedSince = successSeen == DateTime.MinValue
+                    ? 0
+                    : Math.Max(0, OddsHttp.StatVerify - verifyAtSuccess);
+
+                if (TokenRefresher.RefreshProvenIneffective(successSeen, OddsHttp.StatVerify,
+                        verifyAtSuccess, IneffectiveAfterVerifies)
+                    && (DateTime.Now - reportedAt).TotalMinutes >= ReportIntervalMinutes)
+                {
+                    reportedAt = DateTime.Now;
+                    var msg = $"token 续期无效：{successSeen:HH:mm:ss} 装载新 cookie 后又被拦 {blockedSince} 次"
+                              + $"（阈值 {IneffectiveAfterVerifies}）。自动续期救不回来，需人工更换 500-cookie.txt。";
+                    _logger.LogError("{Message}", msg);
+                    try
+                    {
+                        // 铁律：写日志处不用 CancellationToken.None，一律 30 秒上限。
+                        using var lcts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                        await _sync.WriteAsync("token-health", "500.com", "FAILED", 0, msg, lcts.Token);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "写入 token-health 状态失败（不影响续期）");
+                    }
+                }
+
                 if (pending < VerifyThreshold || TokenRefresher.IsRunning) continue;
+
+                // 冷却期内不再白试。原来每 30 秒就调一次 TryRefreshAsync：11-09 一天打了
+                // 913 行「累计 3 次拦截，开始自动续期」，其中 492 行被每小时上限挡回、
+                // 其余被冷却挡回，真正开浏览器的只有每小时 4 次。pending 不清零，
+                // 等冷却结束立刻接着做，行为不变但日志干净了。
+                if (TokenRefresher.IsCoolingDown) continue;
 
                 _logger.LogWarning("累计 {Count} 次人机验证拦截，开始自动续期 token", pending);
                 var (ok, message) = await TokenRefresher.TryRefreshAsync("verify-hits",
