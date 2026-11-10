@@ -287,4 +287,67 @@ public class TokenRefreshVerdictTests
         Assert.False(TokenRefresher.RefreshProvenIneffective(SuccessAt, 2340, 2326, 30));
         Assert.True(TokenRefresher.RefreshProvenIneffective(SuccessAt, 2400, 2326, 30));
     }
+
+    // ── 熔断：续期被证伪后必须停手 ────────────────────────────────────────────
+    //
+    // 2026-11-10 22:09~22:50 的真实形态：每 5 次拦截续一次，40 分钟 6 次，
+    // 每次日志都写「成功装载 3 项 Cookie」，而数据一个字没进。
+    // 续期本身没坏，坏在「续期解决不了这个问题」还一直做。
+
+    [Fact]
+    public void OpenCircuit_MakesIsCircuitOpenTrue()
+    {
+        TokenRefresher.ResetCircuit();
+        Assert.False(TokenRefresher.IsCircuitOpen);
+
+        Assert.True(TokenRefresher.OpenCircuit());
+        Assert.True(TokenRefresher.IsCircuitOpen);
+        Assert.True(TokenRefresher.CircuitUntil > DateTime.Now);
+
+        TokenRefresher.ResetCircuit();
+    }
+
+    [Fact]
+    public void OpenCircuit_IsIdempotent_DoesNotPushUntilForward()
+    {
+        // 巡检每 30 秒判一次「续期无效」。若每次都重设到期时刻，
+        // 熔断会被无限延长，等于永久停摆 —— 这条就是锁这个。
+        TokenRefresher.ResetCircuit();
+        Assert.True(TokenRefresher.OpenCircuit());
+        var firstUntil = TokenRefresher.CircuitUntil;
+
+        System.Threading.Thread.Sleep(5);
+        Assert.False(TokenRefresher.OpenCircuit());      // 第二次不该是新开
+        Assert.Equal(firstUntil, TokenRefresher.CircuitUntil);
+        Assert.Equal(1, TokenRefresher.CircuitStreak);
+
+        TokenRefresher.ResetCircuit();
+    }
+
+    [Fact]
+    public void OpenCircuit_StreakStartsAtOne()
+    {
+        // 第一次熔断 30 分钟。streak 决定退避长度，起点必须是 1 而不是 0
+        // （0 会让 CircuitBreakMinutes << -1 变成右移，得到 15 分钟）。
+        TokenRefresher.ResetCircuit();
+        TokenRefresher.OpenCircuit();
+        Assert.Equal(1, TokenRefresher.CircuitStreak);
+        var span = TokenRefresher.CircuitUntil!.Value - DateTime.Now;
+        Assert.InRange(span.TotalMinutes, 29, 30);
+
+        TokenRefresher.ResetCircuit();
+    }
+
+    [Fact]
+    public void ResetCircuit_ClearsEverything()
+    {
+        TokenRefresher.ResetCircuit();
+        TokenRefresher.OpenCircuit();
+        Assert.True(TokenRefresher.IsCircuitOpen);
+
+        TokenRefresher.ResetCircuit();
+        Assert.False(TokenRefresher.IsCircuitOpen);
+        Assert.Equal(0, TokenRefresher.CircuitStreak);
+        Assert.Null(TokenRefresher.CircuitUntil);
+    }
 }

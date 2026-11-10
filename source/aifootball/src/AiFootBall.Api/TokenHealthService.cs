@@ -40,9 +40,6 @@ public sealed class TokenHealthService : BackgroundService
     /// </summary>
     private const long IneffectiveAfterVerifies = 30;
 
-    /// <summary>同一条「需人工」告警的最小间隔（分钟），避免巡检每 30 秒写一行。</summary>
-    private const int ReportIntervalMinutes = 30;
-
     public TokenHealthService(ILogger<TokenHealthService> logger, SyncLogRepository sync)
     {
         _logger = logger;
@@ -66,10 +63,9 @@ public sealed class TokenHealthService : BackgroundService
         long pending = 0;
         var lastHitAt = DateTime.MinValue;
 
-        // 假成功识别用：续期装载成功那一刻的拦截图样，以及上一次报「需人工」的时间。
+        // 假成功识别用：续期装载成功那一刻的拦截图样。
         var successSeen = DateTime.MinValue;
         long verifyAtSuccess = 0;
-        var reportedAt = DateTime.MinValue;
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -115,26 +111,42 @@ public sealed class TokenHealthService : BackgroundService
                     : Math.Max(0, OddsHttp.StatVerify - verifyAtSuccess);
 
                 if (TokenRefresher.RefreshProvenIneffective(successSeen, OddsHttp.StatVerify,
-                        verifyAtSuccess, IneffectiveAfterVerifies)
-                    && (DateTime.Now - reportedAt).TotalMinutes >= ReportIntervalMinutes)
+                        verifyAtSuccess, IneffectiveAfterVerifies))
                 {
-                    reportedAt = DateTime.Now;
-                    var msg = $"token 续期无效：{successSeen:HH:mm:ss} 装载新 cookie 后又被拦 {blockedSince} 次"
-                              + $"（阈值 {IneffectiveAfterVerifies}）。自动续期救不回来，需人工更换 500-cookie.txt。";
-                    _logger.LogError("{Message}", msg);
-                    try
+                    // 续期被证伪 → 立刻熔断，别再开浏览器。
+                    // 只有新开那一次才写日志/告警，否则巡检每 30 秒喊一遍（会把人训练成不看告警）。
+                    if (TokenRefresher.OpenCircuit())
                     {
-                        // 铁律：写日志处不用 CancellationToken.None，一律 30 秒上限。
-                        using var lcts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                        await _sync.WriteAsync("token-health", "500.com", "FAILED", 0, msg, lcts.Token);
+                        var until = TokenRefresher.CircuitUntil;
+                        var msg = $"token 续期被证伪，已熔断至 {until:HH:mm}（第 {TokenRefresher.CircuitStreak} 次）："
+                                  + $"{successSeen:HH:mm:ss} 装载新 cookie 后又被拦 {blockedSince} 次"
+                                  + $"（阈值 {IneffectiveAfterVerifies}）。"
+                                  + "换 token 已多次无效，原因是站点对该子域整体降级（同 cookie 在浏览器里可用、"
+                                  + "换成程序请求即被人机验证拦截），需等风控降温或改走浏览器通道。";
+                        _logger.LogError("{Message}", msg);
+                        try
+                        {
+                            // 铁律：写日志处不用 CancellationToken.None，一律 30 秒上限。
+                            using var lcts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                            await _sync.WriteAsync("token-health", "500.com", "FAILED", 0, msg, lcts.Token);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "写入 token-health 状态失败（不影响续期）");
+                        }
                     }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "写入 token-health 状态失败（不影响续期）");
-                    }
+                }
+                else if (successSeen != DateTime.MinValue && blockedSince == 0
+                         && (DateTime.Now - successSeen).TotalMinutes >= 10)
+                {
+                    // 续期后 10 分钟一次拦截都没有 → 这次是真的救回来了，清熔断统计。
+                    TokenRefresher.ResetCircuit();
                 }
 
                 if (pending < VerifyThreshold || TokenRefresher.IsRunning) continue;
+
+                // 熔断期内不再尝试：见 TokenRefresher.CircuitBreakMinutes 的实测记录。
+                if (TokenRefresher.IsCircuitOpen) continue;
 
                 // 冷却期内不再白试。原来每 30 秒就调一次 TryRefreshAsync：11-09 一天打了
                 // 913 行「累计 3 次拦截，开始自动续期」，其中 492 行被每小时上限挡回、

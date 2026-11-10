@@ -14,6 +14,20 @@ public static class OddsHttp
     /// <summary>运行期计数器：成功 / 428 / 429 / 挑战页 / 人机验证拦截</summary>
     public static long StatOk, Stat428, Stat429, StatChallenge, StatVerify;
 
+    /// <summary>经由浏览器通道取回的页数（2026-11-10 起 odds.500.com 主要靠这条通道）。</summary>
+    public static long StatChrome;
+
+    /// <summary>
+    /// 连续「HTTP 直连被拦」次数。达到 <see cref="SkipHttpAfter"/> 之后直接走浏览器通道，
+    /// 不再每页先打一次注定失败的 HTTP —— 每页省 1~2 秒，也少给风控送样本。
+    /// </summary>
+    private static int _httpBlockedStreak;
+
+    /// <summary>连续被拦多少次后改为「默认走浏览器」。</summary>
+    private const int SkipHttpAfter = 3;
+
+    public static int HttpBlockedStreak => Volatile.Read(ref _httpBlockedStreak);
+
     public static int ThrottleIntervalMs => Throttle.CurrentIntervalMs;
 
     /// <summary>节流基线（全部请求成功时会回落到这里）。报出去用于判断「慢」是不是被限流惩罚。</summary>
@@ -29,7 +43,45 @@ public static class OddsHttp
         Interlocked.Exchange(ref Stat429, 0);
         Interlocked.Exchange(ref StatChallenge, 0);
         Interlocked.Exchange(ref StatVerify, 0);
+        Interlocked.Exchange(ref StatChrome, 0);
+        Interlocked.Exchange(ref StatChromeBlocked, 0);
     }
+
+    /// <summary>
+    /// 走浏览器通道取一页。成功计数；失败返回 null 让调用方继续原流程。
+    /// 浏览器通道是串行的（单个 tab），并发采集在这里排队，这是它的固有代价。
+    ///
+    /// ★ 这里不清 <see cref="_httpBlockedStreak"/>：清了就等于每页都先打一次注定失败的 HTTP，
+    /// 快速通道永远进不去。归零只在 HTTP 直连真正成功时做（那才叫恢复了）。
+    ///
+    /// ★★ 浏览器也会被打回验证页（2026-11-10 23:20 实测：过一次验证后只抓了几页就又弹
+    /// 「请勾选下方复选框」）。那种响应必须当**失败**处理 —— 若当成采集成功，解析器会从
+    /// 验证页里解析出零条赔率，页面显示"采集正常、0 条数据"，这就是本项目最怕的静默脏数据。
+    /// </summary>
+    private static async Task<string?> TryChromeAsync(string url, CancellationToken ct)
+    {
+        if (!ChromeBridge.Enabled) return null;
+        var html = await ChromeBridge.GetHtmlAsync(url, ct);
+        if (html is null) return null;
+
+        if (BotGuard.IsVerificationPage(html) || BotGuard.IsChallenge(html))
+        {
+            Interlocked.Increment(ref StatChromeBlocked);
+            ChromeBridge.NoteBlocked();
+            return null;
+        }
+
+        Interlocked.Increment(ref StatChrome);
+        ChromeBridge.NoteOk();
+        return html;
+    }
+
+    /// <summary>浏览器通道也被打回验证页的次数。与 StatVerify（HTTP 通道）分开计数，
+    /// 两者的成因不同：前者是会话被高频请求打回，后者是客户端指纹被降级。</summary>
+    public static long StatChromeBlocked;
+
+    /// <summary>上一次放行 HTTP 直连探测的时刻（快速通道生效期间，每 30 分钟探一次恢复情况）。</summary>
+    private static DateTime _lastHttpProbeAt = DateTime.MinValue;
 
     /// <summary>抓取一个 GBK 页面，自动处理限流与 JS 挑战页。</summary>
     public static async Task<(string? Html, string Reason)> GetAsync(
@@ -40,6 +92,27 @@ public static class OddsHttp
         {
             try
             {
+                // 快速通道：连续被拦之后，HTTP 直连在这种状态下拿不到真页面，
+                // 每页先打一次只会白等 + 给风控送样本。直接问浏览器。
+                // 但要留一个恢复口子：每 30 分钟放一页走 HTTP，站点恢复正常时会自动切回去。
+                if (Volatile.Read(ref _httpBlockedStreak) >= SkipHttpAfter)
+                {
+                    var probeDue = (DateTime.Now - _lastHttpProbeAt).TotalMinutes >= 30;
+                    if (!probeDue)
+                    {
+                        var fast = await TryChromeAsync(url, ct);
+                        if (fast is not null)
+                        {
+                            Interlocked.Increment(ref StatOk);
+                            return (fast, "chrome");
+                        }
+                    }
+                    else
+                    {
+                        _lastHttpProbeAt = DateTime.Now;
+                    }
+                }
+
                 // token 文件被替换后自动生效（站点会在访问量上来后打发 token，需人工续期）
                 BotGuard.RefreshIfChanged();
 
@@ -92,7 +165,20 @@ public static class OddsHttp
                 if (BotGuard.IsChallenge(html))
                 {
                     Interlocked.Increment(ref StatChallenge);
+                    Interlocked.Increment(ref _httpBlockedStreak);
                     reason = "challenge";
+
+                    // 先问浏览器。2026-11-10 实测：挑战页能算对 __tst_status（与站点脚本一致），
+                    // 但提交后立刻升级到 TEOCaptcha 二级人机验证 —— 那一级判的是浏览器行为，
+                    // .NET / curl / curl_cffi（六种指纹）全部过不去。所以 Solve 只留作
+                    // "浏览器没开"时的兜底，不再是主路径。
+                    var viaChrome = await TryChromeAsync(url, ct);
+                    if (viaChrome is not null)
+                    {
+                        Interlocked.Increment(ref StatOk);
+                        return (viaChrome, "chrome");
+                    }
+
                     BotGuard.Solve(html);
                     await BotGuard.WaitAsync(ct);
                     continue;
@@ -104,6 +190,16 @@ public static class OddsHttp
                 if (BotGuard.IsVerificationPage(html))
                 {
                     Interlocked.Increment(ref StatVerify);
+                    Interlocked.Increment(ref _httpBlockedStreak);
+
+                    // 同上：这一级只能靠浏览器过。走通就不必冷却，否则兜底会被 10 秒冷却拖死。
+                    var viaChrome = await TryChromeAsync(url, ct);
+                    if (viaChrome is not null)
+                    {
+                        Interlocked.Increment(ref StatOk);
+                        return (viaChrome, "chrome");
+                    }
+
                     Throttle.Cooldown(10);
                     return (null, "verify-required");
                 }
@@ -116,6 +212,7 @@ public static class OddsHttp
 
                 Throttle.OnSuccess();
                 Interlocked.Increment(ref StatOk);
+                Interlocked.Exchange(ref _httpBlockedStreak, 0);
                 return (html, "");
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

@@ -27,6 +27,25 @@ public static class TokenRefresher
     /// <summary>每小时最多自动续期次数。超过说明是 IP 级封禁，续 token 也没用，需要人工介入。</summary>
     private const int MaxPerHour = 4;
 
+    /// <summary>
+    /// 熔断首次时长（分钟）。触发条件是「续期成功后又被打回一整轮」——见
+    /// <see cref="RefreshProvenIneffective"/>。
+    ///
+    /// ★ 2026-11-10 22:09~22:50 实测：40 分钟里续期 6 次、每次日志都报「成功装载 3 项
+    /// Cookie」，而 22:12 那次装完 31 次拦截又回来了，22:18 必发 40 场全败。
+    /// 根因不是 token 过期，是 odds.500.com 这个子域整体降级：同一套 cookie
+    /// 在 Chrome 里能正常打开赔率页，换 HttpClient / curl / curl_cffi（六种浏览器指纹）
+    /// 全部被回 TEOCaptcha 人机验证。**换 token 换不回来**，反复续期只是在给风控
+    /// 加码，顺带每小时弹 4 个浏览器窗口。
+    ///
+    /// 所以续期「无效」被证实后必须停手：退避 30 分钟起步、逐次翻倍、封顶 2 小时，
+    /// 给风控降温留时间，也让人有机会看到真原因。
+    /// </summary>
+    private const int CircuitBreakMinutes = 30;
+
+    /// <summary>熔断间隔上限（分钟）。再长就等于放弃了，宁可两小时试一次。</summary>
+    private const int CircuitBreakMaxMinutes = 120;
+
     /// <summary>单次续期最长等待（秒）。超时即杀掉浏览器进程，避免卡死。</summary>
     private const int RunTimeoutSeconds = 150;
 
@@ -40,6 +59,12 @@ public static class TokenRefresher
     private static string? _lastError;
     private static string? _lastMessage;
     private static string? _runningReason;
+
+    /// <summary>熔断到期时刻。<see cref="DateTime.MinValue"/> 表示从未熔断。</summary>
+    private static DateTime _circuitUntil = DateTime.MinValue;
+
+    /// <summary>连续熔断次数，用于退避翻倍。只有「熔断后仍然一次都没取到数」才会继续涨。</summary>
+    private static int _circuitStreak;
 
     /// <summary>是否具备自动续期条件（找得到脚本与 token 文件）</summary>
     public static bool Enabled => _scriptPath is not null && _cookiePath is not null;
@@ -68,6 +93,57 @@ public static class TokenRefresher
     public static bool IsCoolingDown =>
         _lastAttempt != DateTime.MinValue &&
         (DateTime.Now - _lastAttempt).TotalMinutes < MinIntervalMinutes;
+
+    /// <summary>
+    /// 熔断中：续期已被证伪，再开浏览器也没用，调用方应当直接跳过。
+    /// 熔断到期后自动恢复「可以再试一次」，不需要人工清标志。
+    /// </summary>
+    public static bool IsCircuitOpen =>
+        _circuitUntil != DateTime.MinValue && DateTime.Now < _circuitUntil;
+
+    /// <summary>连续熔断次数，供诊断——涨到 3 次以上基本等于「站点把我们这侧整体降级了」。</summary>
+    public static int CircuitStreak { get { lock (Sync) return _circuitStreak; } }
+
+    /// <summary>熔断到期时刻，供 /api/token/status 展示。</summary>
+    public static DateTime? CircuitUntil
+    {
+        get { lock (Sync) return _circuitUntil == DateTime.MinValue ? null : _circuitUntil; }
+    }
+
+    /// <summary>
+    /// 打开熔断（幂等）。已经处于熔断期内时什么都不做——
+    /// 否则巡检每 30 秒喊一次「续期无效」，会把到期时刻一直往后推，等于永久熔断。
+    /// 返回本次是否真的新开了一段熔断（用于「只报一次日志」）。
+    /// </summary>
+    public static bool OpenCircuit()
+    {
+        lock (Sync)
+        {
+            if (IsCircuitOpen) return false;
+
+            _circuitStreak++;
+            // 30 → 60 → 120（封顶）：风控降温通常按小时计，头一次给半小时就够，
+            // 连续无效说明不是抖动，退到 2 小时一次，避免一天弹 48 个浏览器窗口。
+            var minutes = CircuitBreakMinutes << Math.Min(_circuitStreak - 1, 4);
+            if (minutes > CircuitBreakMaxMinutes) minutes = CircuitBreakMaxMinutes;
+            _circuitUntil = DateTime.Now.AddMinutes(minutes);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// 真正拿到数时调用，把熔断统计清零。
+    /// 注意「续期成功」不能调这个——那只是脚本跑完了，站点照样可以拒（见 LastSuccessAt 注释）。
+    /// </summary>
+    public static void ResetCircuit()
+    {
+        lock (Sync)
+        {
+            if (_circuitUntil == DateTime.MinValue && _circuitStreak == 0) return;
+            _circuitUntil = DateTime.MinValue;
+            _circuitStreak = 0;
+        }
+    }
 
     /// <summary>
     /// 续期「假成功」判定：已经装过新 cookie，之后又被拦够一整轮。
@@ -120,6 +196,9 @@ public static class TokenRefresher
                 lastSuccess = _lastSuccess == DateTime.MinValue ? (DateTime?)null : _lastSuccess,
                 lastMessage = _lastMessage,
                 lastError = _lastError,
+                circuitOpen = IsCircuitOpen,
+                circuitUntil = _circuitUntil == DateTime.MinValue ? (DateTime?)null : _circuitUntil,
+                circuitStreak = _circuitStreak,
                 recent
             };
         }
