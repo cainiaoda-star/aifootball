@@ -92,9 +92,16 @@ public sealed class RecommendationService
     /// 回填某天竞彩已完场场次的最终固定奖金（四类玩法），时间点记为该场截止时间。
     /// 500 只保留最近约 30 天，再早页面会退回当天在售，此时一行都不写。
     /// </summary>
-    public async Task<CollectionResult> BackfillJcDayAsync(DateOnly date, CancellationToken ct = default)
+    public async Task<CollectionResult> BackfillJcDayAsync(DateOnly date, CancellationToken ct = default,
+        IProgress<string>? log = null)
     {
+        // 抓取和落库分开计时：回补慢到底是「500 页面慢」还是「写库慢」，
+        // 光看作业总耗时永远分不清，而这两者的处置完全不同（前者等网络/换 token，
+        // 后者调批次/加索引）。
+        var fetchClock = System.Diagnostics.Stopwatch.StartNew();
         var cards = await _cardSource.FetchJcAllPlaysAsync(ct, date);
+        fetchClock.Stop();
+        log?.Report($"    {date:yyyy-MM-dd} 抓取 {cards.Count} 场，{fetchClock.ElapsedMilliseconds}ms");
         var ended = cards.Where(c => c.IsEnd && c.BuyEndTime is not null && c.MatchId is not null).ToList();
         var onDay = ended.Where(c => Math.Abs((DateOnly.FromDateTime(c.BuyEndTime!.Value).DayNumber - date.DayNumber)) <= 1).ToList();
         if (onDay.Count == 0)
@@ -105,7 +112,7 @@ public sealed class RecommendationService
         var endAt = onDay.ToDictionary(c => c.MatchId!.Value, c => c.BuyEndTime!.Value);
         var rows = 0;
         foreach (var g in BettingCardSource.ToSnapshots(onDay).GroupBy(s => endAt[s.MatchId!.Value]))
-            rows += await _jcOdds.SaveSnapshotAsync(g.ToList(), g.Key, watchMoves: false, ct: ct);
+            rows += await _jcOdds.SaveSnapshotAsync(g.ToList(), g.Key, watchMoves: false, ct: ct, log: log);
 
         return CollectionResult.Ok(rows,
             $"{date:yyyy-MM-dd} 竞彩回填 {onDay.Count} 场（比分 {onDay.Count(c => c.BfOdds.Count > 0)} / 总进球 {onDay.Count(c => c.JqOdds.Count > 0)} / 半全场 {onDay.Count(c => c.BqOdds.Count > 0)}），写入 {rows} 个选项");

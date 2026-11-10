@@ -44,7 +44,7 @@ public sealed class JcOddsRepository
     ///   2. 刷 FbMatchTrend  —— 本次涉及场次的「首轮→现价」走向汇总（页面直接读，不再现算 124 万行）
     /// </summary>
     public async Task<int> SaveSnapshotAsync(IReadOnlyList<JcOddsSnapshot> snapshots, DateTime capturedAt,
-        bool watchMoves = true, CancellationToken ct = default)
+        bool watchMoves = true, CancellationToken ct = default, IProgress<string>? log = null)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
@@ -64,6 +64,20 @@ public sealed class JcOddsRepository
         await using var conn = await _factory.OpenAsync(ct);
         await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(ct);
 
+        // 分段计时（2026-11-10 加）。起因是 jc-odds-backfill 反复报「执行超时已过期」，
+        // 而每条语句单独看都在几秒内 —— 光看总耗时永远分不清是 DELETE 慢、插入慢、
+        // 还是走向重算慢。查计划缓存只看到一批 3.4 秒的合计，定位不到段。
+        // 这个计时只在本轮涉及场次 ≥ 20 时输出（回补就是这种规模），
+        // 每 2 分钟一轮的 jc-odds-sample 不会刷屏。
+        var clocks = new Dictionary<string, long>(StringComparer.Ordinal);
+        var seg = System.Diagnostics.Stopwatch.StartNew();
+        void Mark(string name)
+        {
+            var ms = seg.ElapsedMilliseconds;
+            clocks[name] = clocks.TryGetValue(name, out var acc) ? acc + ms : ms;
+            seg.Restart();
+        }
+
         // 先清掉本分钟已采样的旧数据，避免同分钟重复触发造成重复行
         var matchNos = points.Select(p => p.MatchNo).Distinct().ToArray();
 
@@ -72,31 +86,47 @@ public sealed class JcOddsRepository
         var prev = watchMoves
             ? await GetPrevSampledAsync(conn, tx, matchNos, capturedAt, ct)
             : new Dictionary<string, (decimal Odds, DateTime At)>(StringComparer.Ordinal);
+        Mark("prev");
 
         await conn.ExecuteAsync(new CommandDefinition(
             @"DELETE FROM dbo.FbJcOddsHistory WHERE CapturedAt = @at AND MatchNo IN @nos",
             new { at = capturedAt, nos = matchNos }, tx, cancellationToken: ct));
+        Mark("delete");
 
         var affected = await InsertPointsAsync(conn, tx, points, ct);
+        Mark("insert");
 
         var moves = watchMoves
             ? await RecordMovesAsync(conn, tx, points, capturedAt, prev, ct)
             : 0;
+        Mark("moves");
 
         // 走向按「有 MatchId 的场次」刷新。MatchId 空的档写进去也归不到场，跳过。
         var matchIds = points.Where(p => p.MatchId is > 0).Select(p => p.MatchId!.Value).Distinct().ToArray();
         if (matchIds.Length > 0)
         {
             await RefreshTrendAsync(conn, tx, matchIds, ct);
+            Mark("trend");
             // 净胜球诊断和走向同事务刷新：两者读的是同一批快照，
             // 分开刷会出现「走向已是封盘价、净胜球还是上一轮」的错位。
             await RefreshScoreDiagAsync(conn, tx, matchIds, ct);
+            Mark("diag");
         }
 
         await LogScanAsync(conn, tx, "jc", capturedAt, snapshots.Count, affected, moves,
             (int)sw.ElapsedMilliseconds, ct);
+        Mark("log");
 
         await tx.CommitAsync(ct);
+
+        // 只在回补路径报（watchMoves=false）。回补是按 CapturedAt 分组调用的，
+        // 每组只有几场几十行，靠「场次 ≥20」根本触发不到 —— 第一次加这段时
+        // 就是因为条件写成了按规模判断，日志里一个字都没出现。
+        // 实时采样（jc-odds-sample）每 2 分钟一轮，不报，避免刷屏。
+        if (log is not null && !watchMoves)
+            log.Report($"    快照分段（{capturedAt:MM-dd HH:mm}）：{snapshots.Count} 场 / {points.Count} 行，"
+                       + string.Join(" / ", clocks.Select(kv => $"{kv.Key} {kv.Value}ms")));
+
         return affected;
     }
 
@@ -219,8 +249,16 @@ public sealed class JcOddsRepository
     {
         foreach (var chunk in Chunk(matchIds, TrendBatchMatches))
             await conn.ExecuteAsync(new CommandDefinition(TrendSql,
-                new { ids = chunk }, tx, cancellationToken: ct));
+                new { ids = chunk }, tx, cancellationToken: ct,
+                // 默认 30 秒是「一条命令」的上限，不是整个作业的。单批 8 场实测 1.5 秒，
+                // 但慢盘或统计信息陈旧时会跳好几倍，30 秒会把它误杀成一个含糊的
+                // 「执行超时已过期」——那句话既不说哪条语句、也不说跑了多久。
+                // 真正的节流靠分批，这里只是别让一次 IO 抖动变成作业失败。
+                commandTimeout: TrendCommandTimeoutSeconds));
     }
+
+    /// <summary>走向/诊断重算的单条命令上限（秒）。见 RefreshTrendAsync 里的说明。</summary>
+    private const int TrendCommandTimeoutSeconds = 300;
 
     private static IEnumerable<long[]> Chunk(long[] ids, int size)
     {
@@ -343,7 +381,8 @@ LEFT JOIN mv ON mv.MatchId = p.MatchId AND mv.PlayType = p.PlayType;";
         // 是为了让两段在同一个事务里交替推进时不会一边 8 场一边 67 场。
         foreach (var chunk in Chunk(matchIds, TrendBatchMatches))
             await conn.ExecuteAsync(new CommandDefinition(ScoreDiagSql,
-                new { ids = chunk }, tx, cancellationToken: ct));
+                new { ids = chunk }, tx, cancellationToken: ct,
+                commandTimeout: TrendCommandTimeoutSeconds));
     }
 
     private const string ScoreDiagSql = @"

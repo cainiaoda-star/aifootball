@@ -141,6 +141,65 @@ public class PaperTradeTests
         Assert.Equal(0m, s.Roi);
     }
 
+    [Fact]
+    public void 撤注的注照常算命中率作为对照但不算钱()
+    {
+        // 撤注判据从上线到今天一次都没被检验过，原因是报表把撤注行整个排除在分母外，
+        // 「撤掉的注后来中没中」在任何页面上都看不到。
+        // 这条测试钉住新增的对照组口径：撤注行不进主分母（不算钱），
+        // 但要单独数出 VoidedSettled / VoidedHits，否则永远无法回答「撤对了没有」。
+        var rows = new List<PaperTradeRow>
+        {
+            Row("BQ", 6.15m, true,  voided: true),   // 撤了，结果中了 → 撤错
+            Row("BQ", 13.0m, false, voided: true),   // 撤了，没中 → 撤对
+            Row("BQ", 5.75m, true),                  // 正常出注，中了
+            Row("BQ", 6.20m, false)                  // 正常出注，没中
+        };
+
+        var s = PaperTradeMath.Slice("BQ", rows);
+
+        // 主口径：只有未撤注的两注参与，撤注一注都不进
+        Assert.Equal(4, s.Total);
+        Assert.Equal(2, s.Voided);
+        Assert.Equal(2, s.Settled);
+        Assert.Equal(1, s.Hits);
+        Assert.Equal(50m, s.HitPct);
+        Assert.Equal(2m, s.Stake);
+
+        // 对照组：撤注的两注都在，命中一注
+        Assert.Equal(2, s.VoidedSettled);
+        Assert.Equal(1, s.VoidedHits);
+        Assert.Equal(50m, s.VoidedHitPct);
+    }
+
+    [Fact]
+    public void 撤注但还没赛果的不进对照组()
+    {
+        // 撤注时比赛还没踢完是常态。拿「没有赛果」当「没有命中」会把对照命中率压低，
+        // 于是看起来「撤掉的都是错的」——那是数据缺口造出来的结论。
+        var rows = new List<PaperTradeRow>
+        {
+            Row("JQ", 4.2m, null, voided: true),
+            Row("JQ", 4.5m, true, voided: true)
+        };
+
+        var s = PaperTradeMath.Slice("JQ", rows);
+
+        Assert.Equal(2, s.Voided);
+        Assert.Equal(1, s.VoidedSettled);
+        Assert.Equal(1, s.VoidedHits);
+        Assert.Equal(100m, s.VoidedHitPct);
+    }
+
+    [Fact]
+    public void 没有撤注样本时对照组命中率为0且不除零()
+    {
+        var s = PaperTradeMath.Slice("BF", new List<PaperTradeRow> { Row("BF", 10.5m, true) });
+
+        Assert.Equal(0, s.VoidedSettled);
+        Assert.Equal(0m, s.VoidedHitPct);
+    }
+
     [Theory]
     [InlineData(10.5, true, 9.5)]     // 命中：赔率 − 1
     [InlineData(10.5, false, -1.0)]   // 未中：亏 1 个平注

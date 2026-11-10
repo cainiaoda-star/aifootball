@@ -1015,10 +1015,13 @@ public sealed class JobScheduler
                 }
                 var parts = new List<string>();
                 var sub = new List<CollectionResult>();
+                // 分段耗时通过 IProgress 走到日志：这个作业在生产上反复超时，
+                // 而「哪一段慢」此前完全不可见（只有一句「执行超时已过期」）。
+                var segLog = new Progress<string>(m => _log?.Invoke($"[jc-odds-backfill] {m}"));
                 for (var back = 1; back <= BackfillJcDays; back++)
                 {
                     var day = DateOnly.FromDateTime(DateTime.Today.AddDays(-back));
-                    var r = await _recommendation.BackfillJcDayAsync(day, ct);
+                    var r = await _recommendation.BackfillJcDayAsync(day, ct, segLog);
                     parts.Add(r.Message);
                     sub.Add(r);
                     if (back < BackfillJcDays) await Task.Delay(1500, ct);
