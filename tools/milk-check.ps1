@@ -292,7 +292,7 @@ SELECT ISNULL(CAST(SUM(CASE WHEN DATEPART(hour, ISNULL(StartedAt, FinishedAt)) <
      + ISNULL(CAST(SUM(CASE WHEN DATEPART(hour, ISNULL(StartedAt, FinishedAt)) >= 8 THEN 1 ELSE 0 END) AS varchar(10)), '0') + '|'
      + ISNULL(CAST(COUNT(*) AS varchar(10)), '0')
 FROM dbo.SyncLog
-WHERE ISNULL(StartedAt, FinishedAt) >= @d AND Status NOT IN ('SUCCESS', 'RUNNING', 'ABORTED')
+WHERE ISNULL(StartedAt, FinishedAt) >= @d AND Status NOT IN ('SUCCESS', 'RUNNING', 'ABORTED', 'IDLE')
 "@)
     # RUNNING is not a failure. Since 2026-11-10 every run inserts a RUNNING row
     # first and updates it on exit, so counting "Status <> SUCCESS" would report
@@ -315,7 +315,7 @@ WHERE ISNULL(StartedAt, FinishedAt) >= @d AND Status NOT IN ('SUCCESS', 'RUNNING
 DECLARE @d date = CAST(GETDATE() AS date);
 SELECT ISNULL(CAST(COUNT(*) AS varchar(10)), '0')
 FROM dbo.SyncLog
-WHERE Status NOT IN ('SUCCESS', 'RUNNING', 'ABORTED')
+WHERE Status NOT IN ('SUCCESS', 'RUNNING', 'ABORTED', 'IDLE')
   AND ISNULL(StartedAt, FinishedAt) >= DATEADD(minute, -90, GETDATE())
   AND ISNULL(StartedAt, FinishedAt) >= @d;
 "@)
@@ -341,6 +341,27 @@ WHERE Status NOT IN ('SUCCESS', 'RUNNING', 'ABORTED')
             Warn ("overnight job failures today: " + $night + " - odds trajectory has gaps")
         } else {
             Ok ("job health: " + $tot + " failure(s) today (night " + $night + ", day " + $day + ")")
+        }
+
+        # IDLE is a third state, not a failure (added 2026-11-11).
+        # SampleOddsAsync used to report "nothing to sample" as SUCCESS, so
+        # "job alive but not collecting anything" looked exactly like a healthy
+        # round -- the same shape as the 11-10 bug where 15 failing matches were
+        # written as SUCCESS. Now those rounds write IDLE and must be visible,
+        # because a sampler stuck in IDLE is what "no trajectory data" looks
+        # like from the outside. No threshold on purpose: whether 5 idle rounds
+        # are suspicious depends on the hour and the day's card, and inventing
+        # a number here would just train people to ignore the line.
+        $idle = @(Sql @"
+DECLARE @t datetime = DATEADD(hour, -3, GETDATE());
+SELECT TaskName + '=' + CONVERT(varchar(10), COUNT(*))
+FROM dbo.SyncLog
+WHERE Status = 'IDLE' AND ISNULL(StartedAt, FinishedAt) >= @t
+GROUP BY TaskName
+ORDER BY TaskName;
+"@)
+        if ($idle.Count -gt 0) {
+            Ok ("idle rounds in last 3h: " + (($idle | Where-Object { $_ -ne '' }) -join ', '))
         }
     }
 } catch {

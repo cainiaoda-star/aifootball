@@ -81,6 +81,40 @@ public class CollectionStatusTests
         Assert.True(r.Success);
         Assert.Equal(5673, r.Rows);
     }
+
+    // ---- 第三种状态：跑了但没活干（2026-11-11 补）----------------------------
+    // 「无待采样赛事」原来返回 Ok → 作业层写 SUCCESS。于是「作业活着、一场没采」
+    // 和「采了 30 场全成功」在库里长得一模一样，看板永远绿。
+    // 这和 11-10 那次「15 场全失败写成 SUCCESS」是同一个病：状态字段没有表达能力。
+
+    [Fact]
+    public void Skipped_IsIdle_NotSuccessText()
+    {
+        var r = CollectionResult.Skipped("无待采样赛事");
+
+        Assert.True(r.Success);              // 不许触发告警：凌晨确实经常没活干
+        Assert.True(r.Idle);
+        Assert.Equal(0, r.Rows);
+        Assert.Equal("IDLE", r.StatusText);  // 落库必须能和 SUCCESS 分开
+    }
+
+    [Fact]
+    public void StatusText_ThreeWay()
+    {
+        Assert.Equal("SUCCESS", CollectionResult.Ok(10, "ok").StatusText);
+        Assert.Equal("FAILED", CollectionResult.Fail("boom").StatusText);
+        Assert.Equal("FAILED", CollectionResult.Fail(7, "半路挂了").StatusText);
+        Assert.Equal("IDLE", CollectionResult.Skipped("无待采样赛事").StatusText);
+    }
+
+    [Fact]
+    public void Skipped_DoesNotChangeFailureVerdict()
+    {
+        // Idle 只描述「没活干」，不许被拿去当失败或成功的替代口径：
+        // AllFailed 仍只看 done/failed 两个数，与 Idle 无关。
+        Assert.False(CollectionResult.AllFailed(0, 0));
+        Assert.True(CollectionResult.Skipped("x").Success);
+    }
 }
 
 /// <summary>

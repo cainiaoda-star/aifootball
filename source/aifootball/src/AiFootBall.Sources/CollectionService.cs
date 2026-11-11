@@ -6,10 +6,26 @@ using AiFootBall.Data;
 namespace AiFootBall.Sources;
 
 /// <summary>采集结果</summary>
-public sealed record CollectionResult(bool Success, int Rows, string Message)
+public sealed record CollectionResult(bool Success, int Rows, string Message, bool Idle = false)
 {
     public static CollectionResult Ok(int rows, string message) => new(true, rows, message);
     public static CollectionResult Fail(string message) => new(false, 0, message);
+
+    /// <summary>
+    /// 「作业跑了，但这轮没有活可干」——不是成功也不是失败，要能和两者分开记。
+    ///
+    /// 2026-11-11 加：`SampleOddsAsync` 的「无待采样赛事」分支原来返回 Ok，
+    /// 作业层照 SUCCESS 写进 SyncLog。后果是**「作业活着但一场没采」在库里和正常轮次长得一模一样**：
+    /// 看板上一片绿，实际一行数据没落。这正是本项目反复踩的「监控到了却不动」——
+    /// 上次是 odds-sample 15 场全失败写成 SUCCESS，这次是 0 场写成 SUCCESS，同一个病。
+    ///
+    /// Idle 仍然算 Success（不要触发告警风暴：凌晨确实经常没有可采场次），
+    /// 但落库状态写 IDLE，让「连续 N 轮 IDLE」可以被人和自检脚本查出来。
+    /// </summary>
+    public static CollectionResult Skipped(string message) => new(true, 0, message, true);
+
+    /// <summary>落库用的状态文本。三层链路（叶子 / 组合 / 作业）必须都从这里取，不许各写一份。</summary>
+    public string StatusText => Idle ? "IDLE" : Success ? "SUCCESS" : "FAILED";
 
     /// <summary>
     /// 失败但仍要如实报出写入行数。全失败时通常就是 0，但「部分批次成功后才被打断」
@@ -382,8 +398,14 @@ public sealed class CollectionService
             ct: ct, inplayOnly: inplayOnly);
         if (matches.Count == 0)
         {
-            log?.Report($"无需采样（{from:MM-dd HH:mm}~{to:MM-dd HH:mm}，间隔 {recheckMinutes} 分钟）");
-            return CollectionResult.Ok(0, "无待采样赛事");
+            // 2026-11-11：这里原来返回 Ok → 作业层写 SUCCESS。
+            // 「一场没采」和「采了 30 场全成功」在库里完全一样，看板永远绿。
+            // 改成 Skipped：状态写 IDLE，milk-check 4c 会单独统计，
+            // 不至于「作业活着但一场没采」没人发现。
+            var idleMsg = $"无待采样赛事（{from:MM-dd HH:mm}~{to:MM-dd HH:mm}，间隔 {recheckMinutes} 分钟）";
+            log?.Report(idleMsg);
+            await _sync.WriteAsync(logTask ?? "odds-sample", "500", "IDLE", 0, idleMsg, ct, startedAt: now);
+            return CollectionResult.Skipped(idleMsg);
         }
 
         log?.Report($"赔率轨迹采样 {matches.Count} 场（{from:MM-dd HH:mm}~{to:MM-dd HH:mm}，间隔 {recheckMinutes} 分钟）");

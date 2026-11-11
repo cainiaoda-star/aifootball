@@ -330,7 +330,29 @@ public sealed class BettingRepository
         return result;
     }
 
-    /// <summary>按 fid 批量取欧赔终盘主/平/客（平均值 CompanyId=0），受注场次没有 SP 时用来判断冷热。</summary>
+    /// <summary>
+    /// 按 fid 批量取欧赔终盘主/平/客（平均值 CompanyId=0），受注场次没有 SP 时用来判断冷热。
+    ///
+    /// <para>
+    /// 2026-11-11 修：`FbOdds` 是**原地更新**的「当前盘」（MERGE … SET CapturedAt = SYSDATETIME()），
+    /// 所以一场开赛之后还在采样，它那一行的「终盘」就被滚球价顶掉了——
+    /// 用 MAX(CASE WHEN IsOpening = 0 …) 取回来的是**开赛后的价**，不是收盘价。
+    /// 实测当时 11,532 场有终盘行，其中 **8,330 场（72%）的 CapturedAt 晚于开赛时刻**；
+    /// inplay-sample 上线后（每 3 分钟刷一次在踢的场次）这个比例只会更高。
+    /// </para>
+    /// <para>
+    /// 现在的口径分三级：
+    /// ① 当前行够早（CapturedAt &lt;= MatchTime）→ 直接用，与旧行为一致；
+    /// ② 当前行是开赛后才刷的 → 退回 `FbOddsHistory` 里**开赛前最后一个采样点**；
+    /// ③ 历史里也没有开赛前样本 → 返回 NULL。
+    /// 「不知道」比「拿滚球价冒充收盘价」好：调用方对 null 本来就有兜底，
+    /// 而对「一个很像收盘价的滚球价」没有任何兜底。
+    /// </para>
+    /// <para>
+    /// 新鲜度过滤（freshHours）对两个分支都生效，只按各自的 CapturedAt 判——
+    /// 否则会出现「当前行因太旧被排除，却从历史里捞回同样旧的那一版」的绕过。
+    /// </para>
+    /// </summary>
     public async Task<Dictionary<long, (decimal? Home, decimal? Draw, decimal? Away)>> GetClosingEuAsync(
         IEnumerable<long> matchIds, CancellationToken ct = default, double? freshHours = null)
     {
@@ -342,13 +364,32 @@ public sealed class BettingRepository
         foreach (var chunk in Chunk(ids))
         {
             var rows = await conn.QueryAsync<ClosingEuRow>(new CommandDefinition(
-                $@"SELECT MatchId,
-                         MAX(CASE WHEN IsOpening = 0 THEN HomeWin END) AS HomeWin,
-                         MAX(CASE WHEN IsOpening = 0 THEN Draw END) AS Draw,
-                         MAX(CASE WHEN IsOpening = 0 THEN AwayWin END) AS AwayWin
-                  FROM dbo.FbOdds
-                  WHERE MatchId IN @ids AND OddsType = 'EU' AND CompanyId = 0{FreshFilter(freshHours)}
-                  GROUP BY MatchId",
+                $@"WITH cur AS (
+                      SELECT o.MatchId, o.HomeWin, o.Draw, o.AwayWin, o.CapturedAt, m.MatchTime,
+                             ROW_NUMBER() OVER (PARTITION BY o.MatchId ORDER BY o.OddsId DESC) AS rn
+                      FROM dbo.FbOdds o
+                      JOIN dbo.FbMatch m ON m.MatchId = o.MatchId
+                      WHERE o.MatchId IN @ids AND o.OddsType = 'EU' AND o.CompanyId = 0
+                        AND o.IsOpening = 0{FreshFilter(freshHours, "o.CapturedAt")}
+                  ),
+                  pre AS (
+                      SELECT h.MatchId,
+                             ROW_NUMBER() OVER (PARTITION BY h.MatchId ORDER BY h.CapturedAt DESC) AS rn,
+                             h.HomeWin, h.Draw, h.AwayWin
+                      FROM dbo.FbOddsHistory h
+                      JOIN dbo.FbMatch m ON m.MatchId = h.MatchId
+                      WHERE h.MatchId IN @ids AND h.OddsType = 'EU' AND h.CompanyId = 0
+                        AND h.CapturedAt <= m.MatchTime{FreshFilter(freshHours, "h.CapturedAt")}
+                  )
+                  SELECT COALESCE(c.MatchId, p.MatchId) AS MatchId,
+                         CASE WHEN c.CapturedAt IS NOT NULL AND c.CapturedAt <= c.MatchTime
+                              THEN c.HomeWin ELSE p.HomeWin END AS HomeWin,
+                         CASE WHEN c.CapturedAt IS NOT NULL AND c.CapturedAt <= c.MatchTime
+                              THEN c.Draw ELSE p.Draw END AS Draw,
+                         CASE WHEN c.CapturedAt IS NOT NULL AND c.CapturedAt <= c.MatchTime
+                              THEN c.AwayWin ELSE p.AwayWin END AS AwayWin
+                  FROM (SELECT * FROM cur WHERE rn = 1) c
+                  FULL OUTER JOIN (SELECT * FROM pre WHERE rn = 1) p ON p.MatchId = c.MatchId",
                 new { ids = chunk }, cancellationToken: ct));
             foreach (var row in rows)
                 result[row.MatchId] = (row.HomeWin, row.Draw, row.AwayWin);

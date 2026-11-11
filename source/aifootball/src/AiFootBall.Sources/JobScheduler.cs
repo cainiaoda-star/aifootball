@@ -1519,13 +1519,16 @@ public sealed class JobScheduler
         }
 
         entry.LastRun = DateTime.Now;
-        entry.LastStatus = result.Success ? "SUCCESS" : "FAILED";
+        // 2026-11-11：改走 CollectionResult.StatusText。
+        // 原来是三目 SUCCESS/FAILED，把「这轮没活干」（Idle）也写成 SUCCESS，
+        // 于是「作业活着、一场没采」和「采得好好的」在库里完全一样。
+        entry.LastStatus = result.StatusText;
         entry.LastMessage = result.Message;
 
         // 回填开始时那一行，而不是再插一行。
         // 真实开始执行时刻（entry.RunningSince / 开始行里的 StartedAt）让耗时第一次变得可查
         // ——以前 StartedAt 靠默认约束恒等于 FinishedAt，全库耗时都是 0 秒。
-        await CompleteQuietlyAsync(entry, result.Success ? "SUCCESS" : "FAILED", result.Rows, result.Message);
+        await CompleteQuietlyAsync(entry, result.StatusText, result.Rows, result.Message);
 
         _log?.Invoke($"[{DateTime.Now:HH:mm:ss}] 作业 {job.Name} 结束：{result.Message}");
         return result;
