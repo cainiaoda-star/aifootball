@@ -215,26 +215,43 @@ public static class MilkPickEngine
     /// 为什么不能直接取 1.0：w=1 等于照抄盘口，EV 恒等于返奖率，引擎再也发不出注。
     /// Brier 单调只说明「模型的预测精度是负担」，不说明「该把模型删掉」。
     ///
-    /// ★ 下面的数值是**占位值，全部等于旧的 0.3**，目的是让本次重构不改夜间榜面。
-    ///   真正的取值由 `weight-replay` 按「总投入 / 总返还 / ROI」定（Brier 定不了这个数），
-    ///   且必须按玩法各跑各的，不许共用一个全局值。
+    /// ★★★ 2026-11-11 冻结：这组值**未从 216 注 ROI 选出**，是按先验定的，不许拿 ROI 反推它。
+    ///
+    ///   `weight-replay` 验证段只有 216 注：单注收益 sd ≈ 2.3，标准误 ≈ ±0.16，
+    ///   而五个 w 之间的回报差只有 0.03~0.09 —— **统计上分辨不了**（差 0.05 需 ~2000 注/组，
+    ///   约等于 10 个月受注量）。调参段与验证段的排序还正好相反，那是噪声的标准长相，
+    ///   不是「0.3 略优」。更要紧的是三组返还全部低于 1：只有亏多亏少，**不存在可追的最优值**。
+    ///   所以照验证段的 .701/.688/.579 把五个玩法都钉回 0.3，等于用噪声覆盖已经想清楚的结构
+    ///   （市场越有效 ⇒ 市场权重越高），比这组先验更没有依据。
+    ///
+    ///   结论：**停止搜 w**。等有效样本明显变多再复盘，且复盘门槛不是「哪组 ROI 最高」，
+    ///   而是「该玩法在验证集上是否稳定打赢历史频率」——总进球被定 0.8 用的正是这条。
+    ///
+    /// 【总进球 0.8 是特例，理由是「模型没有信息」而不是「市场更准」】
+    ///   `weight-replay` 校准：纯模型对历史频率的偏差 BQ −2.51%、**JQ +1.04%（方向反了，
+    ///   比无脑用历史频率还差）**，JQ 要 w ≥ 0.7 才追平。即这一玩法上模型没有超出历史频率的
+    ///   信息，w 是调不出 alpha 的。所以让市场主导（0.8）保证发出去的价不虚高，模型只留作对照；
+    ///   等哪天 JQ 在验证集上稳定打赢历史频率，再把权重还给模型。
     /// </summary>
-    public const decimal MarketWeightSpf = 0.3m;
+    public const decimal MarketWeightSpf = 0.7m;
 
-    /// <inheritdoc cref="MarketWeightSpf"/>
-    public const decimal MarketWeightNspf = 0.3m;
+    /// <summary>让球胜平负：3 档、去水同样稳，跟胜平负取同一个值。</summary>
+    public const decimal MarketWeightNspf = 0.7m;
 
-    /// <inheritdoc cref="MarketWeightSpf"/>
-    public const decimal MarketWeightBq = 0.3m;
+    /// <summary>半全场：9 档、返奖率 0.797，去水中等可靠，取中间值。</summary>
+    public const decimal MarketWeightBq = 0.5m;
 
-    /// <inheritdoc cref="MarketWeightSpf"/>
-    public const decimal MarketWeightJq = 0.3m;
+    /// <summary>
+    /// 总进球：8 档，但**模型在这一玩法没有超出历史频率的信息**（校准 +1.04%，方向反），
+    /// 所以不看「去水中等」这条，直接让市场主导。见类型注释里的特例说明。
+    /// </summary>
+    public const decimal MarketWeightJq = 0.8m;
 
-    /// <inheritdoc cref="MarketWeightSpf"/>
+    /// <summary>比分：31 档、返奖率 0.710，长尾去水系统性高估，w 最低，把权重还给模型。</summary>
     public const decimal MarketWeightBf = 0.3m;
 
     /// <summary>未知玩法的兜底权重。取中等值，不要取最激进的。</summary>
-    public const decimal MarketWeightDefault = 0.3m;
+    public const decimal MarketWeightDefault = 0.5m;
 
     /// <summary>
     /// 按玩法取市场权重。**所有掺盘口的地方都必须走这里**，不许再出现裸的单一常数——
@@ -359,6 +376,43 @@ public static class MilkPickEngine
         => p.Ev >= Payout(p.PlayType) * MinEvPaybackRatio;
 
     /// <summary>
+    /// 该玩法是否用**模型相关的两道闸**（安全闸 + 价值闸）。总进球返回 false。
+    ///
+    /// 【为什么总进球退出模型闸】2026-11-11 用户拍板「不要让当前模型主导出票」，
+    /// 依据是校准不是手感：把纯模型概率和同一批场次的历史频率对照，
+    /// 半全场偏差 −2.51%，**总进球 +1.04%（方向反了，比无脑用历史频率还差）**，
+    /// 即这一玩法上模型没有超出历史频率的信息。此时拿纯模型去否决或放行，
+    /// 等于用噪声挑注：换任何一个 w 都修不好，因为坏的是分子不是权重。
+    ///
+    /// 所以 JQ 的准入改由两条**与模型无关**的判据守：
+    ///   ① <see cref="PassesMarketFloor"/>：盘口去水后的隐含概率过本玩法门槛（市场认为这档有戏）；
+    ///   ② <see cref="PassesBaselineEv"/>：历史频率口径的 EV 过下限（这个价对得起这个命中率）。
+    /// 模型仍留在流水线里算概率、上榜做对照（<see cref="MilkPick.ModelPctPure"/>），
+    /// 只是不再拥有否决权。等哪天 JQ 在验证集上稳定打赢历史频率，再把闸还给模型。
+    ///
+    /// ★ 不要在这里顺手把 JQ 的价值闸门槛调松了当替代：w=0.8 时
+    ///   EV = 0.2·模型EV + 0.8·返奖率，要过 1.05 倍线仍需模型 EV ≥ 0.996——
+    ///   抬 w 只是把「模型主导」换了个更隐蔽的写法，闸没变。
+    /// </summary>
+    public static bool UsesModelGates(string? playType) => playType != JcPlayTypes.Jq;
+
+    /// <summary>
+    /// 盘口去水后的隐含概率（百分数）：1/赔率 ÷ 本玩法固定水位。
+    /// 用固定水位而不是本场快照的 Σ1/赔率，理由见 <see cref="StandardOverRound"/>。
+    /// </summary>
+    public static decimal MarketPct(decimal odds, string playType)
+        => odds <= 1m ? 0m : 100m / odds / StandardOverRound(playType);
+
+    /// <summary>
+    /// **市场准入**（仅总进球用，见 <see cref="UsesModelGates"/>）：这一档的盘口隐含概率
+    /// 达到本玩法门槛才买。它替代的是原安全闸的位置，但分子换成了市场——
+    /// 判的是「市场认为这档有没有戏」，而不是「模型算到了多少」。
+    /// 门槛仍取 <see cref="ProbabilityFloor"/>（JQ 10%），效果是 0/5/6/7+ 球整档出局。
+    /// </summary>
+    internal static bool PassesMarketFloor(MilkPick p)
+        => MarketPct(p.Odds, p.PlayType) >= ProbabilityFloor(p.PlayType);
+
+    /// <summary>
     /// 回放/回测用：不构造 <see cref="MilkPick"/> 也能判这两道闸。
     ///
     /// 为什么要有它：回测台要 sweep 市场权重，如果自己抄一份门槛公式，迟早和运行时漂移
@@ -369,9 +423,18 @@ public static class MilkPickEngine
     /// </summary>
     /// <param name="purePct">纯模型概率（百分数，掺盘口之前）</param>
     /// <param name="blendedPct">混合概率（百分数，掺盘口之后）</param>
+    /// <param name="odds">本档赔率</param>
+    /// <param name="playType">玩法</param>
+    /// <param name="optionCode">选项代码（半全场反转档要用）</param>
     public static (bool Safety, bool Value) JudgeGates(
         decimal purePct, decimal blendedPct, decimal odds, string playType, string? optionCode)
     {
+        // 总进球不走模型闸（见 UsesModelGates）：安全档换成市场准入，价值档交给实证闸。
+        // 注意回放/回测若只调这个函数，JQ 会比生产**偏松**——生产还压着 PassesBaselineEv，
+        // 而基线要查库，这里拿不到。所以 JQ 的回放数不能当成生产出注数看。
+        if (!UsesModelGates(playType))
+            return (MarketPct(odds, playType) >= ProbabilityFloor(playType), true);
+
         var isReverse = playType == JcPlayTypes.Bq
                         && optionCode is { Length: 3 } && optionCode[1] == '-'
                         && optionCode[0] != optionCode[2];
@@ -765,7 +828,7 @@ public static class MilkPickEngine
     /// 必须分开看：
     ///
     /// 【错在哪】落库的 ModelProbability 是 Blend 之后的混合值：
-    ///     blended = 0.7 × 模型 + 0.3 × 市场隐含（<see cref="MarketWeight"/>）
+    ///     blended = (1-w) × 模型 + w × 市场隐含（w = <see cref="MarketWeightFor"/>，当时是 0.3）
     /// 但 0.40 那道否决闸是拿 blended 去比联赛基线的。掺进来的 0.3 恰好就是市场自己的报价，
     /// 等于「用市场的乐观给模型担保」。2026-11-08 周日015 热那亚 vs AC米兰 负胜@36 就是活证：
     ///   · 纯模型 1.21%（λ 0.8/1.31 两段泊松，负胜 86% 来自「半场 0:1 → 下半场翻回来」）
@@ -1748,10 +1811,13 @@ public static class MilkPickEngine
         //    · 实证闸 <see cref="PassesBaselineEv"/>：联赛实证基线，与 w 无关
         //    以前只有一条「混合值 ≥ 市场推导下限」，分子分母都含市场，
         //    w 一抬高两边就趋同、闸门自动松掉——改完权重等于悄悄放宽风控。
+        //    ★ 总进球不走前两道（模型在这一玩法没有信息，见 UsesModelGates），
+        //      改由「市场准入 + 实证闸」把关。
         var gated = result
             .Where(x => x.Ev <= MaxEv)
-            .Where(PassesSafetyGate)
-            .Where(PassesValueGate)
+            .Where(x => UsesModelGates(x.PlayType)
+                ? PassesSafetyGate(x) && PassesValueGate(x)
+                : PassesMarketFloor(x))
             .Where(x => PassesBaselineEv(x, odds))
             .ToList();
         funnel.AfterEv = gated.Count;

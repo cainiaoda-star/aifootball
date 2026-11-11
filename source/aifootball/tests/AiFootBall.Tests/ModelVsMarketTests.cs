@@ -20,15 +20,21 @@ public class ModelVsMarketTests
     private const decimal BqOver = 1.254m;
 
     /// <summary>
-    /// 反解：blended = 0.7·model + 0.3·market → model = (blended − 0.3·market)/0.7。
-    /// 用热那亚的实测数字验：blended 1.51%、odds 36 → 纯模型应约 1.21%。
+    /// 反解：blended = (1-w)·model + w·market → model = (blended − w·market)/(1-w)。
+    /// 用 w 无关的写法验公式：给定纯模型 1.21、36 倍的市场隐含 2.215，先正向混合再反解，
+    /// 必须回到 1.21。这样权重以后不论怎么改，这条都只在公式写错时才红。
     /// </summary>
     [Fact]
     public void ModelPctBeforeBlend_RecoversPureModelValue()
     {
-        var pure = MilkPickEngine.ModelPctBeforeBlend(1.51m, 36m, BqOver);
+        const decimal pure = 1.21m;
+        const decimal market = 100m / 36m / BqOver;                       // ≈2.215
+        var w = MilkPickEngine.MarketWeightFor(JcPlayTypes.Bq);
+        var blended = (1m - w) * pure + w * market;
 
-        Assert.InRange(pure, 1.15m, 1.30m);
+        var back = MilkPickEngine.ModelPctBeforeBlend(blended, 36m, BqOver, JcPlayTypes.Bq);
+
+        Assert.InRange(back, pure - 0.01m, pure + 0.01m);
     }
 
     /// <summary>快照不全（overRound ≤ 0）时 Blend 不掺市场，反解必须原样返回，不能瞎推。</summary>
@@ -40,19 +46,29 @@ public class ModelVsMarketTests
     }
 
     /// <summary>
-    /// 热那亚 负胜@36 的真实数字：纯模型 1.21%、市场隐含 2.22%，比值 0.55。
-    /// 这条断言的意义是——如果哪天比值算出来变成 0.8 以上，说明有人又把市场掺回去了。
+    /// 热那亚 负胜@36 的真实数字：市场隐含 2.22%，纯模型 1.21%，比值 0.55 → 被拦。
+    ///
+    /// ★ 那行历史记录的 blended 是 **1.51（w=0.3 时代的落库值）**，拿现在的 w=0.5 去反解
+    /// 同一个数只会得到 0.80——这不是公式坏了，而正是「运行时不许反解历史行」的原因
+    /// （见 ModelPctBeforeBlend 的注释第 2 条）。所以这里改成直接验比值本身：
+    /// 结论必须是「模型认为市场高估近一半 ⇒ 拦」，换任何 w 都不该变。
     /// </summary>
     [Fact]
     public void GenoaCase_RatioIsAboutHalf()
     {
-        var pure = MilkPickEngine.ModelPctBeforeBlend(1.51m, 36m, BqOver);
-        var market = 100m / 36m / BqOver;
+        const decimal market = 100m / 36m / BqOver;
+        const decimal pure = 1.21m;
+        var ratio = pure / market;
 
         Assert.InRange(market, 2.15m, 2.30m);
-        Assert.InRange(pure / market, 0.50m, 0.60m);
-        Assert.True(pure / market < MilkPickEngine.CounterHighModelVsMarketMin,
+        Assert.InRange(ratio, 0.50m, 0.60m);
+        Assert.True(ratio < MilkPickEngine.CounterHighModelVsMarketMin,
             "模型认为市场高估近一半，必须低于 0.70 门槛才拦得住——这条一旦失败，热那亚那注会重新上榜。");
+
+        // 反向锁：w 真被改大以后，用当天的 blended 反解会得到偏低的「伪纯模型值」。
+        // 这个数低于真实值 1.21，正是「反解值随 w 漂移」的证据，别再拿它做跨天比较。
+        var drifted = MilkPickEngine.ModelPctBeforeBlend(1.51m, 36m, BqOver, JcPlayTypes.Bq);
+        Assert.True(drifted < pure, $"w=0.5 时反解 1.51 得到 {drifted:F3}，应低于真实纯模型值——否则说明公式与权重脱钩");
     }
 
     /// <summary>比值低于门槛 → ModelDoubt 为真；高于门槛或为空 → 不标红。</summary>

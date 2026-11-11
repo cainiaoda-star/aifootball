@@ -19,8 +19,8 @@ public class WeightAndGateTests
     [Fact]
     public void MarketWeightFor_MapsEveryPlayType()
     {
-        // 数值目前全是占位（0.3），但映射必须存在：删掉这个 switch 就等于
-        // 所有玩法又回到共用一个常数，而那正是这次要拆掉的东西。
+        // 数值本身由下面 FrozenWeights 那条锁；这里只守映射：
+        // 删掉这个 switch 就等于所有玩法又回到共用一个常数，而那正是这次要拆掉的东西。
         Assert.Equal(MilkPickEngine.MarketWeightSpf, MilkPickEngine.MarketWeightFor(JcPlayTypes.Spf));
         Assert.Equal(MilkPickEngine.MarketWeightNspf, MilkPickEngine.MarketWeightFor(JcPlayTypes.Nspf));
         Assert.Equal(MilkPickEngine.MarketWeightBq, MilkPickEngine.MarketWeightFor(JcPlayTypes.Bq));
@@ -29,6 +29,50 @@ public class WeightAndGateTests
         // 未知玩法不能悄悄按最激进的值走。
         Assert.Equal(MilkPickEngine.MarketWeightDefault, MilkPickEngine.MarketWeightFor(null));
         Assert.Equal(MilkPickEngine.MarketWeightDefault, MilkPickEngine.MarketWeightFor("XYZ"));
+    }
+
+    /// <summary>
+    /// 2026-11-11 冻结的那组值。**它们不是从 216 注 ROI 里选出来的**，
+    /// 而是按「市场越有效 ⇒ 市场权重越高」的先验定的（总进球另有一条：模型没有信息）。
+    ///
+    /// 这条测试的作用是把「别再拿噪声去调它」写成可执行的形式：谁想改数值，
+    /// 必须先改这里，并回答「有效样本够了吗、这是不是又拿 216 注的排序当证据」。
+    /// 只守大小关系是不够的——把 0.7/0.5/0.3 全调成 0.5 依然单调，但结构已经没了。
+    /// </summary>
+    [Fact]
+    public void FrozenWeights_ArePriorNotRoiFitted()
+    {
+        Assert.Equal(0.7m, MilkPickEngine.MarketWeightSpf);    // 3 档、去水最稳
+        Assert.Equal(0.7m, MilkPickEngine.MarketWeightNspf);   // 同胜平负
+        Assert.Equal(0.5m, MilkPickEngine.MarketWeightBq);     // 9 档、中等
+        Assert.Equal(0.3m, MilkPickEngine.MarketWeightBf);     // 31 档、长尾去水最不可靠
+        Assert.Equal(0.8m, MilkPickEngine.MarketWeightJq);     // 特例：模型无信息，市场主导
+        Assert.Equal(0.5m, MilkPickEngine.MarketWeightDefault);
+        // 结构：市场越有效 ⇒ 越高。比分必须低于半全场，半全场必须低于胜平负。
+        Assert.True(MilkPickEngine.MarketWeightBf < MilkPickEngine.MarketWeightBq);
+        Assert.True(MilkPickEngine.MarketWeightBq < MilkPickEngine.MarketWeightSpf);
+        // 总进球高于半全场是「模型没信息」导致的，不是「8 档比 9 档去水更准」。
+        Assert.True(MilkPickEngine.MarketWeightJq > MilkPickEngine.MarketWeightBq);
+    }
+
+    /// <summary>
+    /// 总进球不走模型闸：纯模型再低（这里是 0.5%，远低于 10% 门槛）也不许被它否决，
+    /// 因为校准实测 JQ 纯模型比历史频率还差 1.04 个点（方向反）——那是噪声，不是判断。
+    /// 否决权交给市场：4.00 的价去水后隐含 19.9%，该出；12.00 的价只剩 6.6%，不该出。
+    /// </summary>
+    [Fact]
+    public void Jq_GatesByMarket_NotByModel()
+    {
+        Assert.False(MilkPickEngine.UsesModelGates(JcPlayTypes.Jq));
+        Assert.True(MilkPickEngine.UsesModelGates(JcPlayTypes.Bq));
+        Assert.True(MilkPickEngine.UsesModelGates(JcPlayTypes.Bf));
+
+        var (safetyLoose, valueLoose) = MilkPickEngine.JudgeGates(0.5m, 20m, 4.0m, JcPlayTypes.Jq, "3");
+        Assert.True(safetyLoose);   // 纯模型 0.5% 也放行——市场说这档 19.9%
+        Assert.True(valueLoose);    // 价值档由实证闸（PassesBaselineEv）在流水线里判，这里不设
+
+        var (safetyTight, _) = MilkPickEngine.JudgeGates(60m, 60m, 12.0m, JcPlayTypes.Jq, "3");
+        Assert.False(safetyTight);  // 纯模型 60% 也救不了——市场只给 6.6%
     }
 
     /// <summary>
@@ -81,11 +125,21 @@ public class WeightAndGateTests
         Assert.True(MilkPickEngine.JudgeGates(12.1m, 20m, 16m, JcPlayTypes.Bq, "3-3").Safety);
     }
 
+    /// <summary>
+    /// 各玩法固定门槛（顺风档）：半全场 12%、比分 5%。
+    ///
+    /// 总进球不再走这条：2026-11-11 起它由市场准入判（见 <see cref="Jq_GatesByMarket_NotByModel"/>），
+    /// 所以这里不再断言「纯模型 9.9% 的 JQ 注会被拦」——按新口径，只要市场给够就会放行，
+    /// 那条断言留着就等于把已经改掉的口径又焊回测试里。
+    /// </summary>
     [Fact]
     public void NonReverseFloors_PerPlayType()
     {
-        Assert.False(MilkPickEngine.JudgeGates(9.9m, 20m, 4m, JcPlayTypes.Jq, "2").Safety);
-        Assert.True(MilkPickEngine.JudgeGates(10.1m, 20m, 4m, JcPlayTypes.Jq, "2").Safety);
+        Assert.False(MilkPickEngine.JudgeGates(11.9m, 20m, 16m, JcPlayTypes.Bq, "3-3").Safety);
+        Assert.True(MilkPickEngine.JudgeGates(12.1m, 20m, 16m, JcPlayTypes.Bq, "3-3").Safety);
+
+        Assert.False(MilkPickEngine.JudgeGates(4.9m, 20m, 30m, JcPlayTypes.Bf, "1:0").Safety);
+        Assert.True(MilkPickEngine.JudgeGates(5.1m, 20m, 30m, JcPlayTypes.Bf, "1:0").Safety);
     }
 
     /// <summary>
