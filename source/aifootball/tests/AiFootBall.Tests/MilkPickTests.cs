@@ -274,20 +274,20 @@ public class MilkPickTests
         // 原来给的是「比分 0:0 @22.00」「总进球 0 球 @22.00」——这两个价在市场上不存在
         // （0:0 约 9 倍、总进球 0 约 9 倍），于是基线概率 × 22 算出 EV 1.6 的假优势，
         // 撞上「基线÷市场分歧不许超过 1.45 倍」那条闸被拦掉。闸拦得对，是测试数据不真实。
+        //
+        // 2026-11-11 改：总进球名额由 2 降到 1，原来「两场 Jq」只剩一注，
+        // 三注断言失效。现在改成「场次 1 是 Jq、场次 2 是 Bq」两注 ——
+        // 场次号与玩法顺序相反，仍能证明「排序按玩法分组，不按场次顺序」。
         var odds = new Dictionary<long, List<JcOddsHistoryPoint>>
         {
-            // 2026-11-09 改：场次 1 原来给的是比分 2:0@15，比分已停发，换成总进球 3 球。
-            // 现在三场分别是 Jq / Jq / Bq，且 Bq 那场排在最后——
-            // 断言因此能证明「排序按玩法分组，不按场次顺序」。
             [1] = new() { Pt(1, JcPlayTypes.Jq, "3", 4.2m) },
-            [2] = new() { Pt(2, JcPlayTypes.Jq, "2", 5.0m) },
-            [3] = new() { Pt(3, JcPlayTypes.Bq, "1-1", 6.0m) }
+            [2] = new() { Pt(2, JcPlayTypes.Bq, "1-1", 6.0m) }
         };
 
         var picks = MilkPickEngine.Build(recs, odds, model);
 
         Assert.Equal(
-            new[] { JcPlayTypes.Bq, JcPlayTypes.Jq, JcPlayTypes.Jq },
+            new[] { JcPlayTypes.Bq, JcPlayTypes.Jq },
             picks.Select(p => p.PlayType).ToArray());
     }
 
