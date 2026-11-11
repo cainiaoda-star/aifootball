@@ -5,23 +5,24 @@
 ## 0 速查
 1. 截止 一~五 21:50 / 六日 22:50（停售 21:58/22:58）；榜面 8:40·11:40·16:40·20:40。
 2. 查库 `& tools\db.ps1 -Query "..."`（**禁 Bash 跑 sqlcmd/调 powershell**，ps1·sql 纯 ASCII）；改必 `.\deploy-api.ps1`+`dotnet test`。
-3. **模型无 alpha**（Brier .5995 vs 市场 .5812）；北单 `avg(p×SP)=0.9834`（模型比盘口保守 2.9 点，判据库 38）；**EV 落返奖率 ±8 点 = 在挑口径**；基线 EV 超返奖率 = 给高了。
-4. 返奖率 SPF·NSPF .878 / BQ·JQ .797 / BF .710 = 单注 EV 天花板。
-5. **开赛=票已买**只能 `Voided`；`FbMilkPick` 重算即删未结算行，不可当账。
+3. **模型无 alpha**（Brier .5995 vs 市场 .5812）；北单 `avg(p×SP)=0.9834`（38）；**EV 落返奖率 ±8 点 = 在挑口径**；基线 EV 超返奖率 = 给高了。
+4. **开赛=票已买**只能 `Voided`；`FbMilkPick` 重算即删未结算行，不可当账。
 
 ## 一 铁律
-- ★★★ **odds.500.com 只认真浏览器**（11-10 EdgeOne 降级，见判据库 37）：同 cookie 在 Chrome 正常、程序全回 TEOCaptcha，换 cookie/补头/换指纹/换新 token **全无效**；唯一通路 `ChromeBridge`(CDP)，浏览器有配额、拿到验证页**必须当失败**（CDP 两坑见 37）。
+- ★★★ **odds.500.com 只认真浏览器**（判据库 37）：同 cookie 在 Chrome 正常、程序全回 TEOCaptcha，换 cookie/补头/换指纹/换 token **全无效**；唯一通路 `ChromeBridge`(CDP)，有配额、拿到验证页**必须当失败**。
 - ★★ **作业清单在 `jobs.json`**：jc-odds 2min / water 10min / turn-guard·paper-freeze `*/10`。
-- **成对修改**：`new RecommendationService(...)` Collector/Api 各一份；出票闸/撤注闸各写常数；**改 INSERT 列必同步 VALUES**（北单漏三参数 → 全线写不进库）。编译期抓不到。
+- ★★★ **返奖率是硬天花板**：SPF/NSPF .878 / BQ/JQ .797 / BF .710 —— 大奶榜改前加权 **0.785**（产品级必亏），砍 BF 后 0.797。**参数改不动它**（判据库 39）。
+- ★★ **配额≠出票**：`MaxPerPlay[Nspf]` 是死配置，引擎无 NSPF 生成器（提 1→3 仍 0 注）。改配额前先查有没有生成循环。
+- **成对修改**：`new RecommendationService(...)` Collector/Api 各一份；出票闸/撤注闸各写常数；**改 INSERT 列必同步 VALUES**（北单漏三参数 → 全线写不进库）。
 - **_recommendLane**：写当日榜的都是 DELETE+INSERT 且无唯一约束，新增纯库作业一律进。
 - **完场不信 `Status`**：`比分齐全 && (Status==3 || MatchTime<=now-150min)`。
-- ★★ **受注日 ≠ 开赛日**：榜按 `SteadyPickRules.SalesDate`（期号说了算）分组落库；未改时 22:11 重算把次日注记成当日、`DELETE` 掉 21:50 定版。
+- ★★ **受注日 ≠ 开赛日**：榜按 `SteadyPickRules.SalesDate`（期号说了算）分组落库；否则 22:11 重算会把次日注记成当日、`DELETE` 掉定版。
 - ★ **ABORTED ≠ FAILED**，4c 只算 FAILED/TIMEOUT。
 
 ## 二 口径与判据
 - ★★★ **赔率 1.00 是占位值**：读取点有 `Odds>1` 兜底、**分析侧没有** —— 曾造出「热门高估 18 点」的假结论。回测必须 `CapturedAt<MatchTime AND Odds>1.01`。
-- ★★ **样本量硬约束**：高赔档检测 10 点差异每格需 **~5000 注**（现 421）→ **现有数据证明不了任何玩法错价，别再挖**。
-- ★★ **必发分歧**：「竞彩比必发乐观 ≥5 点」137 注 **59.2%**（6 周 4 周 <1）。
+- ★★ **样本量硬约束**：高赔档检测 10 点差异每格需 **~5000 注**（现 421）→ **证明不了任何错价，别挖**。
+- ★★ **必发分歧**：「竞彩比必发乐观 ≥5 点」137 注 **59.2%**。
 - RecResult '3'主/'1'平/'0'客；`Handicap` **正=主受让、负=主让球**。`PnlIdx` 负=该方向被买重，只有 **≤−60** 有否决力。
 - **`HalfHomeScore IS NOT NULL` 就是「有真半场」**。串：BQ/JQ 2串 .636→3串 .507；半全场 3 串、比分不串、总进球 3 串封顶。
 - 主胜<1.35+必发≥70% 反向（限主胜+欧战）；**负平 .740 永不买**。闸门/串关/让球/体能与其余玩法口径**见判据库 三**。
@@ -40,13 +41,12 @@
 
 ## 五 台账 + 产品线
 - `FbPaperTrade`：**上过榜即记账、首次上榜价为准**；分母=已结算未撤注，回报=命中÷注数，门槛 150 注。
-- **稳胆** `FbSteadyPick`：SPF 去水→最高→≤1.75→剔均衡局(<40%)→按赔率升取 **2**。
-- ★★★ **稳胆「每日排名」是唯一正向 edge**：前 1 注 35 注 91.4%/**1.108**、前 2 注 1.011、前 3 注 0.983（低赔档抽水最少；旧结论错在只记命中率没记回报）。
+- **稳胆** `FbSteadyPick`：SPF 去水→最高→≤1.75→剔均衡局(<40%)→按赔率升取 **1**（11-11 改，反解 Rank2=0.914 在亏）。
+- ★★★ **稳胆「每日排名」是唯一正向 edge**：前 1 注 91.4%/**1.108**、前 2 注 1.011、前 3 注 0.983；`drift-probe`「押收盘最看好」0.937 ≈ `steady-probe` 0.936，互证。
 - **北单**（`BdSpfPickService`）：方向=**模型概率最大档**（竞彩相反，那个是市场档，同名不同义）；11-10 十注全押英锦赛→回报 0.669，已加 `MaxPerLeague=3`；`ModelProb/MarketProb` 双列已落库。
-- ★★ **抽水结构 = 确定性漏损**：BQ/JQ/BF 占 96%，加权期望 **0.786** vs 全 SPF/NSPF .878；BF 返奖率 .710 最低。
 
 ## 六 待办
 1. 撤注判据回测样本 0（需 ≥50）；`PlayOrder` 未回测。
-2. **Chrome 通道真实链路未验证**；看 `circuitOpen`、`ChromeBridge.LastError`。
+2. Chrome 通道 11-11 12:00 实测已恢复（`FbOdds`/`FbExchange` 同步前进）；仍要看 `ChromeBridge.LastError` 与浏览器配额。
 3. RCSI=0 写阻塞读致 TIMEOUT，挑凌晨 4 点后开 `READ_COMMITTED_SNAPSHOT`。
 4. 整点 `chore: 自动同步` → **提交前先看 `git log`**
