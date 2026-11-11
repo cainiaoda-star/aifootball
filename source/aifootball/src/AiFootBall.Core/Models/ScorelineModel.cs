@@ -102,21 +102,47 @@ public sealed class ScorelineModel
     /// <summary>
     /// 把竞彩的联赛名对齐到训练集里的联赛名，返回「该用哪个联赛的场均和名单来算这场」。
     ///
-    /// 三级判据（2026-11-08 加，起因：竞彩「韩职」vs 数据源「K1联赛」，整类联赛永不出注）：
-    /// 1. <see cref="LeagueNames"/> 人工表命中且该联赛在训练集里 → 用它；
-    /// 2. 表里的映射在训练集里查不到、而原名查得到 → 尊重原名（防手工表写错把好联赛改坏）；
+    /// 三级判据（2026-11-08 加，起因：竞彩「韩职」vs 数据源「K1联赛」，整类联赛永不出注；
+    /// 2026-11-11 补上 <paramref name="minGames"/> 这一层，起因见 <see cref="Enough"/>）：
+    /// 1. <see cref="LeagueNames"/> 人工表命中、且该联赛**两队都有够量样本** → 用它；
+    /// 2. 表里的映射在训练集里查不到（或两队在那没量）、而原名查得到 → 尊重原名；
     /// 3. 都不成立 → 用两队各自的「踢过哪些联赛」取交集，挑两队共同出场最多的那个联赛。
     ///    这一步是自愈的：以后新联赛再出现两套叫法，不用改表也能认出来。
     /// 任何一步都不成立就原样返回，行为和改动之前一致（宁可丢场，也不挂到别的联赛均值上）。
     /// </summary>
-    public string ResolveLeague(string? league, string? home, string? away)
+    public string ResolveLeague(string? league, string? home, string? away, int minGames = 0)
     {
         var raw = league?.Trim() ?? "";
         var mapped = LeagueNames.Resolve(raw);
-        if (HasLeague(mapped)) return mapped;
-        if (mapped != raw && HasLeague(raw)) return raw;
+        if (HasLeague(mapped) && Enough(mapped, home, away, minGames)) return mapped;
+        if (mapped != raw && HasLeague(raw) && Enough(raw, home, away, minGames)) return raw;
 
-        return LeagueByTeams(raw, home, away) ?? mapped;
+        var byTeams = LeagueByTeams(raw, home, away);
+        if (byTeams is not null && Enough(byTeams, home, away, minGames)) return byTeams;
+
+        // 都够不上量：仍优先返回别名，让下游的「样本不足」诊断如实报出来，
+        // 而不是在这里悄悄换成另一个联赛。
+        return HasLeague(mapped) ? mapped : byTeams ?? mapped;
+    }
+
+    /// <summary>
+    /// 这个联赛里两队是否都有 <paramref name="minGames"/> 场样本。
+    ///
+    /// 只看「联赛有样本」（<see cref="HasLeague"/>）是不够的，2026-11-11 用真实事故换来的：
+    /// 加了「日联赛杯→日联杯」的别名后，解析结果从「日职」变成「日联杯」，
+    /// 而近 18 个月训练窗口里 **鹿岛鹿角在日联杯 0 场、神户胜利船 2 场、町田泽维亚 2 场**
+    /// （日职各 56~59 场）。于是 周二/周三 两场整场被判定「模型不认识」/「样本不足」，
+    /// 直接从这个榜上消失——别名把一场能按联赛均值算的比赛，变成了算不出。
+    ///
+    /// 联赛级有样本 ≠ 这场算得动。别名只有在「两队都认识且有量」时才允许盖过队名反查；
+    /// 不满足就退到 <see cref="LeagueByTeams"/>，让它落到两队真正交手多的那个联赛。
+    /// 队名缺失时不做判断（返回 true），保持「没有队名信息就不额外否决」的旧行为。
+    /// </summary>
+    private bool Enough(string? league, string? home, string? away, int minGames)
+    {
+        if (minGames <= 0) return true;
+        if (string.IsNullOrWhiteSpace(home) || string.IsNullOrWhiteSpace(away)) return true;
+        return TeamGames(league, home) >= minGames && TeamGames(league, away) >= minGames;
     }
 
     /// <summary>训练集里是否存在这个联赛（有任何一场样本即可，不要求达到联赛均值门槛）。</summary>

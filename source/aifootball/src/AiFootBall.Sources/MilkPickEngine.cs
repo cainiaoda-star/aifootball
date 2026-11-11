@@ -1054,7 +1054,7 @@ public static class MilkPickEngine
             // 名字对不上时，模型按「韩职」查队，一场都查不到 → 整类联赛永远样本 0/0、永不出注。
             // 解析一次，本场所有 scores.* 调用都用对齐后的名字；显示仍用竞彩原名（r.LeagueName）。
             // 解析规则三级见 ScorelineModel.ResolveLeague（人工表 → 原名兜底 → 按两队反查）。
-            var lg = scores.ResolveLeague(r.LeagueName, r.HomeTeam, r.AwayTeam);
+            var lg = scores.ResolveLeague(r.LeagueName, r.HomeTeam, r.AwayTeam, MinTeamGames);
             if (!string.IsNullOrWhiteSpace(lg) && !string.Equals(lg, r.LeagueName, StringComparison.Ordinal))
             {
                 funnel.LeagueAliased++;
