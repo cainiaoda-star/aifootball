@@ -29,6 +29,9 @@
 - RecResult 3主/1平/0客；`Handicap` **正=主受让、负=主让球**。`PnlIdx` 负=被买重，只有 **≤−60** 有否决力。
 - **`HalfHomeScore IS NOT NULL` = 有真半场**。串：BQ/JQ 2串 .636→3串 .507；半全场 3 串、比分不串、总进球 3 串顶。
 - 主胜<1.35+必发≥70% 反向（限主胜+欧战）；**负平 .740 永不买**。其余口径见判据库 三。
+- ★★★ **模型预测精度全面输给市场**（11-11 两口径同日复现）：SPF 3558 场 模型 **.6030** vs 市场 .5821；BQ 540 场 模型 **.8255** vs 盘口 .7964。工具 `weight-probe` / `exotic-bq`。⇒ `MarketWeight=0.3`（模型为主）**方向错**，但改多少由「出票量×回报」定、**不由 Brier 定**（Brier 单调到 1.0 最优，而 1.0=照抄盘口、EV 恒等返奖率、不出票）。
+- ★ **注释里的数字不是证据**：`MarketWeight` 原依据（500 场、模型全面胜出）在库里找不到实现，重跑方向相反；回测台全目录**无 `Odds>1.01` 过滤**，占位赔率会把市场 Brier 拉爆。同病：`CounterHighModelVsMarketMin=0.70`。
+- ★★ **时间衰减无收益**：`Fit(halfLifeDays)` 已实现但默认 null；365 天最好只 −0.0010（门槛 −0.002），180 天以下**单调变差**（有效样本 17 万→3.5 万）。别再做这条。
 
 ## 三 告警闭环
 - 去重键 `(AlertDate,MatchId,PlayType,OptionCode)`；`high`→撤注不删行。
@@ -57,3 +60,4 @@
 5. 整点 `chore: 自动同步`→**提交前先看 `git log`**
 6. ★★ **`GetClosingEuAsync` 已修（11-11）**：`FbOdds` 是原地更新的当前盘，实测 72% 场次 `CapturedAt` 晚于开赛 → 原来把滚球价当收盘。现在三级：当前行够早→用；开赛后→取 `FbOddsHistory` 开赛前最后点；都没有→NULL。**`GetEuOddsDeltaAsync` 同源未修**（它喂 `HomeOddsDelta`），改前先量化。
 7. SyncLog 现在三态 SUCCESS/FAILED/**IDLE**（采样零场次）。任何「判失败」的查询必须排除 IDLE；`milk-check` 4c 已同步并单列近 3 小时空跑次数。
+8. ★★ **`MarketWeight` 0.3 → 0.5/0.7 待定**（11-11）：证据方向明确但 Brier 定不了值。**停售后**临时改跑 `save-recommendations`，看注数掉多少、剩的注质不质变，再拍。改它会连带 `ModelPctBeforeBlend` 反解与前端文案。
