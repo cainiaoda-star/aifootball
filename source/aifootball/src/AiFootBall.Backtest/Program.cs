@@ -78,6 +78,19 @@ public static class Program
         if (args.Any(a => a.Equals("hf-lambda", StringComparison.OrdinalIgnoreCase)))
             return await HalfFullLambdaStudy.RunAsync(connStr);
 
+        // 时间衰减 × 混合权重的联合 A/B（2026-11-11 加，用户批准「先做1」）。
+        // 只读。同时回答「18 个月等权该不该改成按时间衰减」和「MarketWeight=0.3 方向对不对」，
+        // 因为两者的效应会互相掩盖，必须放在同一张表里比。
+        if (args.Any(a => a.Equals("weight-probe", StringComparison.OrdinalIgnoreCase)))
+            return await ModelWeightStudy.RunAsync(connStr, trainRatio);
+
+        // 半全场口径的「模型 vs 盘口」对照（2026-11-11 加）。
+        // 只读。存在的理由：MarketWeight=0.3 的原始证据（约 500 场、模型全面压过市场）
+        // 在代码库里找不到可重跑的实现，而回测台全目录没有任何一处过滤占位赔率（Odds=1.00）——
+        // 这条过滤是本项目已经被真实事故血证过的必需步骤。这个 study 就是把它重跑一遍。
+        if (args.Any(a => a.Equals("exotic-bq", StringComparison.OrdinalIgnoreCase)))
+            return await ExoticWeightStudy.RunAsync(connStr);
+
         // 单场 λ 诊断（2026-11-08，埃尔切 vs 贝蒂斯「胜胜 19.7%」事件后加）：
         // 只打印「认不认得这支队 / 多少样本 / λ 是否退回了联赛均值」，不参与任何计算。
         if (args.Any(a => a.Equals("team-check", StringComparison.OrdinalIgnoreCase)))

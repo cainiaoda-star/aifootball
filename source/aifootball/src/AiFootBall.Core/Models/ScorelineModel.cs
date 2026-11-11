@@ -8,6 +8,13 @@ public sealed class ScoreSample
     public string AwayTeam { get; init; } = "";
     public int HomeScore { get; init; }
     public int AwayScore { get; init; }
+
+    /// <summary>
+    /// 开赛时间，仅供「按时间衰减加权」的拟合使用（2026-11-11 加）。
+    /// 为 null 时该场按等权参与，与加这个字段之前的行为完全一致；
+    /// <see cref="ScorelineModel.Fit"/> 在 <c>halfLifeDays</c> 为 null 时也根本不看它。
+    /// </summary>
+    public DateTime? MatchTime { get; init; }
 }
 
 /// <summary>
@@ -24,8 +31,8 @@ public sealed class ScorelineModel
 
     private readonly double _globalHome;
     private readonly double _globalAway;
-    private readonly Dictionary<string, (double HomeSum, double AwaySum, int N)> _leagues;
-    private readonly Dictionary<string, (double For, double Against, int Games)> _teams;
+    private readonly Dictionary<string, (double HomeSum, double AwaySum, double Weight, int N)> _leagues;
+    private readonly Dictionary<string, (double For, double Against, double Weight, int Games)> _teams;
 
     /// <summary>
     /// 联赛强度系数（方案 1：联赛强度校准，2026-11-05 加）。键=联赛名，值=该联赛相对全局的
@@ -45,7 +52,7 @@ public sealed class ScorelineModel
     /// 11-04 朗斯 1:9 那一注就是这么来的。所以每场先按该场所属联赛的场均归一（进球/联赛场均），
     /// 累加的是倍率而不是进球数，出场时再乘回目标联赛的场均。
     /// </summary>
-    private readonly Dictionary<string, (double AttSum, double DefSum, int Games)> _teamTotals;
+    private readonly Dictionary<string, (double AttSum, double DefSum, double Weight, int Games)> _teamTotals;
 
     /// <summary>全库队名集合（与 _teamTotals 同键）。联赛名对不上时用它兜底认队。</summary>
     private readonly HashSet<string> _globalNames;
@@ -73,9 +80,9 @@ public sealed class ScorelineModel
         bool ready,
         double globalHome,
         double globalAway,
-        Dictionary<string, (double HomeSum, double AwaySum, int N)> leagues,
-        Dictionary<string, (double For, double Against, int Games)> teams,
-        Dictionary<string, (double AttSum, double DefSum, int Games)> teamTotals,
+        Dictionary<string, (double HomeSum, double AwaySum, double Weight, int N)> leagues,
+        Dictionary<string, (double For, double Against, double Weight, int Games)> teams,
+        Dictionary<string, (double AttSum, double DefSum, double Weight, int Games)> teamTotals,
         Dictionary<string, string[]> namesByLeague,
         double rho,
         bool crossLeague = true,
@@ -190,7 +197,7 @@ public sealed class ScorelineModel
 
     /// <summary>队名 → 该队踢过的联赛（含场次），供 <see cref="LeagueByTeams"/> 使用。</summary>
     private static Dictionary<string, List<(string League, int Games)>> BuildTeamLeagueIndex(
-        Dictionary<string, (double For, double Against, int Games)> teams)
+        Dictionary<string, (double For, double Against, double Weight, int Games)> teams)
     {
         var map = new Dictionary<string, List<(string League, int Games)>>(StringComparer.Ordinal);
         foreach (var (key, val) in teams)
@@ -351,10 +358,20 @@ public sealed class ScorelineModel
     ///   2033 场样本充足的比赛两边完全一样（Brier 0.6047 vs 0.6047），
     ///   339 场样本不足的比赛跨联赛兜底反而更差（0.6279 vs 0.6123）。
     /// 结论：一支队在别的赛事里的攻防，不能直接搬过来用，联赛之间的强度差比样本量更值钱。
+    ///
+    /// <paramref name="halfLifeDays"/>（2026-11-11 加）：按时间衰减加权，w = 0.5^(年龄/半衰期)。
+    /// **实测不采用，默认 null（等权）**。工具 `weight-probe`，3558 场前向测试集：
+    ///   等权 0.6030 / 540 天 0.6021 / 365 天 0.6020 / 240 天 0.6022 /
+    ///   180 天 0.6026 / 120 天 0.6039 / 90 天 0.6055 / 60 天 0.6085
+    /// 最好一档（365 天）只改善 0.0010，门槛 0.002 ⇒ **未过**。而且 180 天以下**单调变差**：
+    /// 有效样本从 17 万降到 3.5 万，样本量的损失超过了「越近越重要」的收益。
+    /// 这条轨道到这里为止——继续缩窗口不是在提高精度，只是在赌小样本。
+    /// 参数保留是为了让 `weight-probe` 可重跑，不是留一个待调的门。
     /// </summary>
     public static ScorelineModel Fit(
         IReadOnlyList<ScoreSample> samples, bool crossLeague = false,
-        Dictionary<string, double>? leagueStrength = null)
+        Dictionary<string, double>? leagueStrength = null,
+        double? halfLifeDays = null, DateTime? asOf = null)
     {
         var usable = samples.Where(s =>
             !string.IsNullOrWhiteSpace(s.HomeTeam)
@@ -371,41 +388,70 @@ public sealed class ScorelineModel
                 HomeTeam = TeamAliases.Canonical(s.HomeTeam),
                 AwayTeam = TeamAliases.Canonical(s.AwayTeam),
                 HomeScore = s.HomeScore,
-                AwayScore = s.AwayScore
+                AwayScore = s.AwayScore,
+                MatchTime = s.MatchTime
             })
             .ToList();
         if (usable.Count < 30) return Empty;
 
-        double homeSum = 0, awaySum = 0;
-        var leagues = new Dictionary<string, (double HomeSum, double AwaySum, int N)>(StringComparer.Ordinal);
-        var teams = new Dictionary<string, (double For, double Against, int Games)>(StringComparer.Ordinal);
+        // ---- 时间衰减（2026-11-11 加）----
+        // w = 0.5 ^ (距原点天数 / 半衰期)。halfLifeDays 为 null 时全部 w = 1，
+        // 与加这个参数之前逐位等价，所以线上默认路径零风险。
+        //
+        // 原点刻意不用 DateTime.Now：回测按「切分时刻」前向切分，若用 now，
+        // 整段训练历史会被一起压扁成同一个权重，衰减到底有没有用就看不出来。
+        // 因此默认取「训练集里最晚的一场」，即模型被要求预测的那一天。
+        var anchor = asOf;
+        if (anchor is null)
+        {
+            DateTime? latest = null;
+            foreach (var s in usable)
+                if (s.MatchTime is DateTime t && (latest is null || t > latest)) latest = t;
+            anchor = latest;
+        }
+        var decaying = halfLifeDays is double hlDays && hlDays > 0 && anchor is DateTime;
+        var anchorAt = anchor ?? default;
+
+        double WeightOf(ScoreSample s)
+        {
+            if (!decaying || s.MatchTime is not DateTime t) return 1.0;
+            var days = (anchorAt - t).TotalDays;
+            return days <= 0 ? 1.0 : Math.Pow(0.5, days / halfLifeDays!.Value);
+        }
+
+        double homeSum = 0, awaySum = 0, totalWeight = 0;
+        var leagues = new Dictionary<string, (double HomeSum, double AwaySum, double Weight, int N)>(StringComparer.Ordinal);
+        var teams = new Dictionary<string, (double For, double Against, double Weight, int Games)>(StringComparer.Ordinal);
         foreach (var s in usable)
         {
-            homeSum += s.HomeScore;
-            awaySum += s.AwayScore;
+            var w = WeightOf(s);
+            totalWeight += w;
+            homeSum += s.HomeScore * w;
+            awaySum += s.AwayScore * w;
             var league = s.LeagueName?.Trim() ?? "";
             if (league.Length > 0)
             {
                 leagues.TryGetValue(league, out var lg);
-                lg.HomeSum += s.HomeScore;
-                lg.AwaySum += s.AwayScore;
+                lg.HomeSum += s.HomeScore * w;
+                lg.AwaySum += s.AwayScore * w;
+                lg.Weight += w;
                 lg.N++;
                 leagues[league] = lg;
             }
-            AddTeam(teams, league, s.HomeTeam, s.HomeScore, s.AwayScore);
-            AddTeam(teams, league, s.AwayTeam, s.AwayScore, s.HomeScore);
+            AddTeam(teams, league, s.HomeTeam, s.HomeScore, s.AwayScore, w);
+            AddTeam(teams, league, s.AwayTeam, s.AwayScore, s.HomeScore, w);
         }
 
         var n = usable.Count;
-        var globalHome = homeSum / n;
-        var globalAway = awaySum / n;
+        var globalHome = homeSum / totalWeight;
+        var globalAway = awaySum / totalWeight;
 
-        // 联赛场均。与 LeagueAvg 同一口径：样本 ≥12 场才用自己的均值，否则回退全局，
-        // 并用 30 场先验收缩，避免小样本联赛把倍率放大成噪声。
+        // 联赛场均。门槛仍用**真实场次** N（够不够样本是另一回事），
+        // 分母用加权有效样本 Weight——等权时 Weight == N，与旧口径逐位相同。
         double LgHome(string lg) => leagues.TryGetValue(lg, out var x) && x.N >= 12
-            ? (x.HomeSum + 30 * globalHome) / (x.N + 30) : globalHome;
+            ? (x.HomeSum + 30 * globalHome) / (x.Weight + 30) : globalHome;
         double LgAway(string lg) => leagues.TryGetValue(lg, out var x) && x.N >= 12
-            ? (x.AwaySum + 30 * globalAway) / (x.N + 30) : globalAway;
+            ? (x.AwaySum + 30 * globalAway) / (x.Weight + 30) : globalAway;
 
         var strength = leagueStrength ?? new Dictionary<string, double>(StringComparer.Ordinal);
 
@@ -413,21 +459,22 @@ public sealed class ScorelineModel
         // 这样荷甲 1.6 球/场的队和意甲 1.2 球/场的队才可比，跨联赛累计不会把联赛风格当成球队实力。
         // 方案 1（2026-11-05）：有联赛强度系数时，把场均再除以强度——强联赛的进球更有含金量，
         // 归一后才能跨联赛比。荷甲场均 2.8 球（进攻性强）不等于荷甲队比意甲队强。
-        var teamTotals = new Dictionary<string, (double AttSum, double DefSum, int Games)>(StringComparer.Ordinal);
+        var teamTotals = new Dictionary<string, (double AttSum, double DefSum, double Weight, int Games)>(StringComparer.Ordinal);
         foreach (var s in usable)
         {
+            var w = WeightOf(s);
             var lg = s.LeagueName?.Trim() ?? "";
             var sHome = strength.TryGetValue(lg, out var sh) ? sh : 1.0;
             var sAway = strength.TryGetValue(lg, out var sa) ? sa : 1.0;
             var hAvg = Math.Max(0.4, LgHome(lg) * sHome);
             var aAvg = Math.Max(0.4, LgAway(lg) * sAway);
-            AddTotal(teamTotals, s.HomeTeam.Trim(), s.HomeScore / hAvg, s.AwayScore / aAvg);
-            AddTotal(teamTotals, s.AwayTeam.Trim(), s.AwayScore / aAvg, s.HomeScore / hAvg);
+            AddTotal(teamTotals, s.HomeTeam.Trim(), s.HomeScore / hAvg, s.AwayScore / aAvg, w);
+            AddTotal(teamTotals, s.AwayTeam.Trim(), s.AwayScore / aAvg, s.HomeScore / hAvg, w);
         }
 
         var namesByLeague = BuildNameIndex(teams);
         var draft = new ScorelineModel(true, globalHome, globalAway, leagues, teams, teamTotals, namesByLeague, -0.1, crossLeague, strength);
-        var rho = draft.FitRho(usable);
+        var rho = draft.FitRho(usable, decaying ? WeightOf : null);
         return new ScorelineModel(true, globalHome, globalAway, leagues, teams, teamTotals, namesByLeague, rho, crossLeague, strength);
     }
 
@@ -542,7 +589,7 @@ public sealed class ScorelineModel
 
     /// <summary>联赛 → 该联赛出现过的全部队名。别名解析只在这个范围内找，跨联赛不认。</summary>
     private static Dictionary<string, string[]> BuildNameIndex(
-        Dictionary<string, (double For, double Against, int Games)> teams)
+        Dictionary<string, (double For, double Against, double Weight, int Games)> teams)
     {
         var map = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         foreach (var key in teams.Keys)
@@ -650,8 +697,8 @@ public sealed class ScorelineModel
         var name = league?.Trim();
         if (!string.IsNullOrEmpty(name) && _leagues.TryGetValue(name, out var lg) && lg.N >= 12)
         {
-            var home = (lg.HomeSum + 30 * _globalHome) / (lg.N + 30);
-            var away = (lg.AwaySum + 30 * _globalAway) / (lg.N + 30);
+            var home = (lg.HomeSum + 30 * _globalHome) / (lg.Weight + 30);
+            var away = (lg.AwaySum + 30 * _globalAway) / (lg.Weight + 30);
             return (home, away);
         }
         return (_globalHome, _globalAway);
@@ -672,8 +719,8 @@ public sealed class ScorelineModel
         // 直接比较最可靠，别没事去掺别的赛事。
         if (_teams.TryGetValue(Key(league, resolved), out var own) && own.Games >= MinOwnGames)
         {
-            var attack = (own.For + PriorGames * teamAvg) / (own.Games + PriorGames) / teamAvg;
-            var defense = (own.Against + PriorGames * teamAvg) / (own.Games + PriorGames) / teamAvg;
+            var attack = (own.For + PriorGames * teamAvg) / (own.Weight + PriorGames) / teamAvg;
+            var defense = (own.Against + PriorGames * teamAvg) / (own.Weight + PriorGames) / teamAvg;
             return (Math.Clamp(attack, 0.2, 4.5), Math.Clamp(defense, 0.2, 4.5));
         }
 
@@ -686,12 +733,12 @@ public sealed class ScorelineModel
         // 所以改成「够用就不跨，不够才跨」，覆盖率照样从 85.7% 提到 94.5%，但不牺牲精度。
         if (!_teamTotals.TryGetValue(resolved, out var total) || total.Games <= 0)
             return (1, 1);
-        var att = (total.AttSum + PriorGames) / (total.Games + PriorGames);
-        var def = (total.DefSum + PriorGames) / (total.Games + PriorGames);
+        var att = (total.AttSum + PriorGames) / (total.Weight + PriorGames);
+        var def = (total.DefSum + PriorGames) / (total.Weight + PriorGames);
         return (Math.Clamp(att, 0.2, 4.5), Math.Clamp(def, 0.2, 4.5));
     }
 
-    private double FitRho(List<ScoreSample> samples)
+    private double FitRho(List<ScoreSample> samples, Func<ScoreSample, double>? weightOf = null)
     {
         var bestRho = -0.1;
         var best = double.NegativeInfinity;
@@ -709,7 +756,8 @@ public sealed class ScorelineModel
                 if (tau <= 1e-6) { ok = false; break; }
                 var p = tau * Poisson(Math.Min(s.HomeScore, MaxGoals), lh) * Poisson(Math.Min(s.AwayScore, MaxGoals), la);
                 if (p <= 1e-12) p = 1e-12;
-                ll += Math.Log(p);
+                // 加权似然：不加权时 weightOf 为 null，等价于原来的等权求和。
+                ll += (weightOf is null ? 1.0 : weightOf(s)) * Math.Log(p);
             }
             if (ok && ll > best)
             {
@@ -745,25 +793,30 @@ public sealed class ScorelineModel
     }
 
     private static void AddTeam(
-        Dictionary<string, (double For, double Against, int Games)> teams,
-        string league, string name, int scored, int conceded)
+        Dictionary<string, (double For, double Against, double Weight, int Games)> teams,
+        string league, string name, int scored, int conceded, double weight)
     {
         var key = Key(league, name);
         teams.TryGetValue(key, out var t);
-        t.For += scored;
-        t.Against += conceded;
+        t.For += scored * weight;
+        t.Against += conceded * weight;
+        t.Weight += weight;
+        // Games 保持**真实场次**：它是 MinTeamGames / TeamGames 的门槛依据，
+        // 「有没有足够样本」不该被衰减权重改写，否则老球队会凭空跌破门槛、
+        // 把「模型变准了」和「覆盖率掉了」两件事混在一起，分不清哪个在起作用。
         t.Games++;
         teams[key] = t;
     }
 
     private static void AddTotal(
-        Dictionary<string, (double AttSum, double DefSum, int Games)> totals,
-        string name, double attRatio, double defRatio)
+        Dictionary<string, (double AttSum, double DefSum, double Weight, int Games)> totals,
+        string name, double attRatio, double defRatio, double weight)
     {
         if (name.Length == 0) return;
         totals.TryGetValue(name, out var t);
-        t.AttSum += attRatio;
-        t.DefSum += defRatio;
+        t.AttSum += attRatio * weight;
+        t.DefSum += defRatio * weight;
+        t.Weight += weight;
         t.Games++;
         totals[name] = t;
     }
