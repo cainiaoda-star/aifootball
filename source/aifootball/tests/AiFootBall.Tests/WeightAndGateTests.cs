@@ -113,4 +113,82 @@ public class WeightAndGateTests
     {
         Assert.Equal(17.5m, MilkPickEngine.ModelPctBeforeBlend(17.5m, 10m, 0m, JcPlayTypes.Bq));
     }
+
+    // ── 归一化（2026-11-11 加）：混合后 Σ 必须回到 1 ──────────────────────
+    //
+    // 市场隐含用固定水位去水，Σ(1/赔率)/水位 并不精确等于 1（实测完整快照
+    // BQ/JQ 均值 0.9905、最差 0.9582）。不归一化时每档概率集体偏低，
+    // EV 与价值闸跟着系统性偏低。这组测试锁的是「Σ 回到 100」，不是某个具体因子。
+
+    /// <summary>构造一个玩法快照，Σ(1/赔率) 精确等于给定的 sumInv。</summary>
+    static List<JcOddsHistoryPoint> Snapshot(string playType, string[] codes, decimal sumInv)
+    {
+        // 每档赔率相同 ⇒ 1/赔率 = sumInv / n，Σ = sumInv，可倒着控制偏离量。
+        var odds = codes.Length / sumInv;
+        return codes.Select(c => new JcOddsHistoryPoint
+        {
+            PlayType = playType,
+            OptionCode = c,
+            Odds = odds
+        }).ToList();
+    }
+
+    [Fact]
+    public void BlendNormalizer_IsOneWhenMarketSumsToOne()
+    {
+        // 9 档、Σ1/赔率 = 1.254（正好等于水位）⇒ 去水后 Σ = 1 ⇒ 不该有任何调整。
+        var codes = new[] { "3-3", "3-1", "3-0", "1-3", "1-1", "1-0", "0-3", "0-1", "0-0" };
+        var pts = Snapshot(JcPlayTypes.Bq, codes, 1.254m);
+
+        var norm = MilkPickEngine.BlendNormalizer(pts, JcPlayTypes.Bq, 1.254m);
+        Assert.Equal(1m, norm, 3);
+    }
+
+    [Fact]
+    public void BlendNormalizer_LiftsWhenMarketSumsBelowOne()
+    {
+        // Σ1/赔率 = 1.20 而水位 1.254 ⇒ 去水后 Σ 只有 0.9567。
+        // 不归一化时混合概率整体偏低 1.3%（w=0.3），因子必须把这部分补回来。
+        var codes = new[] { "3-3", "3-1", "3-0", "1-3", "1-1", "1-0", "0-3", "0-1", "0-0" };
+        var pts = Snapshot(JcPlayTypes.Bq, codes, 1.20m);
+
+        var w = MilkPickEngine.MarketWeightFor(JcPlayTypes.Bq);
+        var expected = 1m / ((1m - w) + w * (1.20m / 1.254m));
+        // 上界 = 市场完全缺失（Σ市场 → 0）时的因子 1/(1-w)；下界 = 完全不缺时的 1。
+        var cap = 1m / (1m - w);
+
+        var norm = MilkPickEngine.BlendNormalizer(pts, JcPlayTypes.Bq, 1.254m);
+        Assert.Equal(expected, norm, 4);
+        Assert.True(norm > 1m);
+        Assert.True(norm < cap);
+    }
+
+    [Fact]
+    public void BlendNormalizer_NormalizedSumIsOne()
+    {
+        // 端到端：9 档等赔率快照，混合 + 归一化后 Σ 必须回到 100.00。
+        var codes = new[] { "3-3", "3-1", "3-0", "1-3", "1-1", "1-0", "0-3", "0-1", "0-0" };
+        var pts = Snapshot(JcPlayTypes.Bq, codes, 1.20m);
+        var over = 1.254m;
+        var norm = MilkPickEngine.BlendNormalizer(pts, JcPlayTypes.Bq, over);
+        var w = MilkPickEngine.MarketWeightFor(JcPlayTypes.Bq);
+
+        // 模型侧给一个和为 1 的分布（这里用均匀，归一化只关心和）。
+        var model = Enumerable.Repeat(1m / codes.Length, codes.Length).ToArray();
+        var sum = 0m;
+        for (var i = 0; i < codes.Length; i++)
+            sum += ((1m - w) * model[i] + w * (1m / pts[i].Odds / over)) * norm;
+
+        Assert.Equal(1m, sum, 4);
+    }
+
+    [Fact]
+    public void BlendNormalizer_NoSnapshotMeansNoAdjustment()
+    {
+        // 快照不全时 overRound = 0，引擎回退纯模型，此时因子必须是 1，
+        // 否则会去「归一化」一个本来就没掺市场的值。
+        var codes = new[] { "3-3", "3-1" };
+        var pts = Snapshot(JcPlayTypes.Bq, codes, 0.5m);
+        Assert.Equal(1m, MilkPickEngine.BlendNormalizer(pts, JcPlayTypes.Bq, 0m));
+    }
 }

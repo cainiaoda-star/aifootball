@@ -168,7 +168,7 @@ WHERE h.PlayType = @play", new { play = playType })).ToList();
         var payback = MilkPickEngine.Payout(playType);
 
         // 逐场预算纯模型概率与市场隐含，避免在 w 循环里重复算分布。
-        var prepared = new List<(DateTime T, decimal[] PurePct, decimal[] MarketFrac, decimal[] Odds, int Actual)>();
+        var prepared = new List<(DateTime T, string Home, string Away, decimal[] PurePct, decimal[] MarketFrac, decimal[] Odds, int Actual)>();
         var noModel = 0;
         foreach (var (m, odds) in rows)
         {
@@ -190,7 +190,7 @@ WHERE h.PlayType = @play", new { play = playType })).ToList();
                 var ht = hh > ha ? '3' : hh == ha ? '1' : '0';
                 var ft = m.HomeScore > m.AwayScore ? '3' : m.HomeScore == m.AwayScore ? '1' : '0';
                 var code = $"{ht}-{ft}";
-                prepared.Add((m.MatchTime, pure,
+                prepared.Add((m.MatchTime, m.HomeTeam, m.AwayTeam, pure,
                     odds.Select(o => 1m / o / overRound).ToArray(),
                     odds, Array.IndexOf(codes, code)));
             }
@@ -212,7 +212,7 @@ WHERE h.PlayType = @play", new { play = playType })).ToList();
                 var goals = m.HomeScore + m.AwayScore;
                 var mkt = new decimal[codes.Length];
                 for (var i = 0; i < codes.Length; i++) mkt[i] = 1m / odds[i] / overRound;
-                prepared.Add((m.MatchTime, pure, mkt, odds, Math.Min(goals, 7)));
+                prepared.Add((m.MatchTime, m.HomeTeam, m.AwayTeam, pure, mkt, odds, Math.Min(goals, 7)));
             }
         }
 
@@ -283,23 +283,111 @@ WHERE h.PlayType = @play", new { play = playType })).ToList();
                 : $"- {ruleName}：调参段 w={tuneBest:0.0}，验证段 w={verifyBest:0.0} —— **不一致**（小样本挑出来的）。");
         }
         Console.WriteLine();
+
+        // 归一化的影响必须单独报：它是「概率自洽」的要求，但会抬高 EV，
+        // 因此可能改变出票。不报出来，改完权重与未改权重就分不清了。
+        Console.WriteLine($"**{label}：归一化的影响**（验证段，规则A，单位与主表一致）");
+        Console.WriteLine();
+        Console.WriteLine("| w | 未归一 注数 | 未归一 ROI | 归一 注数 | 归一 ROI | ROI 变化 |");
+        Console.WriteLine("|---:|---:|---:|---:|---:|---:|");
+        foreach (var w in Weights)
+        {
+            var (b0, r0, _, _) = Simulate(prepared, split, prepared.Count, codes, playType, w, false, normalize: false);
+            var (b1, r1, _, _) = Simulate(prepared, split, prepared.Count, codes, playType, w, false, normalize: true);
+            var roi0 = b0 == 0 ? 0m : r0 / b0;
+            var roi1 = b1 == 0 ? 0m : r1 / b1;
+            Console.WriteLine($"| {w:0.0} | {b0} | {roi0:F3} | {b1} | {roi1:F3} | " +
+                              $"{(b1 == 0 || b0 == 0 ? "—" : (roi1 - roi0).ToString("+0.000;-0.000;0.000"))} |");
+        }
+        Console.WriteLine();
+
+        // 校准：ROI 会被赔率噪声主导，Brier / log loss 才看得见「概率准不准」。
+        // 必须按验证段单独算，且拿「只用调参段历史频率」当基线——这是用户点名的对照项：
+        // 模型/混合的 Brier 若打不过「无脑按历史频率」，说明它没有增加信息。
+        Console.WriteLine($"**{label}：验证段校准**（全档，与选注规则无关；越低越好）");
+        Console.WriteLine();
+        Console.WriteLine("| 预测 | 多类 Brier | log loss | 相对历史频率 |");
+        Console.WriteLine("|---|---:|---:|---:|");
+
+        var tuneFreq = new decimal[codes.Length];
+        for (var i = 0; i < split; i++) tuneFreq[prepared[i].Actual]++;
+        for (var k = 0; k < codes.Length; k++) tuneFreq[k] /= split;
+
+        var (baseBrier, baseLog) = ScoreSegment(prepared, split, prepared.Count, codes, (i, k) => tuneFreq[k] * 100m);
+        void Row(string name, decimal brier, double log)
+        {
+            var delta = baseBrier == 0m ? "—" : $"{(brier - baseBrier) / baseBrier * 100m:+0.00;-0.00;0.00}%";
+            Console.WriteLine($"| {name} | {brier:F4} | {log:F4} | {delta} |");
+        }
+        Row("历史频率（调参段）", baseBrier, baseLog);
+        var pureSc = ScoreSegment(prepared, split, prepared.Count, codes, (i, k) => prepared[i].PurePct[k]);
+        Row("纯模型", pureSc.Brier, pureSc.Log);
+        foreach (var w in Weights)
+        {
+            var sc = ScoreSegment(prepared, split, prepared.Count, codes,
+                (i, k) => ((1m - w) * prepared[i].PurePct[k] + w * prepared[i].MarketFrac[k] * 100m)
+                          * NormalizeFactor(prepared[i].PurePct, prepared[i].MarketFrac, w, true));
+            Row($"混合 w={w:0.0}", sc.Brier, sc.Log);
+        }
+        var mktSc = ScoreSegment(prepared, split, prepared.Count, codes, (i, k) =>
+        {
+            var sum = prepared[i].MarketFrac.Sum();
+            return sum <= 0m ? 0m : prepared[i].MarketFrac[k] / sum * 100m;
+        });
+        Row("纯市场（归一）", mktSc.Brier, mktSc.Log);
+        Console.WriteLine();
+
+        DumpSamples(prepared, codes, playType, Weights[0]);
     }
 
-    /// <summary>在给定区间与权重下跑一遍：每场最多 1 注，返回 (注数, 返还, 命中, 赔率合计)。</summary>
+    /// <summary>多类 Brier（Σ档后 ÷ 场次）与 log loss（只看真实档）。prob 返回百分数。</summary>
+    static (decimal Brier, double Log) ScoreSegment(
+        List<(DateTime T, string Home, string Away, decimal[] PurePct, decimal[] MarketFrac, decimal[] Odds, int Actual)> prepared,
+        int from, int to, string[] codes, Func<int, int, decimal> probPct)
+    {
+        decimal brier = 0m;
+        double log = 0d;
+        var n = to - from;
+        if (n <= 0) return (0m, 0d);
+        for (var i = from; i < to; i++)
+        {
+            for (var k = 0; k < codes.Length; k++)
+            {
+                var p = Math.Clamp(probPct(i, k) / 100m, 0m, 1m);
+                var y = prepared[i].Actual == k ? 1m : 0m;
+                var d = p - y;
+                brier += d * d;
+                if (y == 1m) log += -Math.Log(Math.Max(1e-6, (double)p));
+            }
+        }
+        return (brier / n, log / n);
+    }
+
+    /// <summary>
+    /// 在给定区间与权重下跑一遍：每场最多 1 注，返回 (注数, 返还, 命中, 赔率合计)。
+    ///
+    /// <paramref name="normalize"/> = true 时，混合后**按本玩法全档重新归一化到 100%**：
+    ///     b_i = (1-w)·模型_i + w·市场_i ，再 b_i' = b_i / Σb × 100
+    /// 必要性：市场隐含用**固定水位**去水，Σ(1/赔率)/水位 并不精确等于 1
+    /// （完整快照实测均值 0.9905，最差 0.9582）。不归一化时 Σ混合 ≈ 1 − 0.0095w，
+    /// 也就是「每档概率集体偏低」，EV 与价值闸都跟着系统性偏低。
+    /// 归一化必须对**全档**做，不能用过闸的档算分母，否则等于按结果挑分母。
+    /// </summary>
     static (int Bets, decimal Ret, int Hits, decimal OddsSum) Simulate(
-        List<(DateTime T, decimal[] PurePct, decimal[] MarketFrac, decimal[] Odds, int Actual)> prepared,
-        int from, int to, string[] codes, string playType, decimal w, bool byEv)
+        List<(DateTime T, string Home, string Away, decimal[] PurePct, decimal[] MarketFrac, decimal[] Odds, int Actual)> prepared,
+        int from, int to, string[] codes, string playType, decimal w, bool byEv, bool normalize = true)
     {
         int bets = 0, hits = 0;
         decimal ret = 0m, oddsSum = 0m;
         for (var i = from; i < to; i++)
         {
-            var (_, pure, market, odds, actual) = prepared[i];
+            var (_, _, _, pure, market, odds, actual) = prepared[i];
+            var factor = NormalizeFactor(pure, market, w, normalize);
             var bestScore = decimal.MinValue;
             var bestIdx = -1;
             for (var k = 0; k < codes.Length; k++)
             {
-                var blendedPct = (1m - w) * pure[k] + w * market[k] * 100m;
+                var blendedPct = ((1m - w) * pure[k] + w * market[k] * 100m) * factor;
                 var (safety, value) = MilkPickEngine.JudgeGates(pure[k], blendedPct, odds[k], playType, codes[k]);
                 if (!safety || !value) continue;
                 var score = byEv ? blendedPct / 100m * odds[k] : blendedPct;
@@ -315,8 +403,66 @@ WHERE h.PlayType = @play", new { play = playType })).ToList();
         return (bets, ret, hits, oddsSum);
     }
 
+    /// <summary>归一化因子：100 ÷ Σ混合（对全档求和）。normalize=false 时恒为 1。</summary>
+    static decimal NormalizeFactor(decimal[] pure, decimal[] market, decimal w, bool normalize)
+    {
+        if (!normalize) return 1m;
+        var sum = 0m;
+        for (var k = 0; k < pure.Length; k++) sum += (1m - w) * pure[k] + w * market[k] * 100m;
+        return sum <= 0m ? 1m : 100m / sum;
+    }
+
+    /// <summary>
+    /// 打印若干场的全档中间值，供**手算核对**：纯模型概率、市场隐含、混合（未归一/归一后）、
+    /// 两道闸各自的判定结果。没有这一层，「过没过闸」在外部是核不出来的。
+    /// 抽样用等距，避免全取最早几场（那几场恰好是联赛最集中的一段）。
+    /// </summary>
+    static void DumpSamples(
+        List<(DateTime T, string Home, string Away, decimal[] PurePct, decimal[] MarketFrac, decimal[] Odds, int Actual)> prepared,
+        string[] codes, string playType, decimal w, int take = 5)
+    {
+        if (prepared.Count == 0) return;
+        var step = Math.Max(1, prepared.Count / take);
+        var picked = new List<int>();
+        for (var i = 0; i < prepared.Count && picked.Count < take; i += step) picked.Add(i);
+
+        Console.WriteLine($"#### 中间值抽样（w = {w:0.0}，共 {picked.Count} 场，等距抽取）");
+        Console.WriteLine();
+        foreach (var i in picked)
+        {
+            var (t, home, away, pure, market, odds, actual) = prepared[i];
+            var factor = NormalizeFactor(pure, market, w, true);
+
+            Console.WriteLine($"**{home} vs {away}**  {t:MM-dd HH:mm}");
+            Console.WriteLine();
+            Console.WriteLine("| 档位 | 赔率 | 纯模型% | 市场隐含% | 混合%(未归一) | 混合%(归一) | 安全闸 | 价值闸 |");
+            Console.WriteLine("|---|---:|---:|---:|---:|---:|---|---|");
+            for (var k = 0; k < codes.Length; k++)
+            {
+                var raw = (1m - w) * pure[k] + w * market[k] * 100m;
+                var norm = raw * factor;
+                var (safety, value) = MilkPickEngine.JudgeGates(pure[k], norm, odds[k], playType, codes[k]);
+                var mark = k == actual ? " ★实中" : "";
+                Console.WriteLine($"| {codes[k]}{mark} | {odds[k]:F2} | {pure[k]:F2} | {market[k] * 100m:F2} | " +
+                                  $"{raw:F2} | {norm:F2} | {(safety ? "过" : "砍")} | {(value ? "过" : "砍")} |");
+            }
+            var sumRaw = 0m;
+            var sumModel = 0m;
+            var sumMarket = 0m;
+            for (var k = 0; k < codes.Length; k++)
+            {
+                sumRaw += (1m - w) * pure[k] + w * market[k] * 100m;
+                sumModel += pure[k];
+                sumMarket += market[k] * 100m;
+            }
+            Console.WriteLine($"| **Σ** | | **{sumModel:F2}** | **{sumMarket:F2}** | **{sumRaw:F2}** | " +
+                              $"**{sumRaw * factor:F2}** | | |");
+            Console.WriteLine();
+        }
+    }
+
     static decimal BestW(
-        List<(DateTime T, decimal[] PurePct, decimal[] MarketFrac, decimal[] Odds, int Actual)> prepared,
+        List<(DateTime T, string Home, string Away, decimal[] PurePct, decimal[] MarketFrac, decimal[] Odds, int Actual)> prepared,
         int from, int to, string[] codes, string playType, bool byEv)
     {
         var best = 0.3m;

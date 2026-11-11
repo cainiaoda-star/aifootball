@@ -544,14 +544,43 @@ public static class MilkPickEngine
     /// 权重按玩法取 <see cref="MarketWeightFor"/>：比分 31 档、去水最不可靠，权重最低；
     /// 胜平负 3 档、去水最稳，权重最高。**不要在这里写死一个数**。
     /// </summary>
-    private static decimal Blend(decimal modelFraction, decimal odds, decimal overRound, string? playType)
+    private static decimal Blend(decimal modelFraction, decimal odds, decimal overRound, string? playType,
+                                 decimal normalizer = 1m)
     {
         if (odds <= 1m) return modelFraction;
         if (overRound <= 0m) return modelFraction;
         var marketFraction = 1m / odds / overRound;
         if (marketFraction <= 0m) return modelFraction;
         var w = MarketWeightFor(playType);
-        return (1m - w) * modelFraction + w * marketFraction;
+        return ((1m - w) * modelFraction + w * marketFraction) * normalizer;
+    }
+
+    /// <summary>
+    /// 混合后的归一化因子 = 1 ÷ Σ混合（对**该玩法全档**求和）。
+    ///
+    /// 必须归一的原因：市场隐含用**固定水位**去水（见 <see cref="StandardOverRound"/>），
+    /// 而 Σ(1/赔率) 并不是精确等于水位——实测完整快照 566 场，BQ/JQ 的
+    /// Σ市场概率均值 **0.9905**（最差 0.9582），SPF 0.9947。不归一化时
+    /// Σ混合 = (1−w)·1 + w·Σ市场 ≈ 1 − 0.0095w，即**每档概率集体偏低**，
+    /// EV 与价值闸都跟着系统性偏低——这是「概率之和不等于 1」的直接后果，
+    /// 也是 2026-11-11 用户验收项里点名的第 3 条。
+    ///
+    /// 模型侧 Σ 取 1：比分网格与半全场联合分布各自归一（回放实测 Σ=100.00）。
+    /// 分母用**全档**，不能用「过闸的档」算——那等于按结果挑分母，闸门会自己喂自己。
+    ///
+    /// 实测影响（`weight-replay` 归一化对照，验证段 216 注）：
+    /// 半全场三个 w 的 ROI 变化全为 0.000，总进球 0.000/+0.004/0.000。
+    /// 也就是说这条是**正确性修复而不是收益来源**，别指望它提升回报。
+    /// </summary>
+    public static decimal BlendNormalizer(IEnumerable<JcOddsHistoryPoint> points, string playType, decimal overRound)
+    {
+        if (overRound <= 0m) return 1m;
+        var sumMarket = points.Where(p => p.PlayType == playType && p.Odds > 1m)
+                              .Sum(p => 1m / p.Odds) / overRound;
+        if (sumMarket <= 0m) return 1m;
+        var w = MarketWeightFor(playType);
+        var sum = (1m - w) + w * sumMarket;
+        return sum <= 0m ? 1m : 1m / sum;
     }
 
     /// <summary>
@@ -1344,6 +1373,12 @@ public static class MilkPickEngine
             var jqOver = SnapshotComplete(points, JcPlayTypes.Jq) ? StandardOverRound(JcPlayTypes.Jq) : 0m;
             var bqOver = SnapshotComplete(points, JcPlayTypes.Bq) ? StandardOverRound(JcPlayTypes.Bq) : 0m;
 
+            // 混合后的归一化因子（2026-11-11 加）：Σ市场用固定水位去水后并不精确等于 1，
+            // 不归一化会让每档概率集体偏低、EV 与价值闸跟着偏低。见 BlendNormalizer。
+            var bfNorm = BlendNormalizer(points, JcPlayTypes.Bf, bfOver);
+            var jqNorm = BlendNormalizer(points, JcPlayTypes.Jq, jqOver);
+            var bqNorm = BlendNormalizer(points, JcPlayTypes.Bq, bqOver);
+
             // 比分：单格概率；「其它」= 该方向合计 − 已列具体比分的合计
             var others = new Dictionary<char, JcOddsHistoryPoint>();
             var listed = new Dictionary<char, decimal> { ['3'] = 0m, ['1'] = 0m, ['0'] = 0m };
@@ -1373,7 +1408,7 @@ public static class MilkPickEngine
                     // 停发比分期间不建候选，但上面的 listed[] 累计与下面的 others 收集必须保留：
                     // 它们只影响「胜其它/平其它/负其它」的余量计算，跳掉会让概率凭空变好看。
                     if (!EnableScorePicks) continue;
-                    matchPicks.Add(Blended(Option(pt, r), (decimal)p.Value, pt.Odds, bfOver, pt.PlayType));
+                    matchPicks.Add(Blended(Option(pt, r), (decimal)p.Value, pt.Odds, bfOver, pt.PlayType, bfNorm));
                 }
                 else
                 {
@@ -1386,7 +1421,7 @@ public static class MilkPickEngine
                 if (p <= 0 || pt.Odds < MinOptionOdds) continue;
                 if (pt.Odds > MaxScoreOdds) continue;
                 if (!EnableScorePicks) continue;
-                matchPicks.Add(Blended(Option(pt, r), p, pt.Odds, bfOver, pt.PlayType));
+                matchPicks.Add(Blended(Option(pt, r), p, pt.Odds, bfOver, pt.PlayType, bfNorm));
             }
 
             // 总进球：对角线合计，7+ 取余量
@@ -1400,7 +1435,7 @@ public static class MilkPickEngine
                     ? Math.Max(0m, 1m - (decimal)Enumerable.Range(0, 7).Sum(k => GoalsProbability(grid, mass, k)))
                     : (decimal)GoalsProbability(grid, mass, n);
                 if (p <= 0) continue;
-                matchPicks.Add(Blended(Option(pt, r), p, pt.Odds, jqOver, pt.PlayType));
+                matchPicks.Add(Blended(Option(pt, r), p, pt.Odds, jqOver, pt.PlayType, jqNorm));
             }
 
             // 半全场：上半场（λ×0.45）+ 下半场（λ×0.55）两段泊松合并，得到「半场结果 × 全场结果」的联合分布。
@@ -1491,7 +1526,7 @@ public static class MilkPickEngine
                     // 半全场的联合概率会把 λ 的偏差放大，不设这道闸，模型估偏的场次会靠虚高 EV 霸榜。
                     // 注意量纲：Blend 返回 0~1 的小数（ModelProbability 落库时才 ×100），
                     // 市场隐含也必须是小数，写成 100/odds/over 会恒假（当日已栽过一次）。
-                    var blended = Blend((decimal)p, pt.Odds, bqOver, pt.PlayType);
+                    var blended = Blend((decimal)p, pt.Odds, bqOver, pt.PlayType, bqNorm);
                     if (bqOver > 0 && blended > 1m / pt.Odds / bqOver * BqModelOverMarketMax) continue;
                     // 模型纯值 ÷ 市场隐含（2026-11-08 加，落库 FbMilkPick.ModelVsMarketRatio）。
                     //
@@ -1506,7 +1541,7 @@ public static class MilkPickEngine
                         if (marketFrac > 0m)
                             bqPick.ModelVsMarketRatio = decimal.Round((decimal)p / marketFrac, 4);
                     }
-                    matchPicks.Add(Blended(bqPick, (decimal)p, pt.Odds, bqOver, pt.PlayType));
+                    matchPicks.Add(Blended(bqPick, (decimal)p, pt.Odds, bqOver, pt.PlayType, bqNorm));
                 }
 
                 // 让平出注（2026-11-07，技能10落地）：NSPF 让平是全引擎此前从不出注的最大价值档。
@@ -1529,7 +1564,8 @@ public static class MilkPickEngine
                         var nd = Option(nspfDraw, r);
                         nd.HandicapDrawSetup = true;
                         nd.DrawSetup = drawSetup;
-                        matchPicks.Add(Blended(nd, (decimal)hcpDrawP, nspfDraw.Odds, nspfOver, nspfDraw.PlayType));
+                        matchPicks.Add(Blended(nd, (decimal)hcpDrawP, nspfDraw.Odds, nspfOver, nspfDraw.PlayType,
+                            BlendNormalizer(points, JcPlayTypes.Nspf, nspfOver)));
                     }
                 }
             }
@@ -2668,9 +2704,9 @@ public static class MilkPickEngine
     /// 快照不全（overRound ≤ 0）时 Blend 返回的本来就是模型值，两个字段相等。
     /// </summary>
     private static MilkPick Blended(MilkPick pick, decimal modelFraction, decimal odds,
-                                   decimal overRound, string? playType)
+                                   decimal overRound, string? playType, decimal normalizer = 1m)
     {
-        var blended = Blend(modelFraction, odds, overRound, playType);
+        var blended = Blend(modelFraction, odds, overRound, playType, normalizer);
         var built = WithProbability(pick, blended);
         built.ModelPctPure = overRound > 0m && odds > 1m
             ? Math.Round(modelFraction * 100m, 2)
