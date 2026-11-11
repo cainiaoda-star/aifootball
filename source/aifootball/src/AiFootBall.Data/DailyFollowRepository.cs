@@ -21,6 +21,29 @@ public sealed class DailyFollowRepository
 
     public DailyFollowRepository(SqlConnectionFactory factory) => _factory = factory;
 
+    private static int _altColumnsEnsured;
+
+    /// <summary>
+    /// 幂等补 Alt* 列（2026-11-11 双选）。FbDailyFollow 没有进 01_schema.sql，
+    /// 只能在代码里补；否则换台机器部署就少列，INSERT 直接失败。
+    /// </summary>
+    private static async Task EnsureAltColumnsAsync(
+        System.Data.Common.DbConnection conn, CancellationToken ct)
+    {
+        if (Interlocked.Exchange(ref _altColumnsEnsured, 1) == 1) return;
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"IF COL_LENGTH('dbo.FbDailyFollow','AltPlayType') IS NULL
+              ALTER TABLE dbo.FbDailyFollow ADD
+                  AltPlayType nvarchar(8) NULL,
+                  AltOptionCode nvarchar(16) NULL,
+                  AltOptionName nvarchar(64) NULL,
+                  AltOdds decimal(8,3) NULL,
+                  AltModelProbability decimal(6,2) NULL,
+                  AltEv decimal(8,3) NULL,
+                  AltHit bit NULL;",
+            cancellationToken: ct));
+    }
+
     /// <summary>
     /// 对比式保存当日逐场跟进。行为：
     ///   · 新算的注 vs 库里已有的未结算注，逐场对比（按 MatchId）；
@@ -35,6 +58,7 @@ public sealed class DailyFollowRepository
     {
         var d = followDate.Date;
         await using var conn = await _factory.OpenAsync(ct);
+        await EnsureAltColumnsAsync(conn, ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
 
         // 取当日「未结算」的现有行，按 MatchId 建索引。
@@ -75,6 +99,8 @@ public sealed class DailyFollowRepository
                     @"UPDATE dbo.FbDailyFollow SET
                         PlayType=@PlayType, OptionCode=@OptionCode, OptionName=@OptionName,
                         Odds=@Odds, ModelProbability=@ModelProbability, Ev=@Ev, Reason=@Reason,
+                        AltPlayType=@AltPlayType, AltOptionCode=@AltOptionCode, AltOptionName=@AltOptionName,
+                        AltOdds=@AltOdds, AltModelProbability=@AltModelProbability, AltEv=@AltEv,
                         LastCapturedAt=@LastCapturedAt,
                         OddsLastHome=@OddsLastHome, OddsLastDraw=@OddsLastDraw, OddsLastAway=@OddsLastAway,
                         ExRatioLast=@ExRatioLast, MajorChange=@MajorChange, UpdatedAt=SYSUTCDATETIME()
@@ -92,12 +118,14 @@ public sealed class DailyFollowRepository
                          PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, Reason,
                          FirstCapturedAt, LastCapturedAt,
                          OddsOpenHome, OddsOpenDraw, OddsOpenAway, OddsLastHome, OddsLastDraw, OddsLastAway,
-                         ExRatioOpen, ExRatioLast, MajorChange)
+                         ExRatioOpen, ExRatioLast, MajorChange,
+                         AltPlayType, AltOptionCode, AltOptionName, AltOdds, AltModelProbability, AltEv)
                       VALUES (@FollowDate, @MatchId, @MatchNo, @LeagueName, @HomeTeam, @AwayTeam, @MatchTime,
                               @PlayType, @OptionCode, @OptionName, @Odds, @ModelProbability, @Ev, @Reason,
                               @FirstCapturedAt, @LastCapturedAt,
                               @OddsOpenHome, @OddsOpenDraw, @OddsOpenAway, @OddsLastHome, @OddsLastDraw, @OddsLastAway,
-                              @ExRatioOpen, @ExRatioLast, @MajorChange)",
+                              @ExRatioOpen, @ExRatioLast, @MajorChange,
+                              @AltPlayType, @AltOptionCode, @AltOptionName, @AltOdds, @AltModelProbability, @AltEv)",
                     r, tx, cancellationToken: ct));
                 continue;
             }
@@ -106,6 +134,8 @@ public sealed class DailyFollowRepository
             upserted += await conn.ExecuteAsync(new CommandDefinition(
                 @"UPDATE dbo.FbDailyFollow SET
                     Odds=@Odds, ModelProbability=@ModelProbability, Ev=@Ev, Reason=@Reason,
+                    AltPlayType=@AltPlayType, AltOptionCode=@AltOptionCode, AltOptionName=@AltOptionName,
+                    AltOdds=@AltOdds, AltModelProbability=@AltModelProbability, AltEv=@AltEv,
                     LastCapturedAt=@LastCapturedAt,
                     OddsLastHome=@OddsLastHome, OddsLastDraw=@OddsLastDraw, OddsLastAway=@OddsLastAway,
                     ExRatioLast=@ExRatioLast, MajorChange=@MajorChange, UpdatedAt=SYSUTCDATETIME()
@@ -128,7 +158,8 @@ public sealed class DailyFollowRepository
                      FirstCapturedAt, LastCapturedAt,
                      OddsOpenHome, OddsOpenDraw, OddsOpenAway, OddsLastHome, OddsLastDraw, OddsLastAway,
                      ExRatioOpen, ExRatioLast, MajorChange,
-                     ActualScore, ActualHalfScore, ActualGoals, Hit, SettledAt, ReviewText, ReviewedAt
+                     AltPlayType, AltOptionCode, AltOptionName, AltOdds, AltModelProbability, AltEv,
+                     ActualScore, ActualHalfScore, ActualGoals, Hit, AltHit, SettledAt, ReviewText, ReviewedAt
               FROM dbo.FbDailyFollow
               WHERE FollowDate=@d
               ORDER BY MatchTime, MatchNo",
@@ -138,17 +169,17 @@ public sealed class DailyFollowRepository
     /// <summary>回填单场赛果并写复盘。只更新未结算的行。</summary>
     public async Task<int> SettleAsync(
         long matchId, string? actualScore, string? actualHalfScore, int? actualGoals,
-        bool hit, string reviewText, CancellationToken ct = default)
+        bool hit, bool? altHit, string reviewText, CancellationToken ct = default)
     {
         await using var conn = await _factory.OpenAsync(ct);
         return await conn.ExecuteAsync(new CommandDefinition(
             @"UPDATE dbo.FbDailyFollow
               SET ActualScore=@actualScore, ActualHalfScore=@actualHalfScore, ActualGoals=@actualGoals,
-                  Hit=@hit, SettledAt=SYSUTCDATETIME(),
+                  Hit=@hit, AltHit=@altHit, SettledAt=SYSUTCDATETIME(),
                   ReviewText=@reviewText, ReviewedAt=SYSUTCDATETIME(),
                   UpdatedAt=SYSUTCDATETIME()
               WHERE MatchId=@matchId AND SettledAt IS NULL",
-            new { matchId, actualScore, actualHalfScore, actualGoals, hit, reviewText },
+            new { matchId, actualScore, actualHalfScore, actualGoals, hit, altHit, reviewText },
             cancellationToken: ct));
     }
 
@@ -239,6 +270,17 @@ public sealed class DailyFollowRow
     public decimal? ExRatioLast { get; set; }
     public string? MajorChange { get; set; }
     public string? TriggerSignal { get; set; }
+
+    // 双选的第二注（2026-11-11）。为空表示该场只出了 1 注。
+    // 单独成列而不是拆成两行：本表按 MatchId 一对一，拆分要重做去重与改判留痕逻辑。
+    public string? AltPlayType { get; set; }
+    public string? AltOptionCode { get; set; }
+    public string? AltOptionName { get; set; }
+    public decimal? AltOdds { get; set; }
+    public decimal? AltModelProbability { get; set; }
+    public decimal? AltEv { get; set; }
+    public bool? AltHit { get; set; }
+
     public string? ActualScore { get; set; }
     public string? ActualHalfScore { get; set; }
     public int? ActualGoals { get; set; }

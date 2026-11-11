@@ -38,22 +38,32 @@ public sealed class DailyFollowService
         var now = DateTime.Now;
         // 每场一注（perMatch=true）：竞彩每场都给一个大奶，不做全局砍单。
         var build = await _rec.RecommendMilkWithGateAsync(null, ct, perMatch: true);
-        var picks = build.Picks;
-        if (picks.Count == 0)
+        // 2026-11-11 起引擎每场最多出 2 注（双选）。本表仍是一场一行：
+        // 第一注进主列，第二注进 Alt* 列（见 DailyFollowRepository 的幂等 ALTER）。
+        // 不拆成两行——SaveDayDiffAsync 按 MatchId 一对一，同场两行会直接抛重复键；
+        // 而「逐场跟进」的产品形态本来就是一场一张卡，卡片里并排列出主推/备选更直观。
+        var byMatch = build.Picks
+            .Where(p => p.MatchId is > 0)
+            .GroupBy(p => p.MatchId!.Value)
+            .ToList();
+        if (byMatch.Count == 0)
             return CollectionResult.Ok(0, build.Funnel.Skipped.Count > 0
                 ? "无候选注：" + string.Join("；", build.Funnel.Skipped.Take(3))
                 : "无候选注（模型未就绪或今日无竞彩）");
 
-        var fids = picks.Select(p => p.MatchId!.Value).Distinct().ToList();
+        var fids = byMatch.Select(g => g.Key).ToList();
         var openEu = await _repo.GetOpenEuAsync(fids, ct);
         var closeEu = await _repo.GetClosingEuAsync(fids, ct);
         var exSpan = await _repo.GetExchangeSpanAsync(fids, ct);
         var freshness = await _repo.GetMarketFreshnessAsync(fids, ct);
 
         var rows = new List<DailyFollowRow>();
-        foreach (var p in picks)
+        foreach (var g in byMatch)
         {
-            var mid = p.MatchId!.Value;
+            var list = g.ToList();
+            var p = list[0];                 // 引擎顺序即优先级：主推在前
+            var alt = list.Count > 1 ? list[1] : null;
+            var mid = g.Key;
             openEu.TryGetValue(mid, out var open);
             closeEu.TryGetValue(mid, out var close);
             exSpan.TryGetValue(mid, out var ex);
@@ -87,7 +97,14 @@ public sealed class DailyFollowService
                 ExRatioOpen = ex.LastHome,   // 必发占比只有最近值，初值暂无独立采样，先并记
                 ExRatioLast = ex.LastHome,
                 MajorChange = major,
-                TriggerSignal = major       // 触发本次变更（若有）的水位/必发信号
+                TriggerSignal = major,      // 触发本次变更（若有）的水位/必发信号
+                // 双选的第二注。为空表示这场只出了 1 注。
+                AltPlayType = alt?.PlayType,
+                AltOptionCode = alt?.OptionCode,
+                AltOptionName = alt?.OptionName,
+                AltOdds = alt?.Odds,
+                AltModelProbability = alt?.ModelProbability,
+                AltEv = alt?.Ev
             });
         }
 
@@ -121,9 +138,9 @@ public sealed class DailyFollowService
             if (!scores.TryGetValue(r.MatchId, out var score) || score.Finished != true)
                 continue;   // 还没完场，下一轮再判
 
-            var (hit, actualScore, halfScore, goals) = Judge(r, score);
+            var (hit, altHit, actualScore, halfScore, goals) = Judge(r, score);
             var review = ReviewOf(r, hit, score);
-            await _follow.SettleAsync(r.MatchId, actualScore, halfScore, goals, hit, review, ct);
+            await _follow.SettleAsync(r.MatchId, actualScore, halfScore, goals, hit, altHit, review, ct);
             settled++;
         }
 
@@ -192,7 +209,7 @@ public sealed class DailyFollowService
     }
 
     /// <summary>判中：比分/半全场/总进球分别对照赛果。</summary>
-    static (bool Hit, string Score, string? Half, int? Goals) Judge(DailyFollowRow r, ReviewScore score)
+    static (bool Hit, bool? AltHit, string Score, string? Half, int? Goals) Judge(DailyFollowRow r, ReviewScore score)
     {
         var h = score.HomeScore!.Value;
         var a = score.AwayScore!.Value;
@@ -200,14 +217,26 @@ public sealed class DailyFollowService
         var half = score.HalfHomeScore is int hh && score.HalfAwayScore is int ha ? $"{hh}:{ha}" : null;
         var goals = h + a;
 
-        bool hit = r.PlayType switch
+        var hit = HitOf(r.PlayType, r.OptionCode, h, a, score.HalfHomeScore, score.HalfAwayScore);
+        // 双选第二注（2026-11-11）。没备选时返回 null，与「备选判为未中」区分开。
+        bool? altHit = string.IsNullOrWhiteSpace(r.AltPlayType) || string.IsNullOrWhiteSpace(r.AltOptionCode)
+            ? null
+            : HitOf(r.AltPlayType!, r.AltOptionCode!, h, a, score.HalfHomeScore, score.HalfAwayScore);
+        return (hit, altHit, scoreText, half, goals);
+    }
+
+    /// <summary>单注是否命中。主推与备选共用，避免两处判定口径漂移。</summary>
+    private static bool HitOf(string playType, string optionCode, int h, int a, int? hh, int? ha)
+    {
+        var scoreText = $"{h}:{a}";
+        var goals = h + a;
+        return playType switch
         {
-            JcPlayTypes.Bf => scoreText == r.OptionCode,
-            JcPlayTypes.Bq => HalfFullOf(hh: score.HalfHomeScore, ha: score.HalfAwayScore, h, a) == r.OptionCode,
-            JcPlayTypes.Jq => goals >= 7 ? r.OptionCode == "7" : r.OptionCode == goals.ToString(),
+            JcPlayTypes.Bf => scoreText == optionCode,
+            JcPlayTypes.Bq => HalfFullOf(hh, ha, h, a) == optionCode,
+            JcPlayTypes.Jq => goals >= 7 ? optionCode == "7" : optionCode == goals.ToString(),
             _ => false
         };
-        return (hit, scoreText, half, goals);
     }
 
     static string? HalfFullOf(int? hh, int? ha, int h, int a)

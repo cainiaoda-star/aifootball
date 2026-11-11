@@ -759,6 +759,10 @@ app.MapGet("/api/daily-follow", async (DailyFollowRepository repo, string? date,
     var changes = await repo.GetChangesAsync(d, ct);
     var settled = rows.Where(r => r.SettledAt is not null).ToList();
     var hit = settled.Count(r => r.Hit == true);
+    // 双选口径（2026-11-11）：主推与备选是两注，但页面一场一张卡，用户只关心「这场中没中」。
+    // 所以另报一个 anyHit，单注口径 hit 仍原样保留——两者混用会把「两注中一注」算成满分。
+    var altHit = settled.Count(r => r.AltHit == true);
+    var anyHit = settled.Count(r => r.Hit == true || r.AltHit == true);
     return Results.Ok(new
     {
         date = d.ToString("yyyy-MM-dd"),
@@ -766,6 +770,9 @@ app.MapGet("/api/daily-follow", async (DailyFollowRepository repo, string? date,
         settled = settled.Count,
         hit,
         hitRate = settled.Count > 0 ? Math.Round(100.0 * hit / settled.Count, 1) : 0,
+        altHit,
+        anyHit,
+        anyHitRate = settled.Count > 0 ? Math.Round(100.0 * anyHit / settled.Count, 1) : 0,
         items = rows,
         changes,
         skill

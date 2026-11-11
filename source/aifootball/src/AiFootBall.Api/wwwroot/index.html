@@ -6382,8 +6382,13 @@ function renderDailyFollow(d){
   const playBadge = pt => pt === 'BF' ? '比分' : pt === 'BQ' ? '半全场' : pt === 'JQ' ? '总进球' : pt;
   const playCls = pt => pt === 'BF' ? 'badge-jc' : pt === 'BQ' ? 'badge-bd' : 'badge-sfc';
 
+  // 双选（2026-11-11）后一场可能是两注，所以同时给两个口径：
+  //   单注命中 d.hit（主推）/ 双选命中 d.anyHit（主推或备选任一）。
+  // 只报 anyHit 会把「两注中一注」说得比实际好，两个都摆出来。
+  const dual = d.anyHit != null && d.anyHit !== d.hit
+    ? ` · 双选命中 ${d.anyHit} 场（${d.anyHitRate}%）` : '';
   let html = `<div class="page-head">${dateQueryHtml('follow', d.date, false)}
-    <span class="meta">共 ${d.total} 场 · 结算 ${d.settled} 场 · 命中 ${d.hit} 场 · ${d.hitRate}%</span></div>`;
+    <span class="meta">共 ${d.total} 场 · 结算 ${d.settled} 场 · 命中 ${d.hit} 场 · ${d.hitRate}%${dual}</span></div>`;
 
   // 每日技能总结（若有）
   if(d.skill){
@@ -6422,8 +6427,10 @@ function renderDailyFollow(d){
   const dayMap = {};
   for(const it of sorted){
     const settled = !!it.settledAt;
+    // 双选（2026-11-11）：主推或备选任一兑现，这张卡就算中；主推没中但备选中了单独标「备选中」。
     const hitTag = !settled ? '<span class="dim">待开赛</span>'
       : it.hit === true ? '<span class="hit-tag">命中</span>'
+      : it.altHit === true ? '<span class="hit-tag">备选中</span>'
       : '<span class="miss-tag">未中</span>';
     const major = it.majorChange ? `<div class="major-change" style="margin:4px 0;color:#c0392b;font-size:12px;font-weight:600">⚠ ${esc(it.majorChange)}</div>` : '';
     const water = it.oddsOpenHome != null || it.oddsLastHome != null
@@ -6448,6 +6455,14 @@ function renderDailyFollow(d){
       changeHtml += `</div>`;
     }
 
+    // 双选第二注（2026-11-11）。没有备选时整行不渲染，卡片与改前一致。
+    const altLine = (it.altOptionName || it.altOptionCode)
+      ? `<div style="font-size:13px;margin-top:4px;padding-left:8px;border-left:2px solid #e67e22">
+           ＋ 备选 ${esc(MOVE_PLAY_NAME[it.altPlayType] || it.altPlayType || '')} ${esc(it.altOptionName || it.altOptionCode)}
+           <span class="dim">@ ${it.altOdds ?? '—'} · 模型概率 ${it.altModelProbability ?? '—'}%</span>
+           ${it.altHit === true ? '<span class="hit-tag">命中</span>' : it.altHit === false ? '<span class="miss-tag">未中</span>' : ''}
+         </div>`
+      : '';
     const __card = `<div class="board">
       <div class="board-head">
         <span class="badge ${playCls(it.playType)}">${playBadge(it.playType)}</span>
@@ -6456,6 +6471,7 @@ function renderDailyFollow(d){
       </div>
       <div style="padding:10px 14px">
         <div style="font-size:15px;font-weight:600">${esc(it.optionName || it.optionCode)} <span class="dim" style="font-weight:400">@ ${it.odds ?? '—'} · 模型概率 ${it.modelProbability ?? '—'}%</span></div>
+        ${altLine}
         ${major}
         ${changeHtml}
         ${water}

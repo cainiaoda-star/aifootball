@@ -920,6 +920,17 @@ public static class MilkPickEngine
     /// </summary>
     public const int MaxPerMatchPerPlay = 2;
 
+    /// <summary>
+    /// 逐场跟进模式（<c>perMatch</c>）每场最多几注，2026-11-11 由 1 改 2（双选）。
+    /// </summary>
+    /// <remarks>
+    /// 双选能让榜面命中率接近翻倍（总进球 23%→45%、半全场 35%→54%，423 场实测），
+    /// 但**回报率不变**（.78~.83，仍亏 17~22%），因为两注的 EV 都是负的、加权平均仍是负的。
+    /// 这是把「单场押一个剧本」换成「同一场押两个剧本」，降低单注波动、提高中签频次；
+    /// 不是提高期望。跟单时本金要按两倍算，绝对亏损同比例放大。
+    /// </remarks>
+    public const int PerMatchMaxPicks = 2;
+
     /// <summary>票腿概率下限。2026-11-04 晚从 4% 提到 8%：既然目标是中奖率，就别让 5% 的比分腿进票。</summary>
     public const decimal MinTicketLegProbability = 8m;
 
@@ -1631,14 +1642,28 @@ public static class MilkPickEngine
         //      否则「按概率最高」会选出平胜(1-3)@3.1 这种低赔档，错过真正的大奶。
         if (perMatch)
         {
+            // 2026-11-11 改双选（用户要求，每场最多 <see cref="PerMatchMaxPicks"/> 注）。
+            //
+            // 依据（423 场竞彩实测，市场概率排序代理，非引擎自身样本）：
+            //   总进球  1 选 命中 23.2% 回报 .782 → 2 选 45.0% / .805 → 3 选 62.9% / .824（全押 8 档 .785）
+            //   半全场  1 选 命中 34.8% 回报 .827 → 2 选 53.7% / .815
+            // 也就是说双选**把命中率买上去**，回报率几乎不动（仍在返奖率 .797 附近），
+            // 本金翻倍、绝对亏损同步翻倍。这是分散化，不是提期望——别把 45% 当成"变准了"。
+            //
+            // 实现口径：**同玩法优先取满两档**（真正的双选）——BQ 有两档合格就出 BQ 两档，
+            // 只有一档才跨到下一个玩法。所以一场可能出现「BQ 胜胜 + BQ 平平」这种互斥对，
+            // 也可能「BQ 平平 + JQ 2 球」这种相关对，两种都不重复扣水。
             var perMatchPicks = capped
                 .GroupBy(x => x.MatchId)
-                .Select(g => g
-                    .OrderBy(x => Array.IndexOf(PlayOrder, x.PlayType))
-                    .ThenBy(x => HalfFullTier(x))
-                    .ThenByDescending(x => x.ModelProbability)
-                    .ThenByDescending(x => x.Ev)
-                    .First())
+                .SelectMany(g => g
+                    .GroupBy(x => x.PlayType)
+                    .OrderBy(pg => Array.IndexOf(PlayOrder, pg.Key))
+                    .SelectMany(pg => pg
+                        .OrderBy(x => HalfFullTier(x))
+                        .ThenByDescending(x => x.ModelProbability)
+                        .ThenByDescending(x => x.Ev)
+                        .Take(MaxPerMatchPerPlay))
+                    .Take(PerMatchMaxPicks))
                 .ToList();
 
             funnel.Final = perMatchPicks.Count;
@@ -1689,9 +1714,24 @@ public static class MilkPickEngine
         // 是因为那两个数字都建立在「模型准」这个已经被证伪的前提上（见 <see cref="MinBaselineEvRatio"/>）。
         //
         // 后果：榜面注数会变少（今天 10 → 6）。这是对的——原来的 10 注里有 4 注是重复敞口。
-        var seenMatch = new HashSet<long>();
+        //
+        // 2026-11-11 改双选（用户要求）：每场从 1 注放宽到 <see cref="PerMatchMaxPicks"/> 注。
+        // 取的是「先出现的两注」——<see cref="picks"/> 已按玩法优先级排好，所以这两注是
+        // 该场玩法优先级最高的两个档（BQ 有两档就是 BQ 双选，只有一档才跨到 JQ）。
+        //
+        // 上面那段「重复敞口」的担心依然成立，双选正是**主动**去买这份重复敞口：
+        // 换的是命中率翻倍（423 场实测 总进球 23%→45%、半全场 35%→54%），
+        // 代价是本金翻倍、绝对亏损翻倍，回报率仍卡在返奖率 .797 附近。
+        var perMatchTaken = new Dictionary<long, int>();
         picks = picks
-            .Where(x => x.MatchId is not long dedupId || seenMatch.Add(dedupId))
+            .Where(x =>
+            {
+                if (x.MatchId is not long dedupId) return true;
+                perMatchTaken.TryGetValue(dedupId, out var taken);
+                if (taken >= PerMatchMaxPicks) return false;
+                perMatchTaken[dedupId] = taken + 1;
+                return true;
+            })
             .ToList();
 
         // 5) 高赔反转单列（2026-11-07 加）。
@@ -2078,11 +2118,13 @@ public static class MilkPickEngine
     /// </summary>
     private static readonly Dictionary<string, int> MaxPerPlay = new()
     {
-        [JcPlayTypes.Bq] = 2,
+        // 2026-11-11 双选：2 → 4。每场最多两注（<see cref="PerMatchMaxPicks"/>），
+        // 这个全局名额必须比「场数 × 2」大，否则同一场的第二档会被全局切片切掉、双选形同虚设。
+        [JcPlayTypes.Bq] = 4,
         // 名义配额 1（历史值），实际恒为 0 注 —— 引擎无 NSPF 生成器，见上。
         [JcPlayTypes.Nspf] = 1,
-        // 2026-11-11 由 2 降 1：总进球 8 档里 2/3/4 球合计 61%，只取最热那档即可。
-        [JcPlayTypes.Jq] = 1,
+        // 2026-11-11 由 2 降 1（只取最热那档）；同日晚因双选回到 2，允许同场两档并出。
+        [JcPlayTypes.Jq] = 2,
         [JcPlayTypes.Bf] = 0
     };
 

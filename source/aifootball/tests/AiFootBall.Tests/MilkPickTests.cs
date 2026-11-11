@@ -113,9 +113,11 @@ public class MilkPickTests
     }
 
     [Fact]
-    public void SameMatch_OnlyOnePick_AcrossAllPlays()
+    public void SameMatch_AtMostTwoPicks_AcrossAllPlays_DistinctOptions()
     {
-        // 2026-11-08 起：同一场（不分玩法）最终只出一注。
+        // 2026-11-08 起：同一场（不分玩法）只出一注，防「三注互为子集、抽三遍水」。
+        // 2026-11-11 改双选（用户要求）：放宽到每场最多 2 注（MilkPickEngine.PerMatchMaxPicks），
+        // 但**必须是不同档**——不能把同一注按两个玩法各卖一次。这两条一起锁死。 
         // 改前只做了「同场同玩法最多 2 注」（MaxPerMatchPerPlay），跨玩法无约束，
         // 于是同一场可以同时挂比分 + 总进球 + 半全场，三注互为子集、抽三遍水。
         var model = Model();
@@ -137,8 +139,11 @@ public class MilkPickTests
 
         var picks = MilkPickEngine.Build(new[] { rec }, odds, model);
 
-        Assert.Single(picks);
+        Assert.InRange(picks.Count, 1, MilkPickEngine.PerMatchMaxPicks);
         Assert.Equal(1, picks.Select(p => p.MatchId).Distinct().Count());
+        // 双选允许同场两注，但不许两注是同一个 (玩法, 档位)——那是把一注卖两次。
+        Assert.Equal(picks.Count,
+            picks.Select(p => (p.PlayType, p.OptionCode)).Distinct().Count());
     }
 
     [Theory]
@@ -266,7 +271,7 @@ public class MilkPickTests
         // 玩法顺序固定（Bq → Jq → Bf），前端按此渲染，不能来回切。
         //
         // 2026-11-08 重写：原版用「同一场的比分 0:0 + 总进球 0 球 + 半全场 1-1」验证
-        // 「0:0 与总进球 0 球不重复」。现在同一场只留一注（见 SameMatch_OnlyOnePick_AcrossAllPlays），
+        // 「0:0 与总进球 0 球不重复」。现在同一场最多两注（见 SameMatch_AtMostTwoPicks_AcrossAllPlays_DistinctOptions），
         // 那条互斥已被更强的规则覆盖，所以改用三个不同场次验证排序本身。
         var model = Model();
         var recs = new[] { Rec(1, "周三001"), Rec(2, "周三002"), Rec(3, "周三003") };
