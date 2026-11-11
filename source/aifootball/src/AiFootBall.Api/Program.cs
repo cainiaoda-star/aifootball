@@ -1622,7 +1622,11 @@ static object ToMilkItem(MilkPick p) => new
     // 它天然和市场对得上，看不出背离。这个比值把市场那 30% 剔掉，还原模型的原判。
     // 前端必须打红标并把两个数字并排写（模型 X% / 市场 Y%），只说「风险」等于没说。
     modelVsMarketRatio = p.ModelVsMarketRatio,
-    modelDoubt = p.ModelDoubt
+    modelDoubt = p.ModelDoubt,
+    // 主胜赔率偏贵档（2026-11-11 加）：收盘欧赔主胜落在 [2.90,3.60) 且这注押全场主胜。
+    // 前端只能写「历史同档兑现率低于收盘价隐含」（−4.6 点/1.6σ），不能写「别买」——
+    // 证据够不上撤注，只够让人知情。撤注判据见 MilkPickEngine.HomePriceRichMin 的注释。
+    homePriceRich = p.HomePriceRich
 };
 
 // 大奶票投影（与票面台账同源的一张票）

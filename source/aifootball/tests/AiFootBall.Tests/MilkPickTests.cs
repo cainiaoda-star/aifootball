@@ -725,4 +725,108 @@ public class MilkPickTests
         Assert.Equal(2, picks.Count);
         Assert.Single(picks, x => x.ModelLowConfidence);
     }
+
+    // ── 主胜赔率偏贵档（2026-11-11）────────────────────────────────────────────
+    //
+    // 这条判据的全部依据是「收盘欧赔主胜落在 [2.90,3.60) 时，主胜兑现率低于收盘价隐含」
+    // （全球 289 场 −4.6 点 / 竞彩受注联赛 33 场 −7.9 点 / 竞彩实盘 8 场 0 命中）。
+    // 三个子集同向但都不到 2σ，所以只标不撤——下面这几条测试锁的就是「标的范围」和「不许变成否决」。
+
+    [Theory]
+    [InlineData(2.89, false)]   // 下沿外，差 0.01 也不许进
+    [InlineData(2.90, true)]    // 下沿闭区间
+    [InlineData(3.10, true)]    // 档内
+    [InlineData(3.59, true)]    // 上沿内侧
+    [InlineData(3.60, false)]   // 上沿开区间：3.60 属下一档，历史表现完全不同
+    [InlineData(4.10, false)]
+    [InlineData(1.85, false)]
+    public void InHomePriceRichBand_Boundaries(double euClose, bool expected)
+        => Assert.Equal(expected, MilkPickEngine.InHomePriceRichBand((decimal)euClose));
+
+    [Fact]
+    public void InHomePriceRichBand_NullIsNotRich()
+    {
+        // 没有欧赔数据 ≠ 偏贵。不知道就老实不标，宁可漏标不许乱标。
+        Assert.False(MilkPickEngine.InHomePriceRichBand(null));
+    }
+
+    /// <summary>
+    /// 半全场快照。3-3 用 4.2（项目里「胜胜锚点」的既有取值，见 SameMatch_CrossPlay_Contradiction_Removed）：
+    /// 6.0 时模型概率撑不到 EV 闸，会被整场筛掉，测出来的是「没注」而不是「没打标」。
+    /// 编码是「半场-全场」：3-3 全场胜、1-1 全场平、0-0 全场负。
+    /// </summary>
+    private static Dictionary<long, List<JcOddsHistoryPoint>> FullBqSnapshot(long mid)
+        => new()
+        {
+            [mid] = new()
+            {
+                Pt(mid, JcPlayTypes.Bq, "3-3", 4.2m),
+                Pt(mid, JcPlayTypes.Bq, "1-1", 6.0m),
+                Pt(mid, JcPlayTypes.Bq, "0-0", 6.0m),
+                Pt(mid, JcPlayTypes.Bq, "3-1", 13.0m),
+                Pt(mid, JcPlayTypes.Bq, "0-1", 13.0m),
+                Pt(mid, JcPlayTypes.Bq, "3-0", 27.0m),
+                Pt(mid, JcPlayTypes.Bq, "0-3", 30.0m),
+            }
+        };
+
+    [Fact]
+    public void HomePriceRich_MarksOnlyHomeWinDirection()
+    {
+        var model = Model();
+        var rec = Rec(1);
+        rec.HomeWinEuClose = 3.10m;   // 档内
+
+        var picks = MilkPickEngine.Build(new[] { rec }, FullBqSnapshot(1), model);
+
+        Assert.NotEmpty(picks);
+        var homeWin = picks.Where(p => p.PlayType == JcPlayTypes.Bq
+                                       && p.OptionCode.EndsWith("-3", StringComparison.Ordinal)).ToList();
+        Assert.NotEmpty(homeWin);
+        Assert.All(homeWin, p => Assert.True(p.HomePriceRich));
+
+        // 非主胜方向注一律不标：平局方向、客胜方向都不吃这条判据。
+        Assert.All(picks.Where(p => p.PlayType == JcPlayTypes.Bq
+                                    && !p.OptionCode.EndsWith("-3", StringComparison.Ordinal)),
+                   p => Assert.False(p.HomePriceRich));
+    }
+
+    [Fact]
+    public void HomePriceRich_OutOfBand_LeavesEverythingUnmarked()
+    {
+        var model = Model();
+
+        foreach (var eu in new decimal?[] { 2.50m, 3.60m, null })
+        {
+            var rec = Rec(1);
+            rec.HomeWinEuClose = eu;
+
+            var picks = MilkPickEngine.Build(new[] { rec }, FullBqSnapshot(1), model);
+            Assert.NotEmpty(picks);
+            Assert.All(picks, p => Assert.False(p.HomePriceRich));
+        }
+    }
+
+    [Fact]
+    public void HomePriceRich_NeverDropsPicks()
+    {
+        // ★ 只标不撤。这条测试是防回归的：判据证据只有 1.0~1.6σ，
+        // 一旦有人把 RemoveAll 加进去，注数会变，这里立刻炸。
+        var model = Model();
+
+        var inBand = Rec(1);
+        inBand.HomeWinEuClose = 3.10m;
+        var outBand = Rec(2, "周三002");
+        outBand.HomeWinEuClose = 2.20m;
+
+        var odds = FullBqSnapshot(1);
+        foreach (var kv in FullBqSnapshot(2)) odds[kv.Key] = kv.Value;
+
+        var picks = MilkPickEngine.Build(new[] { inBand, outBand }, odds, model);
+
+        // 两场都在，档内那场只是多了个标记。
+        Assert.Equal(2, picks.Select(p => p.MatchId).Distinct().Count());
+        Assert.Contains(picks, p => p.HomePriceRich);
+        Assert.Contains(picks, p => !p.HomePriceRich);
+    }
 }

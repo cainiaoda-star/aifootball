@@ -445,6 +445,11 @@
   .milk-merged .opt-lalert{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
     border:1px solid #c0392b;color:#fff;background:#c0392b;margin-left:4px;font-weight:700}
   .milk-merged .opt-lalert.mid{border-color:rgba(255,150,60,.55);color:#d2801f;background:rgba(255,150,60,.14);font-weight:600}
+  /* 主胜赔率偏贵档（2026-11-11）：收盘欧赔主胜 [2.90,3.60) 且这注押全场主胜。
+     三个独立子集同向（全球 289 场 −4.6 点、竞彩受注联赛 33 场 −7.9 点、竞彩实盘 8 场 0 命中），
+     但都不到 2σ —— 够标出来让人知情，不够撤注。所以用琥珀描边，不是红的实心。 */
+  .milk-merged .opt-rich{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
+    border:1px solid rgba(210,160,40,.55);color:#c8941f;background:rgba(210,160,40,.12);margin-left:4px;font-weight:600}
   .milk-merged .opt-void{font-size:11px;line-height:1.4;padding:1px 7px;border-radius:5px;white-space:nowrap;
     background:#3a1414;color:#ff8f8f;border:1px solid #a33;font-weight:700;margin-left:4px}
   .milk-merged tr.row-voided td{opacity:.55}
@@ -3481,12 +3486,21 @@ function renderMilkBoard(b, strongOnly){
           : (it.alertSeverity
               ? `<span class="opt-lalert${it.alertSeverity === 'high' ? '' : ' mid'}" title="${esc((it.alertReason || '') + '｜这是开赛前市场/资金对同一场次的转向信号，与这一注的方向相反。高危会自动撤注，关注只提示不撤。')}">临场告警·${it.alertSeverity === 'high' ? '高危' : '关注'}</span>`
               : '');
+        // 主胜赔率偏贵档（2026-11-11）：收盘欧赔主胜落在 2.90~3.60 且这注押全场主胜。
+        //
+        // 这条只能写成「知情提示」，不能写成「别买」：证据是三个独立子集同向但都不够 2σ
+        // （全球 2,903 场里该档 289 场，实际主胜 23.88% vs 收盘隐含 28.51%，−4.64 点/1.6σ；
+        //  竞彩受注联赛子集 33 场 −7.87 点/1.0σ；竞彩实盘子集 8 场 0 命中）。
+        // 所以它既没撤注、也不该被当成筛选条件——看到就当「这个价位历史上兑现得比报价差一截」。
+        const richTag = it.homePriceRich
+          ? `<span class="opt-rich" title="主胜赔率偏贵档：该场收盘欧赔主胜落在 2.90~3.60，这一注押的是全场主胜。\n\n历史上这个价位段的主胜兑现率低于收盘价隐含：全球 2,903 场里该档 289 场，实际 23.88% vs 隐含 28.51%（−4.6 个点）；竞彩受注联赛子集 33 场 −7.9 个点；竞彩实盘 8 场 0 命中。\n\n⚠ 三个子集方向一致，但没有一个够 2σ，且样本期只有 14 天。所以这只是一条提示，系统没有因此撤注，也不建议你把它当筛选条件——真要撤，得先攒出我们自己的已结算样本。">主胜赔率偏贵档</span>`
+          : '';
         return `<div class="opt-line${on ? ' mk-on' : ''}">
           <input type="checkbox" class="milk-pick" data-mk="${esc(mk)}" ${on ? 'checked' : ''} title="勾选这一注" />
           <b class="opt-name">${esc(it.option || '')}</b>
           <span class="opt-odds">@${Number(it.odds).toFixed(2)}</span>${oddsNowTag}
           <span class="opt-prob"${probTitle ? ` title="${esc(probTitle)}"` : ''}>${showProb.toFixed(1)}%</span>
-          <span class="opt-ev ${evCls}" title="${esc(evTitle)}">EV≈${showEv.toFixed(2)}</span>${alertTag}${overPayTag}${divTag}${divgTag}${halfDrawTag}${fatigueTag}${modelOnlyTag}${counterTag}${doubtTag}${lowConfTag}${baseOnlyTag}${evTopTag}
+          <span class="opt-ev ${evCls}" title="${esc(evTitle)}">EV≈${showEv.toFixed(2)}</span>${alertTag}${overPayTag}${divTag}${divgTag}${halfDrawTag}${fatigueTag}${modelOnlyTag}${counterTag}${doubtTag}${richTag}${lowConfTag}${baseOnlyTag}${evTopTag}
         </div>`;
       }).join('');
     };

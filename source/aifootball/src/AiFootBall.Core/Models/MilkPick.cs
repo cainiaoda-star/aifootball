@@ -233,6 +233,20 @@ public sealed class MilkPick
     public decimal? WaterRisePct { get; set; }
 
     /// <summary>
+    /// 「主胜赔率偏贵档」标记（2026-11-11 加，落库到 FbMilkPick.HomePriceRich）。
+    /// true = 该场收盘欧赔主胜落在 [2.90, 3.60) 且这一注押全场主胜。
+    ///
+    /// 依据（三个独立子集方向一致，但都不到 2σ，所以**只标不撤**）：
+    /// 全球 2,903 场 n=289 实际 23.88% vs 隐含 28.51%（−4.64 点，1.6σ）；
+    /// 竞彩受注联赛子集 361 场 n=33（−7.87 点，1.0σ）；竞彩实盘子集 105 场 n=8（0 命中）。
+    /// 常量与完整边界见 <see cref="Sources.MilkPickEngine.HomePriceRichMin"/>。
+    ///
+    /// 前端文案只能说「历史同档兑现率低于收盘价隐含」，不能说「别买」——
+    /// 我们的证据还撑不起后者。
+    /// </summary>
+    public bool HomePriceRich { get; set; }
+
+    /// <summary>
     /// 本场模型热门方（'3'=主队 / '0'=客队，2026-11-07 俱乐部画像落地）。null = 没有画像或没分出方向。
     /// </summary>
     public char? FavoriteSide { get; set; }

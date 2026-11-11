@@ -720,6 +720,40 @@ public static class MilkPickEngine
     /// </summary>
     public const decimal WaterRiseVetoPct = 12m;
 
+    /// <summary>
+    /// 「主胜赔率偏贵档」下沿/上沿（欧赔平均值口径，2026-11-11 加）。
+    ///
+    /// 判据：<see cref="MatchRecommendation.HomeWinEuClose"/> 落在 [2.90, 3.60) 且该注押全场主胜
+    /// → 打 <see cref="MilkPick.HomePriceRich"/> 标记（**只标不撤**）。
+    ///
+    /// ★ 证据强度必须写在这里，因为它决定了只能标不能撤：
+    ///   全球 2,903 场（FbOdds 均值，10-29~11-11）：该档 n=289，实际主胜 23.88% vs 收盘隐含 28.51%
+    ///   （−4.64 点，约 1.6σ）；
+    ///   竞彩历史受注过的联赛子集 361 场：n=33，21.21% vs 29.08%（−7.87 点，约 1.0σ）；
+    ///   竞彩 SPF 实盘子集 105 场：n=8，0 命中 vs 28.55%（−28.55 点，样本仅 8 场）。
+    ///   三个独立子集方向一致但**没有一个够 2σ**，所以这不是「回测出来的可撤注判据」，
+    ///   是「值得让用户看见的风险标签」。撤注需要等到已结算样本能把它推到 ≥2σ，
+    ///   否则就是拿 1.6σ 的猜测去撤用户本来该买的票——2026-11-08 那次撤注误伤（江原负负）的翻版。
+    ///
+    /// ★ 为什么用欧赔而不是竞彩价：两个口径在 2.4~3.0 段根本不是同一批比赛
+    ///   （竞彩 2.42-3.00 档 20 场实际主胜 40.00%，欧赔 2.90-3.60 档 289 场只有 23.88%），
+    ///   用竞彩价套这条档位会把结论用到错误的场上。竞彩价的 `JcToEuro=1.20` 只是查基线表用的粗换算，
+    ///   不能当口径转换器。
+    ///
+    /// ★★ 落差必须说清楚：**这条判据在当前产品上几乎是死代码。**
+    ///   落地当天（2026-11-11）回查全部 28 注历史大奶，落在本档的只有 3 注，而这 3 注
+    ///   （总进球 2 球 / 比分 0:1 / 半全场 0-0）**全都不是主胜方向**——大奶榜卖的 BQ/JQ 里，
+    ///   主胜方向档（3-3 / 1-3 / 0-3）对应的主胜欧赔历史上都在 2.90 以下。
+    ///   北单那边落在本档的 4 注全是「让胜」，那是让球后仍赢，跟 SPF 主胜不是一回事，不能套用。
+    ///   也就是说：本档位真正对应的是「势均力敌、主队略优」的场次，而这正是大奶榜从不押主胜的那类场。
+    ///   保留它的唯一理由是「将来若恢复 SPF 主胜玩法立刻可用」，以及每注留痕可以攒样本——
+    ///   **不是因为它现在能挡掉什么**。别在复盘时把它当成一条有效风控写进结论。
+    /// </summary>
+    public const decimal HomePriceRichMin = 2.90m;
+
+    /// <summary>「主胜赔率偏贵档」上沿（不含）。见 <see cref="HomePriceRichMin"/> 的证据与边界。</summary>
+    public const decimal HomePriceRichMax = 3.60m;
+
     /// <summary>平局倾向线（2026-11-07，模型概率口径 0-1）。模型全场平局概率 ≥ 30% 即视为
     /// 「平局剧本场」（全库基准约 26%，联赛平平档占 22.7%）——此时半全场「平平」提级。
     /// 这是引擎第一个平局方向哨兵：此前零封/杯热/画像全部围绕胜/负，平局没有任何信号。</summary>
@@ -805,6 +839,14 @@ public static class MilkPickEngine
     /// 这注是不是「全场主胜」方向（2026-11-07 加，技能11升水否决的撤注范围）：
     /// 半全场全场主胜档（X-3）+ 主胜比分档（H:A 且 H&gt;A，含「胜其它」）。总进球与平/客胜方向不算。
     /// </summary>
+    /// <summary>
+    /// 收盘欧赔主胜是否落在「历史高估档」[<see cref="HomePriceRichMin"/>, <see cref="HomePriceRichMax"/>)。
+    /// 上沿开区间：3.60 是分档边界，落进去的是下一档，历史表现完全不同，不能算进来。
+    /// null（没有欧赔数据）一律 false——「不知道」不等于「偏贵」，宁可漏标不许乱标。
+    /// </summary>
+    internal static bool InHomePriceRichBand(decimal? euClose)
+        => euClose is decimal v && v >= HomePriceRichMin && v < HomePriceRichMax;
+
     private static bool IsHomeWinDirection(MilkPick pick)
     {
         if (pick.PlayType == JcPlayTypes.Bq)
@@ -1164,6 +1206,11 @@ public static class MilkPickEngine
                 waterRisePct = Math.Round((wtr.Curr.Value - wtr.Open.Value) / wtr.Open.Value * 100m, 1);
             var waterVeto = waterRisePct >= WaterRiseVetoPct;
 
+            // 主胜赔率是否落在「历史高估档」（2026-11-11 加，见 HomePriceRichMin 的证据与边界）。
+            // 用欧赔收盘绝对值判定，不看竞彩价——两个口径在 2.4~3.0 段不是同一批比赛。
+            // 只标不撤：证据 1.0~1.6σ，不够撤注资格。
+            var homePriceRich = InHomePriceRichBand(r.HomeWinEuClose);
+
             // 每场的候选注先攒在这里，等方向闸判完再决定要不要进榜（2026-11-05）。
             // 直接往 result 里塞的话，闸就没法「整场撤下」——它只能事后从榜上摘，
             // 而事后摘会把名额让给别的场次，排序就乱了。
@@ -1382,6 +1429,7 @@ public static class MilkPickEngine
                     _ => true
                 };
                 p.WaterRisePct = waterRisePct;
+                p.HomePriceRich = homePriceRich && IsHomeWinDirection(p);
             }
 
             // 升水否决（2026-11-07，技能11）：主胜临场升水≥12% → 撤掉全部主胜方向注

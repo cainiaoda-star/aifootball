@@ -26,6 +26,10 @@ public sealed class MilkPickRepository
                   ALTER TABLE dbo.FbMilkPick ADD HalfDrawRefined bit NOT NULL CONSTRAINT DF_FbMilkPick_HalfDrawRefined DEFAULT(0);
               IF COL_LENGTH('dbo.FbMilkPick','FatigueTag') IS NULL
                   ALTER TABLE dbo.FbMilkPick ADD FatigueTag nvarchar(60) NULL;
+              -- 主胜赔率偏贵档标记（2026-11-11）：收盘欧赔主胜落在 [2.90,3.60) 且该注押主胜。
+              -- 只标不撤，证据强度见 MilkPickEngine.HomePriceRichMin 的注释。
+              IF COL_LENGTH('dbo.FbMilkPick','HomePriceRich') IS NULL
+                  ALTER TABLE dbo.FbMilkPick ADD HomePriceRich bit NOT NULL CONSTRAINT DF_FbMilkPick_HomePriceRich DEFAULT(0);
               -- 临场告警回写列（2026-11-08）：告警必须落在注单上，推荐页才看得见。
               IF COL_LENGTH('dbo.FbMilkPick','AlertSeverity') IS NULL
                   ALTER TABLE dbo.FbMilkPick ADD AlertSeverity nvarchar(8) NULL;
@@ -108,11 +112,12 @@ public sealed class MilkPickRepository
                     (PickDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
                      BaselineProbability, BaselineEv, ModelLowConfidence, ModelOverconfident,
-                     DivergenceTag, DivergenceNote, HalfDrawRefined, FatigueTag, ModelVsMarketRatio)
+                     DivergenceTag, DivergenceNote, HalfDrawRefined, FatigueTag, ModelVsMarketRatio,
+                     HomePriceRich)
                   SELECT @d, @mid, @no, @lg, @home, @away, @time,
                           @play, @code, @name, @odds, @prob, @ev, @counterHigh,
                           @basePct, @baseEv, @lowConf, @overConf,
-                          @divTag, @divNote, @halfDraw, @fatigue, @vsMarket
+                          @divTag, @divNote, @halfDraw, @fatigue, @vsMarket, @priceRich
                   WHERE NOT EXISTS (
                       SELECT 1 FROM dbo.FbMilkPick
                        WHERE PickDate=@d AND MatchId=@mid AND PlayType=@play AND OptionCode=@code)",
@@ -151,7 +156,11 @@ public sealed class MilkPickRepository
                     // 模型纯值 ÷ 市场隐含（2026-11-08）：唯一一个「模型自己怎么看这注」的数字。
                     // 不落库的话，「模型说这价高估」只能活在前端角标里，赛后无法复核
                     // 这条判据到底拦对了还是拦错了——而它恰恰是唯一一条没经过回测的闸。
-                    vsMarket = p.ModelVsMarketRatio
+                    vsMarket = p.ModelVsMarketRatio,
+                    // 主胜赔率偏贵档（2026-11-11）：只标不撤，落库是为了能攒出「这一档到底
+                    // 兑现率多少」的已结算样本——现在的证据来自市场侧回测，不是我们自己的注单，
+                    // 要升级成撤注判据必须先有自己样本。
+                    priceRich = p.HomePriceRich
                 }, tx, cancellationToken: ct));
         }
 
@@ -246,7 +255,7 @@ public sealed class MilkPickRepository
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
                      BaselineProbability, BaselineEv, ModelLowConfidence, ModelOverconfident,
                      DivergenceTag, DivergenceNote,
-                     HalfDrawRefined, FatigueTag, ModelVsMarketRatio,
+                     HalfDrawRefined, FatigueTag, ModelVsMarketRatio, HomePriceRich,
                      AlertSeverity, AlertReason, Voided, VoidedAt,
                      ActualScore, ActualHalfScore, ActualGoals, Hit, SettledAt
               FROM dbo.FbMilkPick WHERE PickDate=@d
@@ -1103,6 +1112,11 @@ public sealed class MilkPickRow
     /// 与 <see cref="MilkPick.ModelVsMarketRatio"/> 同口径，落库是为了赛后能复核这条闸。
     /// </summary>
     public decimal? ModelVsMarketRatio { get; set; }
+    /// <summary>
+    /// 主胜赔率偏贵档（2026-11-11 加）：收盘欧赔主胜 [2.90,3.60) 且该注押全场主胜。
+    /// 只标不撤，证据强度见 <c>MilkPickEngine.HomePriceRichMin</c>。
+    /// </summary>
+    public bool HomePriceRich { get; set; }
     /// <summary>
     /// 当前挂单价（2026-11-08 加）。不是数据库列——由 <c>GetDayAsync</c> 关联当天最新快照填入。
     ///

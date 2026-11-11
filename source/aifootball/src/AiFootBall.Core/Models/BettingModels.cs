@@ -99,6 +99,20 @@ public sealed class MatchRecommendation
 
     /// <summary>赔率初盘→终盘主胜变化</summary>
     public decimal? HomeOddsDelta { get; set; }
+
+    /// <summary>
+    /// 欧赔平均值（CompanyId=0）**收盘主胜绝对赔率**，2026-11-11 加。
+    ///
+    /// 为什么不能拿 <see cref="PickOdds"/> 或 spfHome 顶替：那两个是**竞彩**价，
+    /// 而「收盘欧赔档位」这条判据的证据全部来自欧赔口径。实测两者在 2.4~3.0 段
+    /// 根本不是同一批比赛（竞彩 2.42-3.00 档实际主胜 40%、欧赔 2.90-3.60 档只有 21%），
+    /// 用竞彩价代欧赔价会把这条判据用到错误的场上。
+    ///
+    /// 口径与 <see cref="HomeOddsDelta"/> 完全一致（同表同条件、IsOpening=0 的 MAX），
+    /// 所以两者可以互相印证；注意 MAX 取的是「即时盘里的最大主胜赔率」而非「最后一条」，
+    /// 这是项目既有口径，改它会同时移动一批历史判据，暂不动。
+    /// </summary>
+    public decimal? HomeWinEuClose { get; set; }
     /// <summary>赔率初盘→终盘平局变化（负=平赔被压）</summary>
     public decimal? DrawOddsDelta { get; set; }
     /// <summary>必发主胜投注占比</summary>

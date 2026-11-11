@@ -456,6 +456,12 @@ public sealed class RecommendationService
                 lateDelta, homePts, awayPts,
                 pnlH, pnlA);
 
+            // 收盘欧赔主胜绝对值（2026-11-11 加）。必须单独留一份：
+            // 上面的 spfHome 会被 `spfHome ??= eu.Home` 顶成欧赔，但竞彩板块本身已有竞彩价时
+            // 它就是竞彩价——同一个变量两种含义，不能拿来判「欧赔档位」。
+            if (c.MatchId is long euId && closingEu.TryGetValue(euId, out var euClose))
+                rec.HomeWinEuClose = euClose.Home;
+
             var changed = HitProbabilityService.Stamp(rec, hitSnap, spfHome, spfDraw, spfAway, ah.Open, ah.Close);
             if (changed)
             {
