@@ -20,6 +20,20 @@ public sealed class BdSpfPick
     public string? HandicapSideName { get; set; }
     /// <summary>让球盘该方向打出的概率（0~100，引擎算的）。</summary>
     public decimal? HandicapProbability { get; set; }
+
+    /// <summary>
+    /// 模型自己算的该让球方向概率（0~100）。
+    ///
+    /// ★ 2026-11-11 补落库。此前这个字段只在内存里算过、从没写进库，导致一个致命问题：
+    /// 推荐方向是按「市场概率最大的一档」选的（RecommendationSelection.ApplyJcHandicap），
+    /// 于是 HandicapProbability ≡ 市场概率，EV = p×odds ≡ 1/Σ(1/SP) ≈ 1.00 —— 数学上没有 edge，
+    /// 系统一直在抄庄家的答案。实测 55 注 avg(p×odds)=0.9834、北单在售 6 场 Σ(1/SP)=1.0009~1.0034。
+    /// 要和市场比出胜负，必须留下模型自己的概率。
+    /// </summary>
+    public decimal? HandicapModelProb { get; set; }
+
+    /// <summary>市场（盘口去水后）的该让球方向概率（0~100）。与 HandicapModelProb 配对才能回答「谁更准」。</summary>
+    public decimal? HandicapMarketProb { get; set; }
     /// <summary>让球盘 SP 赔率（**推荐生成那一刻**的价，开奖前会变，不是实购价）。</summary>
     public decimal? HandicapOdds { get; set; }
 

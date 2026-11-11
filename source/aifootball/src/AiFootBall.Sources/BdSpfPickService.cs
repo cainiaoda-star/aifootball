@@ -22,6 +22,22 @@ public sealed class BdSpfPickService
     /// <summary>串关正路最多取多少场（10串1 需要 10 场）。</summary>
     public const int MaxSerialPicks = 10;
 
+    /// <summary>
+    /// 同一联赛最多取几注（2026-11-10 崩盘后加）。
+    ///
+    /// 事故：11-10 期（26114）英锦赛 14 场 + 日联杯 4 场，按让球概率降序取前 10，
+    /// 结果 **10 注全部落在英锦赛**，日联杯一场没进。当晚 10 注只中 2，回报 0.669。
+    /// 前四天（11-06~09）单一联赛最多 2 注，回报分别 1.471 / 1.025 / 0.913 / 0.900。
+    ///
+    /// 5 天样本不足以证明"集中必亏"，但这是组合构建错误，不需要统计证明：
+    /// 把全部仓位押在同一项赛事上，等于把一个赛事的形态风险放大 10 倍。
+    /// 英锦赛恰恰是形态最特殊的赛事（538 场：平局仅 17.3%、场均 3.13 球，
+    /// 英甲英乙是 25~27% 平局、2.5 球），模型按全库进球分布算的概率在这里天然失真。
+    ///
+    /// 取 3 而不是 2：北单某些期只有 2~3 个联赛，卡太死会直接出不了票。
+    /// </summary>
+    public const int MaxPerLeague = 3;
+
     /// <summary>客胜盈亏指数（PnlIdxAway）深负阈值：钱净流入客胜，主胜热门被爆冷的前兆。</summary>
     public const decimal AwayPnlDeepNegative = -60m;
 
@@ -145,10 +161,15 @@ public sealed class BdSpfPickService
         steady = steady.Where(HasUsablePrice).ToList();
         reverse = reverse.Where(HasUsablePrice).ToList();
 
-        // 串关正路：按让球盘概率降序取前 10（宁缺毋滥），再按场次号升序展示。
-        steady = steady
-            .OrderByDescending(p => p.HandicapProbability ?? 0)
-            .Take(MaxSerialPicks)
+        // 串关正路：按让球盘概率降序取前 10（宁缺毋滥），同一联赛不超过 MaxPerLeague 注，
+        // 再按场次号升序展示。
+        //
+        // 为什么要显式循环而不是 Where 过滤：Where 带外部计数状态时，集合被二次枚举会重复计数
+        // （Take 之后还有 OrderBy，多次枚举是常态），计数一乱就可能放出超过上限的注。
+        steady = CapPerLeague(
+                steady.OrderByDescending(p => p.HandicapProbability ?? 0),
+                MaxSerialPicks,
+                MaxPerLeague)
             .OrderBy(p => MatchNoKey(p.MatchNo))
             .ToList();
 
@@ -173,6 +194,37 @@ public sealed class BdSpfPickService
     /// 门槛用 1.00：赔率 ≤1 在数学上不可能是有效报价，等同于没价。
     /// </summary>
     public static bool HasUsablePrice(BdSpfPick pick) => pick.HandicapOdds is > 1m;
+
+    /// <summary>
+    /// 按传入顺序取注，但同一联赛最多 <paramref name="perLeague"/> 注，总数不超过 <paramref name="max"/>。
+    /// 联赛名为空的注各自视为独立（不合并计数），避免脏数据被误判成同一联赛。
+    /// </summary>
+    public static List<BdSpfPick> CapPerLeague(IEnumerable<BdSpfPick> ordered, int max, int perLeague)
+    {
+        var used = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var kept = new List<BdSpfPick>(max);
+        var anon = 0;
+
+        foreach (var p in ordered)
+        {
+            if (kept.Count >= max) break;
+
+            var league = p.LeagueName;
+            if (string.IsNullOrWhiteSpace(league))
+            {
+                // 无联赛名 → 每注单独占一格，永远不会被上限卡住
+                used[$"#anon{anon++}"] = 1;
+                kept.Add(p);
+                continue;
+            }
+
+            used.TryGetValue(league, out var n);
+            if (n >= perLeague) continue;
+            used[league] = n + 1;
+            kept.Add(p);
+        }
+        return kept;
+    }
 
     /// <summary>场次号排序键：取末尾连续数字做数值排序（"周五001"→1、"25"→25），非数字兜底排最后。</summary>
     private static int MatchNoKey(string? matchNo)
@@ -224,6 +276,11 @@ public sealed class BdSpfPickService
         pick.HandicapProbability = Math.Round(drawProb, 1);
         pick.HandicapOdds = drawOdds;
         pick.Odds = drawOdds;
+        // 方向已被改成「让平」，而 r 里的这两个值存的是原方向（让胜）的概率。
+        // 直接留着就是错配数据 —— 实测今日 19 号场（谢周三 让-1 让平）就出现了
+        // MarketProb=34.0%（让胜的市场概率）挂在让平这一注上。两个都置空。
+        pick.HandicapModelProb = null;
+        pick.HandicapMarketProb = null;
         pick.Confidence = (int)Math.Round(drawProb);
         var hcp = r.Handicap is decimal h ? $"{h:0.##}" : "?";
         pick.Reason = $"让{hcp} 让平；赢球不赢盘（大热+深盘，只赢1球概率高）" +
@@ -253,6 +310,10 @@ public sealed class BdSpfPickService
             HandicapSide = hside,
             HandicapSideName = hsideName,
             HandicapProbability = r.HandicapProbability,
+            // 模型 vs 市场双留（2026-11-11）：方向是按市场概率选的，所以 HandicapProbability 就是市场值。
+            // 不把模型自己的概率也存下来，就永远无法回答「这套推荐到底比盘口准不准」。
+            HandicapModelProb = r.HandicapModelProbability,
+            HandicapMarketProb = r.HandicapMarketProbability,
             HandicapOdds = r.HandicapOdds,
             HitProbability = r.HitProbability,
             MarketProb = r.MarketProb,

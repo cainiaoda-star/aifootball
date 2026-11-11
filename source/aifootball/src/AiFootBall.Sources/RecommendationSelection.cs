@@ -144,6 +144,8 @@ public static class RecommendationSelection
         rec.HandicapOdds = null;
         rec.HandicapDrawProbability = null;
         rec.HandicapDrawOdds = null;
+        rec.HandicapModelProbability = null;
+        rec.HandicapMarketProbability = null;
         if (rec.Handicap is not decimal hcp) return;
         var p = HandicapMath.FromOdds(spfHome, spfDraw, spfAway, totalLine, hcp);
         if (p is null) return;
@@ -152,6 +154,23 @@ public static class RecommendationSelection
         var best = options.OrderByDescending(o => o.Item2).First();
         rec.RecHandicap = best.Item1;
         rec.HandicapProbability = Math.Round(best.Item2 * 100m, 1);
+
+        // 模型 vs 市场双留（2026-11-11 加）。方向是按模型概率挑的，所以要能事后回答
+        // 「模型挑的这一档，比盘口认为的概率高还是低」——这是唯一能验证 edge 的口径。
+        // 55 注实测：模型概率均值 48.5%、恰好这些档的市场隐含均值 51.4%，
+        // 模型系统性保守 2.9 个点，p×SP 期望因此只有 0.983（微亏）。
+        // 只有把两边都存下来，才谈得上「只出模型比市场乐观的注」。
+        rec.HandicapModelProbability = Math.Round(best.Item2 * 100m, 1);
+        if (HitRateMath.Devig(spWin, spDraw, spLoss) is { } mkt)
+        {
+            var mp = best.Item1 switch
+            {
+                '3' => mkt.Home,
+                '1' => mkt.Draw,
+                _ => mkt.Away
+            };
+            rec.HandicapMarketProbability = Math.Round(mp * 100m, 1);
+        }
         rec.HandicapOdds = best.Item3 is > 1 ? best.Item3 : null;
         // 让平档单留一份：BdSpfPick 的「赢球不赢盘→让平优先」规则要用（教训 1e/1l）。
         rec.HandicapDrawProbability = Math.Round(p.Value.Draw * 100m, 1);

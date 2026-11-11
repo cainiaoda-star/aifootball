@@ -39,6 +39,8 @@ public sealed class BdSpfPickRepository
                   HandicapSideName NVARCHAR(10) NULL,
                   HandicapProbability DECIMAL(6,2) NULL,    -- 让球方向打出概率 0~100
                   HandicapOdds  DECIMAL(8,2) NULL,          -- 让球盘 SP（推荐时点）
+                  HandicapModelProb  DECIMAL(6,2) NULL,     -- 模型对该方向的概率，2026-11-11 加
+                  HandicapMarketProb DECIMAL(6,2) NULL,     -- 市场（去水）对该方向的概率，同上
                   FinalOdds     DECIMAL(8,2) NULL,          -- 开奖 SP（终版价，只有命中的注有），2026-11-10 加
                   FinalAt       DATETIME2(0) NULL,
                   FinalSource   NVARCHAR(12) NULL,
@@ -76,6 +78,10 @@ public sealed class BdSpfPickRepository
                   ALTER TABLE dbo.FbBdSpfPick ADD HandicapProbability DECIMAL(6,2) NULL;
                 IF COL_LENGTH('dbo.FbBdSpfPick','HandicapOdds') IS NULL
                   ALTER TABLE dbo.FbBdSpfPick ADD HandicapOdds DECIMAL(8,2) NULL;
+                IF COL_LENGTH('dbo.FbBdSpfPick','HandicapModelProb') IS NULL
+                  ALTER TABLE dbo.FbBdSpfPick ADD HandicapModelProb DECIMAL(6,2) NULL;
+                IF COL_LENGTH('dbo.FbBdSpfPick','HandicapMarketProb') IS NULL
+                  ALTER TABLE dbo.FbBdSpfPick ADD HandicapMarketProb DECIMAL(6,2) NULL;
               END;", cancellationToken: ct));
 
         // 老表兜底：终版价三列（2026-11-10 加，逐列判断，幂等）。
@@ -111,11 +117,13 @@ public sealed class BdSpfPickRepository
                 @"INSERT INTO dbo.FbBdSpfPick
                     (PickDate, Kind, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      Side, SideName, Odds, Handicap, HandicapSide, HandicapSideName,
-                     HandicapProbability, HandicapOdds, FinalOdds, FinalAt, FinalSource, HitProbability, MarketProb,
+                     HandicapProbability, HandicapOdds, HandicapModelProb, HandicapMarketProb,
+                     FinalOdds, FinalAt, FinalSource, HitProbability, MarketProb,
                      RatioHome, RatioAway, PnlIdxHome, PnlIdxAway, Reason, Confidence)
                   VALUES (@d, @kind, @mid, @no, @lg, @home, @away, @time,
                           @side, @sideName, @odds, @hcp, @hside, @hsideName,
-                          @hprob, @hodds, @fo, @fa, @fs, @hit, @market,
+                          @hprob, @hodds, @hmodel, @hmarket,
+                          @fo, @fa, @fs, @hit, @market,
                           @rh, @ra, @ph, @pa, @reason, @conf)",
                 new
                 {
@@ -124,6 +132,9 @@ public sealed class BdSpfPickRepository
                     side = p.Side.ToString(), sideName = p.SideName, odds = p.Odds,
                     hcp = p.Handicap, hside = p.HandicapSide?.ToString(), hsideName = p.HandicapSideName,
                     hprob = p.HandicapProbability, hodds = p.HandicapOdds,
+                    // 2026-11-11 加：模型概率此前只在内存里算过、从没落库，
+                    // 于是「这套推荐比盘口准不准」永远无法回答（方向本身就是按市场概率选的）。
+                    hmodel = p.HandicapModelProb, hmarket = p.HandicapMarketProb,
                     // 2026-11-10 修：这三列在列名里、VALUES 里却没有，Dapper 直接把
                     // 「列的数目大于 VALUES 子句」抛回来，北单从 20:41 起一条都写不进库。
                     // 加终版价三列时只改了 INSERT 列表，没同步参数 —— 这种错编译期抓不到。
