@@ -55,5 +55,5 @@
 3. Chrome 11-11 12:00 恢复，留意 `LastError` 与配额。
 4. RCSI=0 致 TIMEOUT，凌晨 4 点后开 `READ_COMMITTED_SNAPSHOT`。
 5. 整点 `chore: 自动同步`→**提交前先看 `git log`**
-6. ★ **`GetClosingEuAsync` 不限 `CapturedAt`**（`MAX(CASE WHEN IsOpening=0 THEN HomeWin END)`）：开赛后重算会把**滚球价当收盘价**，`HomeWinEuClose` 同路受影响。修法加 `AND (m.MatchTime IS NULL OR o.CapturedAt <= m.MatchTime)`。未修。
-7. `SampleOddsAsync` 「无待采样赛事」记 SUCCESS → 健康度看不出「作业活着但一场没采」。
+6. ★★ **`GetClosingEuAsync` 已修（11-11）**：`FbOdds` 是原地更新的当前盘，实测 72% 场次 `CapturedAt` 晚于开赛 → 原来把滚球价当收盘。现在三级：当前行够早→用；开赛后→取 `FbOddsHistory` 开赛前最后点；都没有→NULL。**`GetEuOddsDeltaAsync` 同源未修**（它喂 `HomeOddsDelta`），改前先量化。
+7. SyncLog 现在三态 SUCCESS/FAILED/**IDLE**（采样零场次）。任何「判失败」的查询必须排除 IDLE；`milk-check` 4c 已同步并单列近 3 小时空跑次数。
