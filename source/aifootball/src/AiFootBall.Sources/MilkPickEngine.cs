@@ -188,44 +188,67 @@ public static class MilkPickEngine
     public const decimal MarketStrongReverseGap = 20m;
 
     /// <summary>
-    /// 市场权重：最终使用的概率 = (1 - 本值) × 模型概率 + 本值 × 盘口去水隐含概率。
+    /// 市场权重：最终使用的概率 = (1 - w) × 模型概率 + w × 盘口去水隐含概率。
     ///
-    /// 为什么要掺盘口（2026-11-04 晚加）：当天实测到模型和盘口直接对着干——
-    /// 费内巴切 vs 利物浦，模型给「胜胜」17.8%（等于说主胜至少 21%），
-    /// 而盘口把这场的客胜比分全压在 6.7~9.5 倍（客胜合计约 40%、主胜不到 15%）。
-    /// 模型是联赛历史拟合出来的，主队主场优势被反复高估；盘口是几百万人真金白银压出来的。
-    /// 目标是中奖率，那就该按「谁更准」分配权重，而不是无条件相信自己的模型。
+    /// ★ 分配原则（2026-11-11 用户拍板，**别搞反**）：
+    ///   市场越有效、去水越可靠 ⇒ w 越高；去水越不可靠 ⇒ w 越低，把权重还给模型。
     ///
-    /// 0.6 → 0.3（2026-11-05 调，依据是大奶盘回测：模型 vs 市场的完整对比）——
-    /// 注意：这只针对大奶盘（比分/总进球/半全场）。方向盘（胜平负）上模型明确打不过市场
-    /// （北单 1.8 万场标尺：模型 Brier 0.667 vs 市场 0.642），所以方向仍应信市场。
-    /// 但大奶盘是另一回事，回测（约 500 场竞彩收盘赔率）三个玩法模型全面压过市场：
-    ///   比分   Top-1 8.2% vs 6.4%，Brier 0.9474 vs 0.9833（模型更准）
-    ///   总进球 Top-1 24.4% vs 19.7%，Brier 0.8564 vs 0.8504（基本持平）
-    ///   半全场 Top-1 34.5% vs 22.7%，Brier 0.8010 vs 0.8672（模型显著更准）
-    /// 结论：小众盘上盘口没有碾压性优势，反而模型排序更优。所以权重从「市场 60%」倒向
-    /// 「模型 70%」。样本约 500 场仍偏小，0.3 是「信模型、但不全信」的折中，不是 0。
-    /// 等样本攒到 3000+ 场再决定要不要继续往模型倾斜。
+    ///   判据不是「这个玩法模型准不准」，而是「这个玩法的市场隐含概率本身能不能信」：
+    ///   · 胜平负 3 档、返奖率 0.878：Σ1/赔率 只被 3 个数摊，单档误差不会互相放大，
+    ///     去水最稳 ⇒ w 该最高，方向直接信市场。
+    ///   · 半全场 9 档 / 总进球 8 档、返奖率 0.797：中等。
+    ///   · 比分 31 档、返奖率只有 0.710：档位越多，比例去水对长尾冷门的系统性高估越重
+    ///     （每档 1/odds 单独除同一个水位，长尾的微小误差会被累加成十几点），
+    ///     且 31 档要求全齐才算「快照完整」，缺一档就整场回退纯模型。
+    ///     ⇒ 去水最不准，w 该**最低**，模型权重最高。
     ///
-    /// ★★★ 上面那段回测在 2026-11-11 被重跑推翻了 ★★★
-    /// 重跑工具 `exotic-bq`（<c>dotnet run --project src/AiFootBall.Backtest -c Release -- exotic-bq</c>），
-    /// 540 场竞彩半全场收盘价（开赛前最后一个快照，已滤掉 ≤1.01 的占位赔率 13 场）：
-    /// · 纯模型 Brier **0.8255**，纯盘口 **0.7964** —— **盘口更好 0.0291**，不是模型更好；
-    /// · 现状 0.3 → 0.8120；0.5 → 0.8053；0.7 → 0.8004；1.0 → 0.7964（单调，越高越好）；
-    /// · 去水后返奖率倒推 80.5%，与官方 79.7% 吻合 ⇒ 去水口径本身没问题，
-    ///   当年那个「市场 0.8672」大概率是没过滤占位赔率（1.00 会被算成 100%）或去水没归一。
-    /// 逐档看模型也有系统性偏差：负负高估 3.0 点、胜负低估 2.1 点、平胜低估 1.5 点。
+    ///   ★ 2026-11-11 我自己把这条写反过：把「比分去水不可靠」当成了「比分更该依赖市场」，
+    ///   那等于在最嘈杂的隐含概率上加最重的砝码。用户当场指出。留此一行防复发。
     ///
-    /// 所以「市场权重 0.3」这个方向**是错的**，与方向盘（SPF）的结论一致
-    /// （3558 场：模型 0.6030 vs 市场 0.5821，同样是市场更好，工具 `weight-probe`）。
+    /// Brier 证据（只能证明「市场比模型准」，不能用来定 w）：
+    ///   · `exotic-bq` 540 场竞彩半全场收盘价（已滤 ≤1.01 占位赔率 13 场）：
+    ///     纯模型 0.8255 / 纯盘口 0.7964 / 0.3→0.8120 / 0.5→0.8053 / 0.7→0.8004，单调向好。
+    ///     去水后返奖率倒推 80.5%（官方 79.7%），说明口径干净。
+    ///   · `weight-probe` 3558 场胜平负：模型 0.6030 vs 市场 0.5821，同向。
+    ///   两批场次的量纲不同（三向 vs 九档），不能互相换算，只能各自看方向。
     ///
-    /// 但**没有直接改成 1.0**，原因不在统计而在产品：
-    /// 1.0 等于照抄盘口，EV 恒等于返奖率（0.797），引擎再也发不出注——
-    /// Brier 单调到 1.0 只说明「模型的预测精度是负担」，不说明「该把模型删掉」。
-    /// 这个常数该定在哪，得由「出票量 × 实际回报」决定，不能由 Brier 决定。
-    /// 改它之前先跑一次 `save-recommendations` 看注数掉多少（会直接影响当晚榜面，停售后动）。
+    /// 为什么不能直接取 1.0：w=1 等于照抄盘口，EV 恒等于返奖率，引擎再也发不出注。
+    /// Brier 单调只说明「模型的预测精度是负担」，不说明「该把模型删掉」。
+    ///
+    /// ★ 下面的数值是**占位值，全部等于旧的 0.3**，目的是让本次重构不改夜间榜面。
+    ///   真正的取值由 `weight-replay` 按「总投入 / 总返还 / ROI」定（Brier 定不了这个数），
+    ///   且必须按玩法各跑各的，不许共用一个全局值。
     /// </summary>
-    public const decimal MarketWeight = 0.3m;
+    public const decimal MarketWeightSpf = 0.3m;
+
+    /// <inheritdoc cref="MarketWeightSpf"/>
+    public const decimal MarketWeightNspf = 0.3m;
+
+    /// <inheritdoc cref="MarketWeightSpf"/>
+    public const decimal MarketWeightBq = 0.3m;
+
+    /// <inheritdoc cref="MarketWeightSpf"/>
+    public const decimal MarketWeightJq = 0.3m;
+
+    /// <inheritdoc cref="MarketWeightSpf"/>
+    public const decimal MarketWeightBf = 0.3m;
+
+    /// <summary>未知玩法的兜底权重。取中等值，不要取最激进的。</summary>
+    public const decimal MarketWeightDefault = 0.3m;
+
+    /// <summary>
+    /// 按玩法取市场权重。**所有掺盘口的地方都必须走这里**，不许再出现裸的单一常数——
+    /// 单一常数就是「比分和市场一个权重」，而这恰恰是 2026-11-11 要改掉的东西。
+    /// </summary>
+    public static decimal MarketWeightFor(string? playType) => playType switch
+    {
+        JcPlayTypes.Spf => MarketWeightSpf,
+        JcPlayTypes.Nspf => MarketWeightNspf,
+        JcPlayTypes.Bq => MarketWeightBq,
+        JcPlayTypes.Jq => MarketWeightJq,
+        JcPlayTypes.Bf => MarketWeightBf,
+        _ => MarketWeightDefault
+    };
 
     /// <summary>一个玩法所有选项的 (1/赔率) 之和（观测值）。只用于诊断快照完整性，不参与去水。</summary>
     public static decimal ObservedOverRound(IEnumerable<JcOddsHistoryPoint> points, string playType)
@@ -296,7 +319,74 @@ public static class MilkPickEngine
     }
 
     /// <summary>
-    /// 真实期望下限（2026-11-08 加）：按联赛/全库实测概率算出的 EV 不得低于本玩法返奖率的 85%。
+    /// **价值闸**的门槛（2026-11-11 加）：混合概率算出的 EV 至少是本玩法返奖率的多少倍。
+    ///
+    /// 为什么价值闸必须读「混合概率」而不是纯模型：混合概率才是我们真正相信的那个数。
+    /// 如果抬高了市场权重、却仍拿纯模型去判「值不值得买」，等于把刚刚被市场压低的分歧
+    /// 又放大回去——分歧越大越容易过线，结果是越靠近市场反而出注越多、越赌。
+    ///
+    /// ★ 这里有一条必须知道代数关系，否则会以为「抬 w 自动就收紧」：
+    ///     EV(w) = (1-w)·纯模型·赔率 + w·返奖率
+    ///     过线 ⇔ 纯模型·赔率 ≥ 返奖率·(k-w)/(1-w)
+    ///   · k = 1.00 时右式恒等于返奖率，**与 w 无关**——闸不动，注数不动；
+    ///   · k &gt; 1.00 时右式随 w 单调上升，抬 w 才会真的收紧（k=1.05 时大约是 0.854→0.930）。
+    ///   所以「混合更靠近市场、能过线的注变少」这个说法只在 k &gt; 1 时成立，
+    ///   不是 w 自己带来的。用户 2026-11-11 的判断在这个前提下是对的。
+    ///
+    /// ★ 1.05 是**占位值，没有回测支撑**。它与 <see cref="EvCapOverPaybackRatio"/> 数值相同
+    /// 是巧合也是隐患：那道是「超过返奖率×1.05 判模型高估」的标记上限，这道是买入下限，
+    /// 两者夹在一起会把可选区间压得极窄。真正的 k 由 `weight-replay` 按 ROI 定，
+    /// 定下来之后必须回头处理这个撞车。
+    /// </summary>
+    public const decimal MinEvPaybackRatio = 1.05m;
+
+    /// <summary>
+    /// **安全闸**（2026-11-11 从价值闸里拆出来）：纯模型概率不得低于该玩法的概率下限。
+    ///
+    /// 职责只有一个——「模型和市场差太远就先别信」，防止拿模型的系统性偏差去跟整个市场对赌。
+    /// 所以它必须读 <see cref="MilkPick.ModelPctPure"/>：拿混合值去比市场推导出来的下限，
+    /// 分子分母都含市场，w 越高两边越像，闸门自动松掉，而且没有任何一行代码会提示。
+    /// 这是 2026-11-11 拆闸的直接原因。
+    /// </summary>
+    internal static bool PassesSafetyGate(MilkPick p)
+        => p.ModelPctPure >= ProbabilityFloorFor(p);
+
+    /// <summary>
+    /// **价值闸**：混合概率 × 赔率（即 <see cref="MilkPick.Ev"/>）达到本玩法返奖率的
+    /// <see cref="MinEvPaybackRatio"/> 倍才有买入价值。见该常量的代数说明。
+    /// </summary>
+    internal static bool PassesValueGate(MilkPick p)
+        => p.Ev >= Payout(p.PlayType) * MinEvPaybackRatio;
+
+    /// <summary>
+    /// 回放/回测用：不构造 <see cref="MilkPick"/> 也能判这两道闸。
+    ///
+    /// 为什么要有它：回测台要 sweep 市场权重，如果自己抄一份门槛公式，迟早和运行时漂移
+    /// （本项目已经因为「两处各写一份常数」栽过，出票闸与撤注闸那次就是这样互相打架的）。
+    /// 这里的三行必须与 <see cref="PassesSafetyGate"/> / <see cref="PassesValueGate"/> 同源：
+    /// 同一个 <see cref="ProbabilityFloor"/>、同一个 <see cref="ReverseFloor"/>、
+    /// 同一个 <see cref="MinEvPaybackRatio"/>、同一个 <see cref="Payout"/>。
+    /// </summary>
+    /// <param name="purePct">纯模型概率（百分数，掺盘口之前）</param>
+    /// <param name="blendedPct">混合概率（百分数，掺盘口之后）</param>
+    public static (bool Safety, bool Value) JudgeGates(
+        decimal purePct, decimal blendedPct, decimal odds, string playType, string? optionCode)
+    {
+        var isReverse = playType == JcPlayTypes.Bq
+                        && optionCode is { Length: 3 } && optionCode[1] == '-'
+                        && optionCode[0] != optionCode[2];
+        var floor = isReverse ? ReverseFloor(odds) : ProbabilityFloor(playType);
+        // EV 的舍入口径与生产一致：先把概率圆到 2 位，再算 EV 圆到 3 位。
+        var ev = Math.Round(Math.Round(blendedPct, 2) / 100m * odds, 3);
+        return (purePct >= floor, ev >= Payout(playType) * MinEvPaybackRatio);
+    }
+
+    /// <summary>
+    /// 实证闸（2026-11-08 加）：按联赛/全库实测概率算出的 EV 不得低于本玩法返奖率的 85%。
+    ///
+    /// ★ 这道闸读的是 <see cref="MilkPick.BaselineEv"/>（联赛分层实证基线），
+    ///   既不是纯模型也不是混合值，所以它**对市场权重 w 完全不敏感**——这是设计如此，
+    ///   不是漏改：它的职责是「别买一个连历史频率都不支持的价」，与「信模型多少」无关。
     ///
     /// 【为什么加】榜面上的 <see cref="MilkPick.Ev"/> = 模型概率 × 赔率，是**模型自证**。
     /// 而市场把所有注的期望压在返奖率上（半全场/总进球 0.797、比分 0.710），
@@ -450,14 +540,18 @@ public static class MilkPickEngine
     /// <summary>
     /// 把模型概率（0-1 比例）和盘口隐含概率加权。overRound 必须是该玩法的官方固定水位
     /// （见 <see cref="StandardOverRound"/>），不要传本场快照的观测值——盘口没开全时会失真。
+    ///
+    /// 权重按玩法取 <see cref="MarketWeightFor"/>：比分 31 档、去水最不可靠，权重最低；
+    /// 胜平负 3 档、去水最稳，权重最高。**不要在这里写死一个数**。
     /// </summary>
-    private static decimal Blend(decimal modelFraction, decimal odds, decimal overRound)
+    private static decimal Blend(decimal modelFraction, decimal odds, decimal overRound, string? playType)
     {
         if (odds <= 1m) return modelFraction;
         if (overRound <= 0m) return modelFraction;
         var marketFraction = 1m / odds / overRound;
         if (marketFraction <= 0m) return modelFraction;
-        return (1m - MarketWeight) * modelFraction + MarketWeight * marketFraction;
+        var w = MarketWeightFor(playType);
+        return (1m - w) * modelFraction + w * marketFraction;
     }
 
     /// <summary>
@@ -679,15 +773,23 @@ public static class MilkPickEngine
 
     /// <summary>
     /// 从落库口径（Blend 之后的百分数）反推纯模型百分数。Blend 是线性的，可以精确反解：
-    ///     blended = (1 - w)·model + w·market，w = <see cref="MarketWeight"/>
+    ///     blended = (1 - w)·model + w·market，w = <see cref="MarketWeightFor"/>
     ///     → model = (blended - w·market) / (1 - w)
     /// 快照不全（overRound ≤ 0）时 Blend 直接返回模型值，这里也原样返回，不乱推。
+    ///
+    /// ★ 只用于**读历史行**和回测（那时没存纯模型值）。运行时的闸门一律读
+    /// <see cref="MilkPick.ModelPctPure"/>，不要反解：
+    /// 1) w→1 时分母 (1-w)→0，反解会把舍入误差放大成噪声；
+    /// 2) 历史行的 w 可能不是当前 w（11-05 从 0.6 改成 0.3），反解出的是「当时的纯模型值」，
+    ///    拿它当「现在的模型判断」是错的。
     /// </summary>
-    public static decimal ModelPctBeforeBlend(decimal blendedPct, decimal odds, decimal overRound)
+    public static decimal ModelPctBeforeBlend(decimal blendedPct, decimal odds, decimal overRound,
+                                             string? playType = null)
     {
         if (odds <= 1m || overRound <= 0m) return blendedPct;
+        var w = MarketWeightFor(playType);
         var marketPct = 100m / odds / overRound;
-        var pure = (blendedPct - MarketWeight * marketPct) / (1m - MarketWeight);
+        var pure = (blendedPct - w * marketPct) / (1m - w);
         return pure < 0m ? 0m : pure;
     }
 
@@ -1271,7 +1373,7 @@ public static class MilkPickEngine
                     // 停发比分期间不建候选，但上面的 listed[] 累计与下面的 others 收集必须保留：
                     // 它们只影响「胜其它/平其它/负其它」的余量计算，跳掉会让概率凭空变好看。
                     if (!EnableScorePicks) continue;
-                    matchPicks.Add(Option(pt, r, (double)Blend((decimal)p.Value, pt.Odds, bfOver)));
+                    matchPicks.Add(Blended(Option(pt, r), (decimal)p.Value, pt.Odds, bfOver, pt.PlayType));
                 }
                 else
                 {
@@ -1284,7 +1386,7 @@ public static class MilkPickEngine
                 if (p <= 0 || pt.Odds < MinOptionOdds) continue;
                 if (pt.Odds > MaxScoreOdds) continue;
                 if (!EnableScorePicks) continue;
-                matchPicks.Add(WithProbability(Option(pt, r), Blend(p, pt.Odds, bfOver)));
+                matchPicks.Add(Blended(Option(pt, r), p, pt.Odds, bfOver, pt.PlayType));
             }
 
             // 总进球：对角线合计，7+ 取余量
@@ -1298,7 +1400,7 @@ public static class MilkPickEngine
                     ? Math.Max(0m, 1m - (decimal)Enumerable.Range(0, 7).Sum(k => GoalsProbability(grid, mass, k)))
                     : (decimal)GoalsProbability(grid, mass, n);
                 if (p <= 0) continue;
-                matchPicks.Add(WithProbability(Option(pt, r), Blend(p, pt.Odds, jqOver)));
+                matchPicks.Add(Blended(Option(pt, r), p, pt.Odds, jqOver, pt.PlayType));
             }
 
             // 半全场：上半场（λ×0.45）+ 下半场（λ×0.55）两段泊松合并，得到「半场结果 × 全场结果」的联合分布。
@@ -1379,6 +1481,8 @@ public static class MilkPickEngine
                         if (refinedPct <= 0) continue;
                         bqPick.HalfDrawRefined = true;
                         matchPicks.Add(WithProbability(bqPick, refinedPct / 100m));
+                        // 这一档不掺盘口（见上面的理由），所以纯模型值就是它本身。
+                        bqPick.ModelPctPure = bqPick.ModelProbability;
                         continue;
                     }
 
@@ -1387,26 +1491,22 @@ public static class MilkPickEngine
                     // 半全场的联合概率会把 λ 的偏差放大，不设这道闸，模型估偏的场次会靠虚高 EV 霸榜。
                     // 注意量纲：Blend 返回 0~1 的小数（ModelProbability 落库时才 ×100），
                     // 市场隐含也必须是小数，写成 100/odds/over 会恒假（当日已栽过一次）。
-                    var blended = Blend((decimal)p, pt.Odds, bqOver);
+                    var blended = Blend((decimal)p, pt.Odds, bqOver, pt.PlayType);
                     if (bqOver > 0 && blended > 1m / pt.Odds / bqOver * BqModelOverMarketMax) continue;
                     // 模型纯值 ÷ 市场隐含（2026-11-08 加，落库 FbMilkPick.ModelVsMarketRatio）。
                     //
                     // 这是全榜唯一一个「模型自己怎么看这注」的数字。落库的 ModelProbability 是
-                    // Blend 后的混合值，掺了 30% 市场——用它判断「模型信不信」等于让市场自证。
-                    // 这里反过来把市场那 30% 剔掉，还原模型的原判：
-                    //   blended = 0.7·model + 0.3·market  →  model / market = 下式
-                    // < 0.70 即模型认为市场高估 30% 以上，前端打红标（主榜）/ 单列直接否决。
+                    // Blend 后的混合值，掺了市场——用它判断「模型信不信」等于让市场自证。
+                    // 2026-11-11 改：**直接用手里这个 p**，不再从 blended 反解。
+                    // 两者在精确算术下恒等（blended = (1-w)p + w·market ⇒ 反解回 p），
+                    // 反解只是白搭一道 w→1 时分母趋零的数值风险。
                     if (bqOver > 0m)
                     {
                         var marketFrac = 1m / pt.Odds / bqOver;
                         if (marketFrac > 0m)
-                        {
-                            var pureFrac = (blended - MarketWeight * marketFrac) / (1m - MarketWeight);
-                            bqPick.ModelVsMarketRatio = decimal.Round(
-                                (pureFrac < 0m ? 0m : pureFrac) / marketFrac, 4);
-                        }
+                            bqPick.ModelVsMarketRatio = decimal.Round((decimal)p / marketFrac, 4);
                     }
-                    matchPicks.Add(WithProbability(bqPick, blended));
+                    matchPicks.Add(Blended(bqPick, (decimal)p, pt.Odds, bqOver, pt.PlayType));
                 }
 
                 // 让平出注（2026-11-07，技能10落地）：NSPF 让平是全引擎此前从不出注的最大价值档。
@@ -1429,7 +1529,7 @@ public static class MilkPickEngine
                         var nd = Option(nspfDraw, r);
                         nd.HandicapDrawSetup = true;
                         nd.DrawSetup = drawSetup;
-                        matchPicks.Add(WithProbability(nd, Blend((decimal)hcpDrawP, nspfDraw.Odds, nspfOver)));
+                        matchPicks.Add(Blended(nd, (decimal)hcpDrawP, nspfDraw.Odds, nspfOver, nspfDraw.PlayType));
                     }
                 }
             }
@@ -1606,15 +1706,16 @@ public static class MilkPickEngine
         if (result.Count == 0 && funnel.Candidates == 0)
             funnel.Skipped.Add("已进入全部场次，但没有一场生成候选注");
 
-        // 1) 门槛过滤：EV 上限 + 各玩法的命中率下限。
-        //    半全场反转档（半场≠全场）用更低的 MinHalfFullReverseProbability，顺风档仍走 12%。
-        //
-        //    2026-11-08 补上真实期望下限：改前只有 EV **上限**（MaxEv=2.5，形同虚设），
-        //    从没有下限闸，所以「按联赛实测概率算只有 0.638 期望」的注照样上榜。
-        //    判据与阈值见 <see cref="PassesBaselineEv"/>，无基线的注放行。
+        // 1) 门槛过滤。2026-11-11 拆成**两道互不代替的闸**，不要再合并：
+        //    · 安全闸 <see cref="PassesSafetyGate"/>：纯模型 vs 市场（差太远先别信）
+        //    · 价值闸 <see cref="PassesValueGate"/>：混合概率 × 赔率 vs 返奖率（值不值得买）
+        //    · 实证闸 <see cref="PassesBaselineEv"/>：联赛实证基线，与 w 无关
+        //    以前只有一条「混合值 ≥ 市场推导下限」，分子分母都含市场，
+        //    w 一抬高两边就趋同、闸门自动松掉——改完权重等于悄悄放宽风控。
         var gated = result
             .Where(x => x.Ev <= MaxEv)
-            .Where(x => x.ModelProbability >= ProbabilityFloorFor(x))
+            .Where(PassesSafetyGate)
+            .Where(PassesValueGate)
             .Where(x => PassesBaselineEv(x, odds))
             .ToList();
         funnel.AfterEv = gated.Count;
@@ -2557,5 +2658,23 @@ public static class MilkPickEngine
             pick.Ev = Math.Round(pct / 100m * pick.Odds, 3);
         }
         return pick;
+    }
+
+    /// <summary>
+    /// 掺盘口，并**同时留下纯模型值** <see cref="MilkPick.ModelPctPure"/>。
+    ///
+    /// 所有 Blend 都必须走这里，不要直接 <c>WithProbability(pick, Blend(...))</c>——
+    /// 那样会漏掉纯模型值，安全闸就只能退回从混合值反解，而反解在 w→1 时会被舍入误差放大。
+    /// 快照不全（overRound ≤ 0）时 Blend 返回的本来就是模型值，两个字段相等。
+    /// </summary>
+    private static MilkPick Blended(MilkPick pick, decimal modelFraction, decimal odds,
+                                   decimal overRound, string? playType)
+    {
+        var blended = Blend(modelFraction, odds, overRound, playType);
+        var built = WithProbability(pick, blended);
+        built.ModelPctPure = overRound > 0m && odds > 1m
+            ? Math.Round(modelFraction * 100m, 2)
+            : built.ModelProbability;
+        return built;
     }
 }

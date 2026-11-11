@@ -91,6 +91,16 @@ public static class Program
         if (args.Any(a => a.Equals("exotic-bq", StringComparison.OrdinalIgnoreCase)))
             return await ExoticWeightStudy.RunAsync(connStr);
 
+        // 市场权重的**下注级**回放（2026-11-11 加）：按玩法分别 sweep w，报投入/返还/ROI/命中率，
+        // 并按时间切分调参段与验证段。Brier 只能说「准不准」，说不了「按这个 w 买下去赚不赚」。
+        // 只读。可选参数：调参段占比（默认 0.6）。
+        if (args.Any(a => a.Equals("weight-replay", StringComparison.OrdinalIgnoreCase)))
+        {
+            var rest = args.SkipWhile(a => !a.Equals("weight-replay", StringComparison.OrdinalIgnoreCase)).Skip(1).ToArray();
+            var share = double.TryParse(rest.ElementAtOrDefault(0), out var sv) ? sv : 0.6;
+            return await WeightReplayStudy.RunAsync(connStr, share);
+        }
+
         // 单场 λ 诊断（2026-11-08，埃尔切 vs 贝蒂斯「胜胜 19.7%」事件后加）：
         // 只打印「认不认得这支队 / 多少样本 / λ 是否退回了联赛均值」，不参与任何计算。
         if (args.Any(a => a.Equals("team-check", StringComparison.OrdinalIgnoreCase)))

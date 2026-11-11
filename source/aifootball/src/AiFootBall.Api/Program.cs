@@ -1626,7 +1626,12 @@ static object ToMilkItem(MilkPick p) => new
     // 主胜赔率偏贵档（2026-11-11 加）：收盘欧赔主胜落在 [2.90,3.60) 且这注押全场主胜。
     // 前端只能写「历史同档兑现率低于收盘价隐含」（−4.6 点/1.6σ），不能写「别买」——
     // 证据够不上撤注，只够让人知情。撤注判据见 MilkPickEngine.HomePriceRichMin 的注释。
-    homePriceRich = p.HomePriceRich
+    homePriceRich = p.HomePriceRich,
+    // 纯模型概率（2026-11-11 加）：掺盘口之前的值，安全闸读的是它。
+    // 和 modelProbability 一起给，前端才能把「模型怎么看」和「掺完市场怎么看」分开显示——
+    // 只给混合值的话，用户没法判断这一注的分歧是模型来的还是盘口来的。
+    // 历史行没存过 → null，前端要显示「—」而不是 0。
+    modelPctPure = p.ModelPctPure
 };
 
 // 大奶票投影（与票面台账同源的一张票）

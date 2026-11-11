@@ -30,6 +30,11 @@ public sealed class MilkPickRepository
               -- 只标不撤，证据强度见 MilkPickEngine.HomePriceRichMin 的注释。
               IF COL_LENGTH('dbo.FbMilkPick','HomePriceRich') IS NULL
                   ALTER TABLE dbo.FbMilkPick ADD HomePriceRich bit NOT NULL CONSTRAINT DF_FbMilkPick_HomePriceRich DEFAULT(0);
+              -- 纯模型概率（2026-11-11）：掺盘口之前的值，安全闸读它。
+              -- 没有这一列，安全闸只能从混合值反解，w→1 时会被舍入误差放大。
+              -- 默认 NULL 而不是 0：0 会被当成「模型判定概率为零」直接拦掉，历史行必须能和真 0 区分。
+              IF COL_LENGTH('dbo.FbMilkPick','ModelPctPure') IS NULL
+                  ALTER TABLE dbo.FbMilkPick ADD ModelPctPure decimal(6,2) NULL;
               -- 临场告警回写列（2026-11-08）：告警必须落在注单上，推荐页才看得见。
               IF COL_LENGTH('dbo.FbMilkPick','AlertSeverity') IS NULL
                   ALTER TABLE dbo.FbMilkPick ADD AlertSeverity nvarchar(8) NULL;
@@ -113,11 +118,12 @@ public sealed class MilkPickRepository
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
                      BaselineProbability, BaselineEv, ModelLowConfidence, ModelOverconfident,
                      DivergenceTag, DivergenceNote, HalfDrawRefined, FatigueTag, ModelVsMarketRatio,
-                     HomePriceRich)
+                     HomePriceRich, ModelPctPure)
                   SELECT @d, @mid, @no, @lg, @home, @away, @time,
                           @play, @code, @name, @odds, @prob, @ev, @counterHigh,
                           @basePct, @baseEv, @lowConf, @overConf,
-                          @divTag, @divNote, @halfDraw, @fatigue, @vsMarket, @priceRich
+                          @divTag, @divNote, @halfDraw, @fatigue, @vsMarket, @priceRich,
+                          @purePct
                   WHERE NOT EXISTS (
                       SELECT 1 FROM dbo.FbMilkPick
                        WHERE PickDate=@d AND MatchId=@mid AND PlayType=@play AND OptionCode=@code)",
@@ -160,7 +166,12 @@ public sealed class MilkPickRepository
                     // 主胜赔率偏贵档（2026-11-11）：只标不撤，落库是为了能攒出「这一档到底
                     // 兑现率多少」的已结算样本——现在的证据来自市场侧回测，不是我们自己的注单，
                     // 要升级成撤注判据必须先有自己样本。
-                    priceRich = p.HomePriceRich
+                    priceRich = p.HomePriceRich,
+                    // 纯模型概率（2026-11-11）：安全闸的输入，落库后赛后才能复核
+                    // 「模型当时到底怎么看这一注」。
+                    // 未写时存 NULL 而不是 0——0 的含义是「模型判定概率为零」，
+                    // 那会被安全闸直接拦掉，跟「这个字段没算」完全不是一回事。
+                    purePct = p.ModelPctPure > 0m ? p.ModelPctPure : (decimal?)null
                 }, tx, cancellationToken: ct));
         }
 
@@ -255,7 +266,7 @@ public sealed class MilkPickRepository
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
                      BaselineProbability, BaselineEv, ModelLowConfidence, ModelOverconfident,
                      DivergenceTag, DivergenceNote,
-                     HalfDrawRefined, FatigueTag, ModelVsMarketRatio, HomePriceRich,
+                     HalfDrawRefined, FatigueTag, ModelVsMarketRatio, HomePriceRich, ModelPctPure,
                      AlertSeverity, AlertReason, Voided, VoidedAt,
                      ActualScore, ActualHalfScore, ActualGoals, Hit, SettledAt
               FROM dbo.FbMilkPick WHERE PickDate=@d
@@ -762,7 +773,7 @@ WHERE t.TradeDate=@d
             // 于是 EV 破线的注一路被判成「无告警」——判据写了、字段没读，等于没写。
             @"SELECT p.PickId, p.PickDate, p.MatchId, p.MatchNo, p.LeagueName, p.HomeTeam, p.AwayTeam,
                      p.MatchTime, p.PlayType, p.OptionCode, p.OptionName, p.Odds, p.ModelProbability, p.Ev,
-                     p.BaselineProbability, p.BaselineEv, p.ModelVsMarketRatio,
+                     p.BaselineProbability, p.BaselineEv, p.ModelVsMarketRatio, p.ModelPctPure,
                      p.AlertSeverity, p.Voided,
                      p.ActualScore, p.ActualHalfScore, p.ActualGoals, p.Hit, p.SettledAt
               FROM dbo.FbMilkPick p
@@ -1117,6 +1128,10 @@ public sealed class MilkPickRow
     /// 只标不撤，证据强度见 <c>MilkPickEngine.HomePriceRichMin</c>。
     /// </summary>
     public bool HomePriceRich { get; set; }
+    /// <summary>
+    /// 纯模型概率（2026-11-11 加）：掺盘口之前的值。NULL = 历史行没存，不代表模型概率为零。
+    /// </summary>
+    public decimal? ModelPctPure { get; set; }
     /// <summary>
     /// 当前挂单价（2026-11-08 加）。不是数据库列——由 <c>GetDayAsync</c> 关联当天最新快照填入。
     ///
