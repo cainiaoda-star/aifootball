@@ -10,7 +10,8 @@
 
 ## 一 铁律
 - ★★★ **odds.500.com 只认真浏览器**（37）：cookie/头/指纹/token 全无效；唯一通路 `ChromeBridge`(CDP)，有配额、验证页当失败。
-- ★★ **作业清单 `jobs.json`**：jc-odds 2min / water 10min / turn-guard·paper-freeze `*/10`。
+- ★★ **作业清单 `jobs.json`**：jc-odds 2min / water 10min / turn-guard·paper-freeze `*/10` / **inplay-sample `*/3`（赛中，HoursBehind2.2+inplayOnly）**。
+- ★★ **窗口 ≠ 优先级**：`GetMatchesForSamplingAsync` 的 `ORDER BY EXISTS(BettingCard)` 让在售赛前排前，Limit 一截赛中永远进不来——要只采赛中必须在 **WHERE** 加 `inplayOnly`。
 - ★★★ **返奖率是天花板**：SPF/NSPF .878 / BQ/JQ .797 / BF .710；大奶榜改前 .785，砍 BF 后 .797。**参数改不动**（39）。
 - ★★ **配额≠出票**：`MaxPerPlay[Nspf]` 是死配置，引擎无 NSPF 生成器（提 1→3 仍 0 注）。改前先查生成循环。
 - **成对修改**：`new RecommendationService(...)` 两处；出票闸/撤注闸各写常数；**改 INSERT 必同步 VALUES**（北单漏参数→写不进库）。
@@ -23,6 +24,8 @@
 - ★★★ **赔率 1.00 是占位值**：读取点有兜底、分析侧没有（曾造「热门高估 18 点」假结论）。回测须 `CapturedAt<MatchTime AND Odds>1.01`。
 - ★★ **样本量硬约束**：高赔档 10 点差异每格需 **~5000 注**（现 421）→ **证明不了错价，别挖**。
 - ★★ **联赛别名连「两队样本」一起校验**（11-11）：加「日联赛杯→日联杯」后鹿岛 0 场/神户 2 场 <`MinTeamGames`3→榜面 4→2 场。`HasLeague`≠算得动。
+- ★★★ **赔率口径不可互换**（11-11）：竞彩 `FbJcOddsHistory` 与欧赔 `FbOdds`(CompanyId=0) **装的不是同一批场次**；`JcToEuro=1.20` 只是查基线表的粗换算，不是转换器。同一判据两种口径可出相反结论（主胜高估：竞彩 2.42-3.00 档 **+6.69** vs 欧赔 2.90-3.60 档 **−4.64**）。
+- ★★ **`HomePriceRich`（欧赔收盘主胜 2.90~3.60=偏贵）只标不撤**：证据仅 1.0~1.6σ；且 28 注历史大奶**只有 3 注落档且全非主胜**（大奶从不押这类势均力敌场）⇒ **当前近似死代码**，别当有效风控写进复盘。判定必须用 `HomeWinEuClose`，不能复用 `spfHome`（有竞彩价时它是竞彩价）。
 - RecResult 3主/1平/0客；`Handicap` **正=主受让、负=主让球**。`PnlIdx` 负=被买重，只有 **≤−60** 有否决力。
 - **`HalfHomeScore IS NOT NULL` = 有真半场**。串：BQ/JQ 2串 .636→3串 .507；半全场 3 串、比分不串、总进球 3 串顶。
 - 主胜<1.35+必发≥70% 反向（限主胜+欧战）；**负平 .740 永不买**。其余口径见判据库 三。
@@ -52,3 +55,5 @@
 3. Chrome 11-11 12:00 恢复，留意 `LastError` 与配额。
 4. RCSI=0 致 TIMEOUT，凌晨 4 点后开 `READ_COMMITTED_SNAPSHOT`。
 5. 整点 `chore: 自动同步`→**提交前先看 `git log`**
+6. ★ **`GetClosingEuAsync` 不限 `CapturedAt`**（`MAX(CASE WHEN IsOpening=0 THEN HomeWin END)`）：开赛后重算会把**滚球价当收盘价**，`HomeWinEuClose` 同路受影响。修法加 `AND (m.MatchTime IS NULL OR o.CapturedAt <= m.MatchTime)`。未修。
+7. `SampleOddsAsync` 「无待采样赛事」记 SUCCESS → 健康度看不出「作业活着但一场没采」。
