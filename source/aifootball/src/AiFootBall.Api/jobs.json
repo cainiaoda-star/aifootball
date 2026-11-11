@@ -68,6 +68,15 @@
         "Limit": 30
       },
       {
+        "Name": "inplay-sample",
+        "Cron": "*/3 * * * *",
+        "Type": "inplay-sample",
+        "Enabled": true,
+        "HoursBehind": 2.2,
+        "RecheckMinutes": 2,
+        "Limit": 8
+      },
+      {
         "Name": "exchange-late",
         "Cron": "*/10 * * * *",
         "Type": "exchange-late",

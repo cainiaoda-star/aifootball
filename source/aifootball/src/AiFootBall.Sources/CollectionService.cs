@@ -372,13 +372,14 @@ public sealed class CollectionService
     /// <param name="recheckMinutes">同一场两次采样最小间隔</param>
     public async Task<CollectionResult> SampleOddsAsync(double hoursAhead, double hoursBehind,
         int recheckMinutes, int limit, IProgress<string>? log = null, CancellationToken ct = default,
-        bool euroOnly = false, string? logTask = null)
+        bool euroOnly = false, string? logTask = null, bool inplayOnly = false)
     {
         var now = DateTime.Now;
         var from = now.AddHours(-hoursBehind);
         var to = now.AddHours(hoursAhead);
 
-        var matches = await _odds.GetMatchesForSamplingAsync(from, to, limit, recheckMinutes, ct: ct);
+        var matches = await _odds.GetMatchesForSamplingAsync(from, to, limit, recheckMinutes,
+            ct: ct, inplayOnly: inplayOnly);
         if (matches.Count == 0)
         {
             log?.Report($"无需采样（{from:MM-dd HH:mm}~{to:MM-dd HH:mm}，间隔 {recheckMinutes} 分钟）");

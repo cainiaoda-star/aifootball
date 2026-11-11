@@ -256,7 +256,7 @@ ORDER BY
     /// </summary>
     public async Task<List<MatchBrief>> GetMatchesForSamplingAsync(DateTime from, DateTime to, int take,
         int recheckMinutes, int minCompanies = 8, CancellationToken ct = default,
-        int staleHours = StaleResampleHours)
+        int staleHours = StaleResampleHours, bool inplayOnly = false)
     {
         await using var conn = await _factory.OpenAsync(ct);
         var rows = await conn.QueryAsync<MatchBrief>(@"
@@ -265,6 +265,16 @@ SELECT TOP (@Take) m.MatchId, m.MatchTime, COALESCE(l.Name, m.LeagueName, N'未�
 FROM dbo.FbMatch m
 LEFT JOIN dbo.FbLeague l ON l.LeagueId = m.LeagueId
 WHERE m.MatchTime > DATEADD(HOUR, -2, SYSDATETIME())
+  -- 赛中专用（2026-11-11 加）：只留「已经开赛且未满 115 分钟」的场次。
+  --
+  -- 为什么必须显式写，而不是靠 from/to 窗口：窗口只决定「谁能在候选池里」，
+  -- 决定「谁被 LIMIT 截走」的是下面的 ORDER BY——在售场次（BettingCard 命中）永远排第一。
+  -- 实测 17:06 跑 inplay-sample：窗口确实是 now-2.2h ~ now+6min，但 Limit=8 全给了
+  -- 18:10/18:40 那批在售赛前场次，正在踢的一场都没进来，写出来的 496 行全是 Phase 0/1。
+  -- 窗口和排序是两件事，改窗口不改排序，等于没改。
+  AND (@InplayOnly = 0
+       OR (m.MatchTime <= SYSDATETIME()
+           AND m.MatchTime >= DATEADD(MINUTE, -115, SYSDATETIME())))
   AND (
         (m.MatchTime >= @From AND m.MatchTime <= @To)
         OR EXISTS (
@@ -315,7 +325,8 @@ ORDER BY CASE
             To = to,
             Recheck = recheckMinutes,
             MinCompanies = minCompanies,
-            Stale = staleHours <= 0 ? 6 : staleHours
+            Stale = staleHours <= 0 ? 6 : staleHours,
+            InplayOnly = inplayOnly ? 1 : 0
         });
         return rows.ToList();
     }

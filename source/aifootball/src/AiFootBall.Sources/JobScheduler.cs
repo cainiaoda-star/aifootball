@@ -875,6 +875,34 @@ public sealed class JobScheduler
                 break;
             }
 
+            // 赛中加密采样（2026-11-11 加）。
+            //
+            // 为什么单独开一个，而不是把 odds-sample 的 HoursBehind 调大：
+            //   odds-sample 是每小时一轮、窗口 72 小时、Limit 400，它采一场的间隔本身就是小时级，
+            //   把窗口拉到赛后只会增加场次、不会提高任何一场的密度。而赛中止推进球时刻靠的是密度。
+            //
+            // 实测缺口（2026-11-11 查 FbOddsHistory）：Phase=2（滚球）共 439 场、3.95 万行，
+            //   但平均每场只有 4.6 个不同分钟、时间跨度 32 分钟，全库只有 1 场超过 30 个采样点。
+            //   这个密度连「上下半场各进几球」都分不出，更别说定位进球时刻。
+            //   缺口来自 water-sample 的 HoursBehind=1：比赛 110 分钟，它只跟到第 60 分钟。
+            //
+            // 口径：未来 6 分钟 + 回看 2.2 小时 = 只覆盖「正在进行」和「马上开赛」，
+            //   比赛前 6 小时那批场次完全不碰，所以和 water-sample 不是抢同一批活。
+            //   euroOnly=true 只抓欧指一页：反推进球只需要胜平负三向的跳变，
+            //   亚盘/大小球各多一次请求，换来的信息不值这个配额。
+            // ★ RecheckMinutes 取 2（water-sample 是 1）：让 water 优先刷新鲜度，
+            //   本作业只在它让出的空档里补点，避免两个作业互相把 OddsSampledAt 顶成「刚采过」。
+            case "inplay-sample":
+            {
+                var behind = job.HoursBehind > 0 ? job.HoursBehind : 2.2;
+                result = await _collection.SampleOddsAsync(
+                    0.1, behind,
+                    job.RecheckMinutes <= 0 ? 2 : job.RecheckMinutes,
+                    job.Limit <= 0 ? 8 : job.Limit,
+                    null, ct, euroOnly: true, logTask: job.Name, inplayOnly: true);
+                break;
+            }
+
             // 赔率轨迹采样：落库同时写入 FbOddsHistory，形成「初盘 → 赛前 → 开赛」曲线
             case "odds-sample":
             {
