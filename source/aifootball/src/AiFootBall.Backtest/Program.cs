@@ -134,6 +134,32 @@ public static class Program
             return await OddsConditionStudy.RunAsync(connStr, testStart);
         }
 
+        // 审计表端到端自检（2026-11-12 加）。会写库，但只写 2090-01-01 这个远离真实数据的日期，
+        // 跑完自动清理。存在的理由：两套手写 INSERT 一旦列数不齐，线上会被 try/catch 静默吞掉。
+        if (args.Any(a => a.Equals("audit-check", StringComparison.OrdinalIgnoreCase)))
+            return await AuditCheck.RunAsync(connStr);
+
+        // 比分（BF）只读评估（2026-11-12 加）：模型 Hit@1 / Hit@3 vs 历史频率 vs 市场。
+        // 只读，且**不恢复出票**——`EnableScorePicks` 仍然关着，这里只回答「模型挑比分准不准」。
+        // 起因：校验方案要求「比分 Hit@1 在 8%~15% 算可用」，而这条数在项目里从来不存在。
+        if (args.Any(a => a.Equals("score-probe", StringComparison.OrdinalIgnoreCase)))
+        {
+            var rest = args.SkipWhile(a => !a.Equals("score-probe", StringComparison.OrdinalIgnoreCase)).Skip(1).ToArray();
+            var share = double.TryParse(rest.ElementAtOrDefault(0), out var sv) ? sv : 0.67;
+            return await ScoreProbeStudy.RunAsync(connStr, share);
+        }
+
+        // 半全场边际 vs 全场模型的一致性诊断（2026-11-12 加）。
+        // 只读。第三方校验方案里唯一一条「我们从来不敢说通过」的自洽项：
+        // 联合分布对半场求和之后，主/平/客三向是否与比分网格一致。中位 L1 > 5 点即说明
+        // 0.45/0.55 这个固定切分站不住，半全场 9 档概率整体被带偏。
+        if (args.Any(a => a.Equals("hf-margin", StringComparison.OrdinalIgnoreCase)))
+        {
+            var rest = args.SkipWhile(a => !a.Equals("hf-margin", StringComparison.OrdinalIgnoreCase)).Skip(1).ToArray();
+            var share = double.TryParse(rest.ElementAtOrDefault(0), out var sv) ? sv : 0.67;
+            return await HalfFullMarginStudy.RunAsync(connStr, share);
+        }
+
         // 单联赛「能不能套现有模型」专项诊断（2026-11-09 加，国际比赛日窗口前）。
         // 只读。回答：这个联赛的队模型认不认识、够不够 MinTeamGames、按出票口径会出几注、出了准不准。
         if (args.Any(a => a.Equals("league-probe", StringComparison.OrdinalIgnoreCase)))

@@ -49,6 +49,11 @@ public sealed class MilkPickRepository
               -- 竞彩让球在受注期间会被官方调整，赛后回看根本分不清当时让的是几球。
               IF COL_LENGTH('dbo.FbMilkPick','Handicap') IS NULL
                   ALTER TABLE dbo.FbMilkPick ADD Handicap decimal(6,2) NULL;
+              -- 模型版本快照（2026-11-12）：拟合窗口起止、样本数、rho、构建 MVID、五个玩法的 w。
+              -- 第三方校验方案的第一条 P0。榜上概率每天重拟合，没有这一列，
+              -- 任何复盘都只能说「大概是那天的模型」，无法证明也无法反驳。
+              IF COL_LENGTH('dbo.FbMilkPick','ModelVersion') IS NULL
+                  ALTER TABLE dbo.FbMilkPick ADD ModelVersion nvarchar(160) NULL;
               -- 告警去重键（2026-11-08）：Reason 带实时数值，拿它去重等于不去重。
               IF COL_LENGTH('dbo.FbTurnAlert','SignalCode') IS NULL
                   ALTER TABLE dbo.FbTurnAlert ADD SignalCode nvarchar(80) NULL;
@@ -118,12 +123,12 @@ public sealed class MilkPickRepository
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
                      BaselineProbability, BaselineEv, ModelLowConfidence, ModelOverconfident,
                      DivergenceTag, DivergenceNote, HalfDrawRefined, FatigueTag, ModelVsMarketRatio,
-                     HomePriceRich, ModelPctPure)
+                     HomePriceRich, ModelPctPure, ModelVersion)
                   SELECT @d, @mid, @no, @lg, @home, @away, @time,
                           @play, @code, @name, @odds, @prob, @ev, @counterHigh,
                           @basePct, @baseEv, @lowConf, @overConf,
                           @divTag, @divNote, @halfDraw, @fatigue, @vsMarket, @priceRich,
-                          @purePct
+                          @purePct, @modelVer
                   WHERE NOT EXISTS (
                       SELECT 1 FROM dbo.FbMilkPick
                        WHERE PickDate=@d AND MatchId=@mid AND PlayType=@play AND OptionCode=@code)",
@@ -171,7 +176,10 @@ public sealed class MilkPickRepository
                     // 「模型当时到底怎么看这一注」。
                     // 未写时存 NULL 而不是 0——0 的含义是「模型判定概率为零」，
                     // 那会被安全闸直接拦掉，跟「这个字段没算」完全不是一回事。
-                    purePct = p.ModelPctPure > 0m ? p.ModelPctPure : (decimal?)null
+                    purePct = p.ModelPctPure > 0m ? p.ModelPctPure : (decimal?)null,
+                    // 模型版本快照（2026-11-12）：审计 P0。空串按 NULL 存——
+                    // 「算的时候没有版本信息」和「版本是一串空」必须能区分开。
+                    modelVer = string.IsNullOrWhiteSpace(p.ModelVersion) ? null : p.ModelVersion
                 }, tx, cancellationToken: ct));
         }
 
@@ -229,6 +237,81 @@ public sealed class MilkPickRepository
         return rows;
     }
 
+    /// <summary>
+    /// 重写某一期的**完整分布存档**（dbo.FbMilkProbSnapshot，2026-11-12 加）。
+    ///
+    /// 与 <see cref="SaveDayAsync"/> 的区别，必须分清：
+    /// · 那张表存的是**出票**（6 注就 6 行），这张表存的是**算过的每一个档位**（一场半全场 9 行）。
+    ///   后者才是「这场为什么没出票」能回答的前提。
+    /// · 这张表只增不结算、不参与收益统计，纯审计。所以它可以放心整期重写：
+    ///   每次重算都覆盖成最新一版，不像 FbMilkPick 那样要留已开赛的行。
+    ///
+    /// 全部用一条多行 INSERT 参数化写入：单日约 1500 行，逐行 Execute 会退化成 1500 次往返。
+    /// </summary>
+    public async Task<int> SaveProbSnapshotsAsync(
+        DateTime snapshotDate, IReadOnlyList<MilkProbSnapshot> rows, CancellationToken ct = default)
+    {
+        var d = snapshotDate.Date;
+        await using var conn = await _factory.OpenAsync(ct);
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"IF OBJECT_ID(N'dbo.FbMilkProbSnapshot', N'U') IS NULL
+              CREATE TABLE dbo.FbMilkProbSnapshot
+              (
+                  Id            bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_FbMilkProbSnapshot PRIMARY KEY,
+                  SnapshotDate  date           NOT NULL,
+                  MatchId       bigint         NOT NULL,
+                  MatchNo       nvarchar(20)   NULL,
+                  PlayType      varchar(10)    NOT NULL,
+                  OptionCode    varchar(20)    NOT NULL,
+                  Odds          decimal(8,3)   NULL,
+                  MarketPct     decimal(7,3)   NULL,
+                  ModelPctPure  decimal(7,3)   NULL,
+                  BlendedPct    decimal(7,3)   NULL,
+                  MarketPriced  bit            NOT NULL CONSTRAINT DF_FbMilkProbSnapshot_Priced DEFAULT(0),
+                  ModelVersion  nvarchar(160)  NULL,
+                  CreatedAt     datetime2      NOT NULL CONSTRAINT DF_FbMilkProbSnapshot_Created DEFAULT(SYSDATETIME())
+              );
+              -- 复盘的主查询形态是「按日期取一期」和「按场次取全档」，两条索引都建上。
+              -- 表刚建时数据量为 0，在这里建索引不影响出榜。
+              IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_MilkProbSnapshot_Date'
+                             AND object_id=OBJECT_ID(N'dbo.FbMilkProbSnapshot'))
+                  CREATE INDEX IX_MilkProbSnapshot_Date
+                      ON dbo.FbMilkProbSnapshot (SnapshotDate, MatchId, PlayType);
+              IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_MilkProbSnapshot_Match'
+                             AND object_id=OBJECT_ID(N'dbo.FbMilkProbSnapshot'))
+                  CREATE INDEX IX_MilkProbSnapshot_Match
+                      ON dbo.FbMilkProbSnapshot (MatchId, PlayType);",
+            cancellationToken: ct));
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate=@d", new { d }, cancellationToken: ct));
+
+        if (rows.Count == 0) return 0;
+
+        var payload = rows.Select(r => new
+        {
+            d,
+            mid = r.MatchId,
+            no = r.MatchNo,
+            play = r.PlayType,
+            code = r.OptionCode,
+            odds = r.Odds,
+            mk = r.MarketPct,
+            pure = r.ModelPctPure,
+            blend = r.BlendedPct,
+            priced = r.MarketPriced,
+            ver = r.ModelVersion
+        }).ToList();
+
+        return await conn.ExecuteAsync(new CommandDefinition(
+            @"INSERT INTO dbo.FbMilkProbSnapshot
+                (SnapshotDate, MatchId, MatchNo, PlayType, OptionCode,
+                 Odds, MarketPct, ModelPctPure, BlendedPct, MarketPriced, ModelVersion)
+              VALUES (@d, @mid, @no, @play, @code, @odds, @mk, @pure, @blend, @priced, @ver)",
+            payload, cancellationToken: ct));
+    }
+
     /// <summary>当日方向闸台账。背离的排前面，其余按开赛时间——页面上先看被挡掉的。</summary>
     public async Task<List<MilkDirectionDiagnosis>> GetGateAsync(DateTime gateDate, CancellationToken ct = default)
     {
@@ -267,6 +350,7 @@ public sealed class MilkPickRepository
                      BaselineProbability, BaselineEv, ModelLowConfidence, ModelOverconfident,
                      DivergenceTag, DivergenceNote,
                      HalfDrawRefined, FatigueTag, ModelVsMarketRatio, HomePriceRich, ModelPctPure,
+                     ModelVersion,
                      AlertSeverity, AlertReason, Voided, VoidedAt,
                      ActualScore, ActualHalfScore, ActualGoals, Hit, SettledAt
               FROM dbo.FbMilkPick WHERE PickDate=@d
@@ -1132,6 +1216,11 @@ public sealed class MilkPickRow
     /// 纯模型概率（2026-11-11 加）：掺盘口之前的值。NULL = 历史行没存，不代表模型概率为零。
     /// </summary>
     public decimal? ModelPctPure { get; set; }
+    /// <summary>
+    /// 模型版本戳（2026-11-12 加）：拟合窗口/样本数/ρ/构建 MVID/五个玩法 w。
+    /// NULL = 该行在加这一列之前出的，或者当时模型未就绪。
+    /// </summary>
+    public string? ModelVersion { get; set; }
     /// <summary>
     /// 当前挂单价（2026-11-08 加）。不是数据库列——由 <c>GetDayAsync</c> 关联当天最新快照填入。
     ///

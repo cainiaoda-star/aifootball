@@ -272,6 +272,47 @@ public static class MilkPickEngine
         => points.Where(p => p.PlayType == playType && p.Odds > 1m).Sum(p => 1m / p.Odds);
 
     /// <summary>
+    /// 一条注单的完整版本戳（2026-11-12 加，落库 FbMilkPick.ModelVersion）。
+    ///
+    /// 两段拼成：<see cref="ScorelineModel.VersionTag"/>（模型侧的窗口/样本/ρ/构建 MVID）
+    /// + 引擎侧口令（五个玩法的市场权重、比分是否在出票）。
+    /// 为什么要拼这些：换个 w 就能让同一场比赛从「出 2 球」变成「出 1 球」，
+    /// 只记模型窗口不记 w，事后仍然解释不了这注是怎么来的。
+    ///
+    /// 权重写成百分数整数（70/70/50/80/30），避开小数点在不同 culture 下被格式化成逗号的坑——
+    /// 这个串会进数据库、会被拿来 grep，不能有一处依赖当前区域设置。
+    /// </summary>
+    public static string PickVersion(ScorelineModel scores)
+        => $"{scores.VersionTag}"
+           + $"|w={(int)(MarketWeightSpf * 100m)}/{(int)(MarketWeightNspf * 100m)}"
+           + $"/{(int)(MarketWeightBq * 100m)}/{(int)(MarketWeightJq * 100m)}/{(int)(MarketWeightBf * 100m)}"
+           + $"|bf={(EnableScorePicks ? "on" : "off")}";
+
+    /// <summary>
+    /// 总进球 0..7 档的**纯模型**概率（下标 7 = 7+ 余量），单位和 <see cref="MilkPick.ModelPctPure"/> 一致（%）。
+    ///
+    /// 2026-11-12 由内联算式提出来，只为了让**候选生成**与**分布存档**用同一份数：
+    /// 这两处各写一遍时，只要有一处把 7+ 的余量算法改掉，榜上出的是「1 球」，
+    /// 存档里记的却是另一个「1 球」，复盘就再也对不上了。
+    ///
+    /// 口径（与出票完全一致，别在这里改）：
+    /// · 0~6 球 = 比分网格里 h+a 等于该值的格子之和 ÷ 网格总质量；
+    /// · 7+ = 1 减去 0~6 的合计（网格被截断到 0..6 球，所以余量就是「所有更高的比分」）。
+    /// 因为分母是同一个 mass，Σ(0..7) 恒等于 1；这条性质有测试锁死。
+    /// </summary>
+    public static decimal[] GoalBands(IReadOnlyList<(int H, int A, double P)> grid, double mass)
+    {
+        var bands = new decimal[8];
+        if (mass <= 0 || grid.Count == 0) return bands;
+        for (var k = 0; k < 7; k++)
+            bands[k] = (decimal)GoalsProbability(grid, mass, k);
+        decimal low = 0m;
+        for (var k = 0; k < 7; k++) low += bands[k];
+        bands[7] = Math.Max(0m, 1m - low);
+        return bands;
+    }
+
+    /// <summary>
     /// 各玩法的固定水位（Σ1/赔率），也就是「返奖率」的倒数。
     ///
     /// 2026-11-05 实测同一批次 13 场，逐场水位几乎一模一样：
@@ -1260,8 +1301,14 @@ public static class MilkPickEngine
         var showRows = new List<MilkShowRow>();
         // 漏斗：每层剩多少场。空榜时这是唯一能自动解释「卡在哪」的东西（2026-11-05 加）。
         var funnel = new MilkFunnel { Recs = recs.Count, ScoresReady = scores.Ready };
+
+        // 完整分布存档（2026-11-12 加）：整批共用一个版本戳，落到每注和每一档上。
+        // 一次计算只有一个模型、一套权重，所以戳也只有一个——每注各算一遍只会让它们有机会不一致。
+        var versionTag = PickVersion(scores);
+        var snapshots = new List<MilkProbSnapshot>();
+
         if (recs.Count == 0 || odds.Count == 0)
-            return new MilkBuildResult { Picks = result, Gates = gates, Funnel = funnel };
+            return new MilkBuildResult { Picks = result, Gates = gates, Funnel = funnel, ProbSnapshots = snapshots };
 
         foreach (var r in recs)
         {
@@ -1443,9 +1490,15 @@ public static class MilkPickEngine
             var bqNorm = BlendNormalizer(points, JcPlayTypes.Bq, bqOver);
 
             // 比分：单格概率；「其它」= 该方向合计 − 已列具体比分的合计
+            //
+            // 2026-11-12 改结构：先一次性算出**全档纯模型概率** bfPure，候选与分布存档共用。
+            // 旧写法把「算概率」和「判闸」缠在同一个循环里，存档若另写一份必然漂移
+            // （本项目已经因为「两处各写一份」栽过：出票闸与撤注闸互相打架）。
+            var bfPoints = points.Where(p => p.PlayType == JcPlayTypes.Bf).ToList();
+            var bfPure = new Dictionary<string, decimal>(StringComparer.Ordinal);
             var others = new Dictionary<char, JcOddsHistoryPoint>();
             var listed = new Dictionary<char, decimal> { ['3'] = 0m, ['1'] = 0m, ['0'] = 0m };
-            foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bf))
+            foreach (var pt in bfPoints)
             {
                 // 采集端的写法并不统一：500 是「胜其它」，别的源出现过「胜其他」。
                 // 只认「其它」的话，另一种写法会掉进下面的具体比分分支、解析成 null 后被默默丢掉，
@@ -1458,6 +1511,7 @@ public static class MilkPickEngine
                 {
                     var p = ScoreProbability(grid, mass, pt.OptionCode);
                     if (p is null) continue;
+                    bfPure[pt.OptionCode] = (decimal)p.Value;
 
                     // 「其它」= 方向合计 − 官方已列具体比分合计，所以这里的累计必须先于赔率闸。
                     // 早前把累计放在闸后面，低赔的具体比分（如 2:0 @3.5）被跳过、没进合计，
@@ -1465,13 +1519,6 @@ public static class MilkPickEngine
                     var split = SplitScore(pt.OptionCode);
                     if (split is not null)
                         listed[split.Value.H > split.Value.A ? '3' : split.Value.H == split.Value.A ? '1' : '0'] += (decimal)p.Value;
-
-                    if (pt.Odds < MinOptionOdds) continue;
-                    if (pt.Odds > MaxScoreOdds) continue;
-                    // 停发比分期间不建候选，但上面的 listed[] 累计与下面的 others 收集必须保留：
-                    // 它们只影响「胜其它/平其它/负其它」的余量计算，跳掉会让概率凭空变好看。
-                    if (!EnableScorePicks) continue;
-                    matchPicks.Add(Blended(Option(pt, r), (decimal)p.Value, pt.Odds, bfOver, pt.PlayType, bfNorm));
                 }
                 else
                 {
@@ -1479,24 +1526,29 @@ public static class MilkPickEngine
                 }
             }
             foreach (var (side, pt) in others)
+                bfPure[pt.OptionCode] = Math.Max(0m, (decimal)ResultProbability(grid, mass, side) - listed[side]);
+
+            // 候选：三道闸（赔率区间 / 停发比分 / 解析失败）只管「进不进榜」，不管「算不算」。
+            // 停发比分期间 bfPure 照算——存档要的正是这份分布，BF 的 Hit@1 评估也靠它。
+            foreach (var pt in bfPoints)
             {
-                var p = Math.Max(0m, (decimal)ResultProbability(grid, mass, side) - listed[side]);
-                if (p <= 0 || pt.Odds < MinOptionOdds) continue;
+                if (!bfPure.TryGetValue(pt.OptionCode, out var p) || p <= 0m) continue;
+                if (pt.Odds < MinOptionOdds) continue;
                 if (pt.Odds > MaxScoreOdds) continue;
                 if (!EnableScorePicks) continue;
                 matchPicks.Add(Blended(Option(pt, r), p, pt.Odds, bfOver, pt.PlayType, bfNorm));
             }
 
-            // 总进球：对角线合计，7+ 取余量
+            // 总进球：对角线合计，7+ 取余量。
+            // 坑：档位概率由 GoalBands 统一给（候选与存档同一份），别在这里再内联一遍算式。
+            var jqBands = GoalBands(grid, mass);
             foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Jq))
             {
                 if (!int.TryParse(pt.OptionCode, out var n)) continue;
                 if (pt.Odds < MinOptionOdds) continue;
                 if (pt.Odds > MaxGoalOdds) continue;
                 if (BannedGoalBuckets.Contains(pt.OptionCode, StringComparer.Ordinal)) continue;
-                var p = n >= 7
-                    ? Math.Max(0m, 1m - (decimal)Enumerable.Range(0, 7).Sum(k => GoalsProbability(grid, mass, k)))
-                    : (decimal)GoalsProbability(grid, mass, n);
+                var p = n >= 7 ? jqBands[7] : n >= 0 ? jqBands[n] : 0m;
                 if (p <= 0) continue;
                 matchPicks.Add(Blended(Option(pt, r), p, pt.Odds, jqOver, pt.PlayType, jqNorm));
             }
@@ -1786,6 +1838,17 @@ public static class MilkPickEngine
                                        && dir != diag.MarketDirection;
             }
 
+            // 分布存档（2026-11-12 加）：这一场算过的**每一档**都记下来，不只是进榜那几注。
+            // 放在方向闸之后、AddRange 之前：此处的 matchPicks 是该场进入排名前的完整候选集，
+            // 而 grid/joint/jqBands 还是同一个对象——过了这个点，局部变量就没了。
+            snapshots.AddRange(CollectSnapshots(
+                r, mid, points, grid, mass,
+                bfPure, bfOver, bfNorm, jqBands, jqOver, jqNorm, joint, bqOver, bqNorm, versionTag,
+                matchPicks));
+
+            // 版本戳落到每注（审计 P0）：没有它，赛后无法回答「这条注是哪份模型 + 哪套 w 算的」。
+            foreach (var p in matchPicks) p.ModelVersion = versionTag;
+
             result.AddRange(matchPicks);
             gates.Add(diag);
 
@@ -1937,7 +2000,7 @@ public static class MilkPickEngine
 
             funnel.Final = perMatchPicks.Count;
             MarkBaseline(perMatchPicks, odds);
-            return new MilkBuildResult { Picks = perMatchPicks, Gates = gates, ShowRows = showRows, Funnel = funnel };
+            return new MilkBuildResult { Picks = perMatchPicks, Gates = gates, ShowRows = showRows, Funnel = funnel, ProbSnapshots = snapshots };
         }
 
         // 4) 按玩法分组各取前几名，不混在一起排。
@@ -2227,7 +2290,8 @@ public static class MilkPickEngine
             Gates = gates,
             ShowRows = showRows,
             Funnel = funnel,
-            CounterCandidates = counterDiag
+            CounterCandidates = counterDiag,
+            ProbSnapshots = snapshots
         };
     }
 
@@ -2778,5 +2842,119 @@ public static class MilkPickEngine
             ? Math.Round(modelFraction * 100m, 2)
             : built.ModelProbability;
         return built;
+    }
+
+    /// <summary>
+    /// 生成一场比赛的**完整分布存档**（2026-11-12 加，落库 dbo.FbMilkProbSnapshot）。
+    ///
+    /// 三列口径（每档都存三个数，缺一个就无法归因）：
+    /// · <c>ModelPctPure</c>：纯模型（%），掺盘口之前；
+    /// · <c>MarketPct</c>：市场去水隐含（%）= 100 ÷ 赔率 ÷ 该玩法固定水位，与
+    ///   <see cref="PassesMarketFloor"/> / <c>ModelVsMarketRatio</c> 同一个算式；
+    /// · <c>BlendedPct</c>：按 <see cref="MarketWeightFor"/> 混合再乘 <paramref name="bfNorm"/> 这类
+    ///   归一因子，与落库的 <c>ModelProbability</c> 完全同口径。
+    ///
+    /// 与候选生成的区别（这是**关键**，别搞混）：
+    /// 候选要过赔率区间、停发开关、概率门槛；存档**一道闸都不过**。
+    /// 存档存在的意义就是「记录当时模型给每一档算了多少」，若它也按出票口径筛，
+    /// 被筛掉的那些档就永远无法复盘——而那恰恰是「这道闸拦得对不对」唯一要看的样本。
+    ///
+    /// 可以单测：不依赖 ScorelineModel，只要喂进 grid / joint / bands 与一份赔率快照即可。
+    /// </summary>
+    internal static List<MilkProbSnapshot> CollectSnapshots(
+        MatchRecommendation r, long mid,
+        IReadOnlyList<JcOddsHistoryPoint> points,
+        IReadOnlyList<(int H, int A, double P)> grid, double mass,
+        IReadOnlyDictionary<string, decimal> bfPure, decimal bfOver, decimal bfNorm,
+        decimal[] jqBands, decimal jqOver, decimal jqNorm,
+        decimal[,]? joint, decimal bqOver, decimal bqNorm,
+        string? versionTag,
+        IReadOnlyList<MilkPick>? picks = null)
+    {
+        var rows = new List<MilkProbSnapshot>(48);
+        if (points.Count == 0) return rows;
+
+        var salesDate = SteadyPickRules.SalesDate(
+            string.IsNullOrWhiteSpace(r.MatchNo) ? null : r.MatchNo, r.MatchTime, DateTime.Today);
+
+        decimal Over(string play) => play switch
+        {
+            JcPlayTypes.Bf => bfOver,
+            JcPlayTypes.Jq => jqOver,
+            JcPlayTypes.Bq => bqOver,
+            _ => 0m
+        };
+
+        decimal Norm(string play) => play switch
+        {
+            JcPlayTypes.Bf => bfNorm,
+            JcPlayTypes.Jq => jqNorm,
+            JcPlayTypes.Bq => bqNorm,
+            _ => 1m
+        };
+
+        void Add(string play, string code, decimal? odds, decimal? purePct)
+        {
+            var over = Over(play);
+            var priced = over > 0m && odds is > 1m;
+            decimal? market = priced ? Math.Round(100m / odds!.Value / over, 3) : null;
+            // 快照不全时 Blend 返回的就是模型值，与纯模型列相同——这里不重复算，直接复用。
+            decimal? blended = priced && purePct is decimal pv
+                ? Math.Round(Blend(pv / 100m, odds!.Value, over, play, Norm(play)) * 100m, 3)
+                : purePct;
+
+            rows.Add(new MilkProbSnapshot
+            {
+                SnapshotDate = salesDate,
+                MatchId = mid,
+                MatchNo = r.MatchNo,
+                PlayType = play,
+                OptionCode = code,
+                Odds = odds,
+                MarketPct = market,
+                ModelPctPure = purePct,
+                BlendedPct = blended,
+                MarketPriced = priced,
+                ModelVersion = versionTag
+            });
+        }
+
+        // ---- 比分：具体比分来自 bfPure；「其它」也在其中（余量算法见上面的候选段）----
+        foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bf))
+        {
+            var odds = pt.Odds > 1m ? pt.Odds : (decimal?)null;
+            decimal? pure = bfPure.TryGetValue(pt.OptionCode, out var v) ? Math.Round(v, 3) : null;
+            Add(JcPlayTypes.Bf, pt.OptionCode, odds, pure);
+        }
+
+        // ---- 总进球：GoalBands 与候选同源，7+ 是余量 ----
+        foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Jq))
+        {
+            if (!int.TryParse(pt.OptionCode, out var n) || n < 0 || n > 7) continue;
+            var odds = pt.Odds > 1m ? pt.Odds : (decimal?)null;
+            var pure = Math.Round(jqBands[n] * 100m, 3);
+            Add(JcPlayTypes.Jq, pt.OptionCode, odds, pure);
+        }
+
+        // ---- 半全场：联合分布取对角；3-1 / 0-1 若走了 HalfDrawModel，存实际用的那个值 ----
+        if (joint is not null)
+        {
+            var refined = new Dictionary<string, decimal>(StringComparer.Ordinal);
+            if (picks is not null)
+                foreach (var p in picks.Where(x => x.HalfDrawRefined && x.PlayType == JcPlayTypes.Bq))
+                    refined[p.OptionCode] = p.ModelPctPure;
+
+            foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bq))
+            {
+                if (!HalfFullCombos.Contains(pt.OptionCode, StringComparer.Ordinal)) continue;
+                var odds = pt.Odds > 1m ? pt.Odds : (decimal?)null;
+                decimal pure = refined.TryGetValue(pt.OptionCode, out var rv)
+                    ? rv
+                    : Math.Round(joint[SideIndex(pt.OptionCode[0]), SideIndex(pt.OptionCode[2])] * 100m, 3);
+                Add(JcPlayTypes.Bq, pt.OptionCode, odds, pure);
+            }
+        }
+
+        return rows;
     }
 }

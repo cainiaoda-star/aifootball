@@ -1,5 +1,42 @@
 namespace AiFootBall.Core.Models;
 
+/// <summary>
+/// 构建标识（2026-11-12 加，为了「这条注是哪份代码算的」可审计）。
+///
+/// 记的是 <c>ManifestModule.ModuleVersionId</c>（MVID）——.NET 每次编译都会换一个新的 GUID，
+/// 所以同一个 dll 永远是同一个 MVID，改一行代码重新编译就变。这比手写版本号可靠：
+/// 手写的版本号一定会忘记改，而 MVID 想忘也忘不掉。
+///
+/// 用法：拿注单上的 MVID 去比对 <c>deploy-package\app\api\AiFootBall.Core.dll</c> 的 MVID
+/// （`powershell -c "[Reflection.Assembly]::LoadFile('...').ManifestModule.ModuleVersionId"`），
+/// 就能确认线上跑的到底是哪次构建。
+///
+/// 为什么不直接用 git 提交号：程序集里没有这个信息，要写进去得在构建时注入
+/// （SourceLink / InformationalVersion），而发布脚本不经过 git、只拷 dll。
+/// 这里选「能自动拿到、且确实唯一」的那个字段，而不是「看起来更像版本号」的那个。
+/// </summary>
+public static class BuildInfo
+{
+    /// <summary>形如 <c>1.0.0.0+3f2a9c17</c>；取不到时返回 <c>unknown</c>，绝不让它抛异常。</summary>
+    public static string Version { get; } = Compute();
+
+    private static string Compute()
+    {
+        try
+        {
+            var asm = typeof(BuildInfo).Assembly;
+            var v = asm.GetName().Version?.ToString() ?? "?";
+            var mvid = asm.ManifestModule.ModuleVersionId.ToString("N");
+            return mvid.Length >= 8 ? $"{v}+{mvid[..8]}" : $"{v}+{mvid}";
+        }
+        catch
+        {
+            // 单文件裁剪/反射受限等场景下取不到，宁可写 unknown 也不让出榜因为「盖章」失败。
+            return "unknown";
+        }
+    }
+}
+
 /// <summary>完场比分，用来估计球队进球和失球。</summary>
 public sealed class ScoreSample
 {
@@ -86,7 +123,10 @@ public sealed class ScorelineModel
         Dictionary<string, string[]> namesByLeague,
         double rho,
         bool crossLeague = true,
-        Dictionary<string, double>? leagueStrength = null)
+        Dictionary<string, double>? leagueStrength = null,
+        DateTime? fitFrom = null,
+        DateTime? fitTo = null,
+        int fitGames = 0)
     {
         Ready = ready;
         _globalHome = globalHome;
@@ -100,11 +140,39 @@ public sealed class ScorelineModel
         _rho = rho;
         _crossLeague = crossLeague;
         _leagueStrength = leagueStrength ?? new Dictionary<string, double>(StringComparer.Ordinal);
+        FitFrom = fitFrom;
+        FitTo = fitTo;
+        FitGames = fitGames;
     }
 
     public static ScorelineModel Empty { get; } = new(false, 1.45, 1.15, new(), new(), new(), new(), -0.1);
 
     public bool Ready { get; }
+
+    /// <summary>实际参与拟合的最早一场开赛时间（2026-11-12 加，审计用）。null = 样本无时间戳。</summary>
+    public DateTime? FitFrom { get; }
+
+    /// <summary>实际参与拟合的最晚一场开赛时间。见 <see cref="VersionTag"/>。</summary>
+    public DateTime? FitTo { get; }
+
+    /// <summary>实际参与拟合的场次（已按 asOf 截断之后，不再是「传进来多少」）。</summary>
+    public int FitGames { get; }
+
+    /// <summary>Dixon-Coles 的 ρ（低比分相关性修正）。审计时它一变，概率就会变。</summary>
+    public double Rho => _rho;
+
+    /// <summary>
+    /// 模型版本快照（2026-11-12 加）。形如
+    /// <c>dc1|2025-05-13..2026-10-28|n=169989|rho=-0.055|1.0.0.0+3f2a9c17</c>。
+    ///
+    /// 存在的理由：第三方校验方案点名「没有 model_version，事后无法回答这条注是哪个模型算的」。
+    /// 这里只包含**模型自身**的东西（窗口、样本、ρ、构建），混合权重与玩法口令由
+    /// <c>MilkPickEngine.PickVersion</c> 拼在后面——Core 不能反向引用 Sources。
+    /// </summary>
+    public string VersionTag => Ready
+        ? $"dc1|{FitFrom?.ToString("yyyy-MM-dd") ?? "?"}..{FitTo?.ToString("yyyy-MM-dd") ?? "?"}"
+          + $"|n={FitGames}|rho={_rho:0.000}|{BuildInfo.Version}"
+        : $"dc-none|{BuildInfo.Version}";
 
     /// <summary>
     /// 把竞彩的联赛名对齐到训练集里的联赛名，返回「该用哪个联赛的场均和名单来算这场」。
@@ -394,6 +462,32 @@ public sealed class ScorelineModel
             .ToList();
         if (usable.Count < 30) return Empty;
 
+        // ---- 截止日过滤（2026-11-12 加，第三方校验方案 3.1 点名的「无未来信息」）----
+        //
+        // 改之前 asOf 只当衰减原点用，**不过滤样本**：传一批含未来场次的样本进来，
+        // 那些场次会以权重 1.0 参与拟合（days ≤ 0 时 WeightOf 返回 1.0）。
+        // 线上没暴露是因为 SQL 自己带了 Status=3 + 窗口；但那不是模型在兜底，
+        // 是调用方碰巧守规矩——只要哪天有人拿全量样本 + asOf 跑 A/B，测出来的就是泄漏后的成绩。
+        // 所以把这条约束放进 Fit 内部：给了 asOf 就是「只用这一天及以前的比赛」。
+        //
+        // 没有 MatchTime 的样本在给了 asOf 时一律排除：无法证明它在截止日之前，
+        // 「不知道」不能当「安全」处理。线上不传 asOf，所以这条分支对线上零影响。
+        if (asOf is DateTime cut)
+            usable = usable
+                .Where(s => s.MatchTime is DateTime t && t <= cut)
+                .ToList();
+        if (usable.Count < 30) return Empty;
+
+        // 拟合窗口快照（审计用）：过滤之后真实的起止与场次，不是调用方传进来的范围。
+        DateTime? fitFrom = null, fitTo = null;
+        foreach (var s in usable)
+        {
+            if (s.MatchTime is not DateTime t2) continue;
+            if (fitFrom is null || t2 < fitFrom) fitFrom = t2;
+            if (fitTo is null || t2 > fitTo) fitTo = t2;
+        }
+        var fitGames = usable.Count;
+
         // ---- 时间衰减（2026-11-11 加）----
         // w = 0.5 ^ (距原点天数 / 半衰期)。halfLifeDays 为 null 时全部 w = 1，
         // 与加这个参数之前逐位等价，所以线上默认路径零风险。
@@ -473,9 +567,9 @@ public sealed class ScorelineModel
         }
 
         var namesByLeague = BuildNameIndex(teams);
-        var draft = new ScorelineModel(true, globalHome, globalAway, leagues, teams, teamTotals, namesByLeague, -0.1, crossLeague, strength);
+        var draft = new ScorelineModel(true, globalHome, globalAway, leagues, teams, teamTotals, namesByLeague, -0.1, crossLeague, strength, fitFrom, fitTo, fitGames);
         var rho = draft.FitRho(usable, decaying ? WeightOf : null);
-        return new ScorelineModel(true, globalHome, globalAway, leagues, teams, teamTotals, namesByLeague, rho, crossLeague, strength);
+        return new ScorelineModel(true, globalHome, globalAway, leagues, teams, teamTotals, namesByLeague, rho, crossLeague, strength, fitFrom, fitTo, fitGames);
     }
 
     /// <summary>

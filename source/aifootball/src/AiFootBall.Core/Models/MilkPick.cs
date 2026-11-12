@@ -23,6 +23,20 @@ public sealed class MilkPick
 
     /// <summary>出票时的固定奖金快照。</summary>
     public decimal Odds { get; set; }
+
+    /// <summary>
+    /// 这一注是**哪个模型 + 哪套权重 + 哪次构建**算出来的（2026-11-12 加，落库到
+    /// FbMilkPick.ModelVersion）。
+    ///
+    /// 内容由两段拼成：<see cref="ScorelineModel.VersionTag"/>（拟合窗口起止、样本数、ρ、
+    /// 程序集 MVID）+ 引擎侧的口令（五个玩法的 w、是否启用比分出票）。
+    /// 例：<c>dc1|2025-05-13..2026-11-12|n=178187|rho=-0.055|1.0.0.0+3f2a9c17|w=.7/.7/.5/.8/.3|bf=off</c>
+    ///
+    /// 为什么必须落库：第三方校验方案的第一条 P0 就是「没有 model_version」——
+    /// 榜上的概率每天重拟合，事后拿同一场比赛重跑必然得到不同数字，
+    /// 没有这个字符串，任何一次复盘都只能靠「大概是那天的模型」这种说法。
+    /// </summary>
+    public string? ModelVersion { get; set; }
     /// <summary>模型概率 0-100（Dixon-Coles 比分网格）。</summary>
     public decimal ModelProbability { get; set; }
 

@@ -181,6 +181,21 @@ public static class ModelWeightStudy
         Console.WriteLine("|---|---:|---:|---:|");
         Console.WriteLine($"| 初盘欧赔去水 | {mk.N} | {mk.Brier:F4} | {mk.Log:F4} |");
         Console.WriteLine($"| 收盘欧赔去水 | {mkClose.N} | {mkClose.Brier:F4} | {mkClose.Log:F4} |");
+
+        // ---- 历史频率基线（2026-11-12 加）----
+        // 「模型到底有没有超过什么都不做」这个问题必须有一个显式的对照：
+        // 拿训练段的三向占比（主/平/客各多少）当常数去预测测试段。
+        // 总进球的同类对照已经证明过它的杀伤力——纯模型对历史频率 +1.04%，方向是反的
+        // （`weight-replay` 校准表），那正是 JQ 退出模型闸的依据。
+        // 胜平负这条一直缺，于是「模型 Brier 0.60 比市场 0.58 差」只能说明输给市场，
+        // 说明不了「模型是不是连频率都跑不过」。两句话差得很远。
+        var trainN = Math.Max(1, trainSamples.Count);
+        var fH = trainSamples.Count(s => s.HomeScore > s.AwayScore) * 1.0 / trainN;
+        var fD = trainSamples.Count(s => s.HomeScore == s.AwayScore) * 1.0 / trainN;
+        var fA = trainSamples.Count(s => s.HomeScore < s.AwayScore) * 1.0 / trainN;
+        var hist = Stats.Empty();
+        foreach (var r in test) hist.Add(fH, fD, fA, r);
+        Console.WriteLine($"| 训练段历史频率（{fH:P1}/{fD:P1}/{fA:P1} 固定） | {hist.N} | {hist.Brier:F4} | {hist.Log:F4} |");
         Console.WriteLine();
 
         // ---- 主表 ----
@@ -281,6 +296,14 @@ public static class ModelWeightStudy
         var best = results.OrderBy(x => x.Brier).First();
         var gain = baseline.Brier - best.Brier;
         Console.WriteLine($"- 现状（等权 + 0.3）：Brier **{baseline.Brier:F4}** / LogLoss {baseline.Log:F4}。");
+        // 纯模型 vs 历史频率（2026-11-12 加）：这是「模型这一层到底有没有用」的直接回答。
+        var pureModel = results.First(x => x.HalfLife is null && x.W == 0m);
+        var vsFreq = hist.Brier - pureModel.Brier;
+        Console.WriteLine($"- 纯模型 vs 训练段历史频率：{pureModel.Brier:F4} vs {hist.Brier:F4}，"
+            + $"差 **{vsFreq:+0.0000;-0.0000}**（正=模型更好）"
+            + (vsFreq >= MeaningfulGain ? "，**过门槛**，模型有增量。"
+                : vsFreq > 0 ? "，方向对但**没过门槛**：增量为真但很小。"
+                : "，**模型不如「固定押历史占比」**——这一层多算的东西没有价值。"));
         Console.WriteLine($"- 最优组合：**{best.Label} + 权重 {best.W:0.0}**，Brier **{best.Brier:F4}** / LogLoss {best.Log:F4}，改善 **{gain:+0.0000;-0.0000}**。");
         Console.WriteLine($"- 判定：{(gain >= MeaningfulGain ? $"**过门槛**（≥ {MeaningfulGain:F3}），值得改。" : $"**没过门槛**（< {MeaningfulGain:F3}），不改。")}");
         Console.WriteLine();

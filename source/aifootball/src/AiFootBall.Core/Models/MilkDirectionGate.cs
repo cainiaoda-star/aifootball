@@ -195,6 +195,16 @@ public sealed class MilkBuildResult
     public MilkFunnel Funnel { get; init; } = new();
 
     /// <summary>
+    /// 完整分布存档（2026-11-12 加）：每场每玩法**每一个档位**的纯模型 / 市场 / 混合概率，
+    /// 不只出票的那几档。落库 <c>dbo.FbMilkProbSnapshot</c>。
+    ///
+    /// 与 <see cref="Picks"/> 的关系：Picks ⊂ 这里的档位集合，但这里的档位**不是**候选注——
+    /// 没有赔率闸、没有价值闸、没有名额限制。它回答的是「模型当时给这场每一档算了多少」，
+    /// 有了它才能事后复盘「这道闸拦掉的档到底该不该拦」。
+    /// </summary>
+    public List<MilkProbSnapshot> ProbSnapshots { get; init; } = new();
+
+    /// <summary>
     /// 30~40 倍反转档候选的引擎判定（2026-11-08 加）。
     /// 只做展示与追溯，不影响选注——即使某条被判「模型否决」，它也不会因此被重新放行。
     /// 落库表 FbMilkCounterCandidate，接口 /api/milk/counter-candidates 直接读。

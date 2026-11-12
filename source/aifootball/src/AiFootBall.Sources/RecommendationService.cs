@@ -919,6 +919,18 @@ public sealed class RecommendationService
         catch (OperationCanceledException) { throw; }
         catch { /* 同上：判定表写不进去不能挡住出票 */ }
 
+        // 完整分布存档（2026-11-12 加）：每场每玩法**全部档位**的纯模型/市场/混合概率。
+        //
+        // 为什么不放进 SaveDayAsync：那张表只存上榜的注（一天 6 行），
+        // 「这场为什么一注都没有」在库里就查不到。存档表覆盖所有算过的场次（一天约 1500 行），
+        // 这才是第三方校验方案要的「事后能解释某场为什么没出票」。
+        //
+        // 整期覆盖而不是增量写：模型每天重拟合，同一期重算一次就该留最新一版，
+        // 像 FbMilkPick 那样保留旧行会得到两份互相矛盾的分布，反而更难解释。
+        try { await _milkPicks.SaveProbSnapshotsAsync(DateTime.Today, build.ProbSnapshots, ct); }
+        catch (OperationCanceledException) { throw; }
+        catch { /* 存档写不进去不能挡住出票——它是审计材料，不是出票依赖 */ }
+
         // 票只装**当日受注**的那批注（2026-11-10 随上面的分组一起改）。
         // 跨期混票会把「明天才开售/才停售」的场次塞进今天的方案：用户照着买，
         // 其中一半根本不在今天这一期里。榜可以同时挂着两期（页面按日期分区显示），
