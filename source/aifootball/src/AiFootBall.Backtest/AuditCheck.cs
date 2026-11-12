@@ -16,12 +16,17 @@ namespace AiFootBall.Backtest;
 /// 做法：用**远离真实数据的日期**（2090-01-01）插一条假注单和三条假分布，读回来核对，再删干净。
 /// 不碰任何真实场次、不触发结算、不改榜面。
 ///
-/// 用法：dotnet run --project src/AiFootBall.Backtest -c Release -- audit-check
+/// 用法：dotnet run --project src/AiFootBall.Backtest -c Release -- audit-check [批量行数]
 /// 会写库（仅 2090-01-01 这个日期），跑完自动清理。
+///
+/// 给了批量行数就额外跑一次**真实规模的写入计时**（2026-11-12 加）。
+/// 起因：这三个自检行只验证「列对不对」，一行一行的写法在 3 行下永远看不出问题；
+/// 而线上一次出榜要写上千行，`save-recommendations` 又有 10 分钟硬上限，
+/// 一旦存档写成逐行往返把作业拖超时，表现同样是「榜照出、存档空着」——和列数不齐同一种病症。
 /// </summary>
 public static class AuditCheck
 {
-    public static async Task<int> RunAsync(string connStr)
+    public static async Task<int> RunAsync(string connStr, int bulkRows = 0)
     {
         var probeDate = new DateTime(2090, 1, 1);
         const long probeMatchId = 999_999_991L;
@@ -98,6 +103,52 @@ public static class AuditCheck
             "SELECT COUNT(*) FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate=@d", new { d = probeDate });
         if (afterRewrite != snapshotRows.Count) failures.Add($"重写不幂等：两次写入后共 {afterRewrite} 行");
 
+        // ---------- 3) 真实规模写入计时（可选，参数 bulkRows） ----------
+        var bulkMs = 0L;
+        var bulkWritten = 0;
+        var bulkExpected = 0;
+        if (bulkRows > 0)
+        {
+            // 按线上形态造：每场 35 档，顺序 SPF 3 / NSPF 3 / BQ 9 / JQ 8 / BF 12。
+            // 一行一行写在这里看不出差别，要的就是「一次写上千行要多久」。
+            var bulk = new List<MilkProbSnapshot>(bulkRows);
+            for (var i = 0; i < bulkRows; i++)
+            {
+                var k = i % 35;
+                var (play, code) = k switch
+                {
+                    < 3 => (JcPlayTypes.Spf, new[] { "3", "1", "0" }[k]),
+                    < 6 => (JcPlayTypes.Nspf, new[] { "3", "1", "0" }[k - 3]),
+                    < 15 => (JcPlayTypes.Bq, new[] { "3-3", "3-1", "3-0", "1-3", "1-1", "1-0", "0-3", "0-1", "0-0" }[k - 6]),
+                    < 23 => (JcPlayTypes.Jq, (k - 15).ToString()),
+                    _ => (JcPlayTypes.Bf, new[] { "1:0", "2:0", "2:1", "3:0", "3:1", "3:2", "0:0", "1:1", "2:2", "0:1", "0:2", "1:2" }[k - 23])
+                };
+                bulk.Add(new MilkProbSnapshot
+                {
+                    MatchId = probeMatchId + 1 + (i / 35),
+                    MatchNo = "自检" + (i / 35).ToString("000"),
+                    PlayType = play,
+                    OptionCode = code,
+                    Odds = 2.5m,
+                    MarketPct = 31.89m,
+                    ModelPctPure = 30.00m,
+                    BlendedPct = 31.60m,
+                    MarketPriced = true,
+                    ModelVersion = "SELFCHECK-BULK"
+                });
+            }
+            bulkExpected = bulk.Count;
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            bulkWritten = await repo.SaveProbSnapshotsAsync(probeDate, bulk);
+            sw.Stop();
+            bulkMs = sw.ElapsedMilliseconds;
+
+            var bulkStored = await conn.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate=@d", new { d = probeDate });
+            if (bulkStored != bulkExpected) failures.Add($"批量存档实存 {bulkStored} 行，期望 {bulkExpected}");
+        }
+
         // ---------- 清理 ----------
         await conn.ExecuteAsync("DELETE FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate=@d", new { d = probeDate });
         await conn.ExecuteAsync("DELETE FROM dbo.FbMilkPick WHERE PickDate=@d", new { d = probeDate });
@@ -116,6 +167,12 @@ public static class AuditCheck
         Console.WriteLine($"| ModelVersion 落库 | {(stored?.ModelVersion is null ? "**NULL**" : "正常")} |");
         Console.WriteLine($"| 分布存档写入 / 读回 | {snapWritten} / {snapStored.Count}（期望 {snapshotRows.Count}） |");
         Console.WriteLine($"| 重写后行数（幂等） | {afterRewrite} |");
+        if (bulkExpected > 0)
+        {
+            var perSec = bulkMs > 0 ? bulkExpected * 1000 / bulkMs : bulkExpected;
+            Console.WriteLine($"| 批量写入 {bulkExpected} 行 | {bulkWritten} 行 / {bulkMs} ms（≈{perSec} 行/秒） |");
+            Console.WriteLine($"| 出榜作业预算 | 10 分钟硬上限，存档占 {bulkMs / 600.0:0.0}% |");
+        }
         Console.WriteLine($"| 清理后残留 | pick={leftPick} snapshot={leftSnap} |");
         Console.WriteLine();
         if (failures.Count == 0)

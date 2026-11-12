@@ -59,7 +59,7 @@ Write-Output "=== milk board check ==="
 # ModelOverconfident added 2026-11-08 (nominal EV above the play-type payback).
 # DivergenceTag / DivergenceNote added 2026-11-08 (JC-vs-Betfair one-sided pricing).
 # HalfDrawRefined / FatigueTag added 2026-11-08 (3-1/0-1 direction model + fatigue label).
-$wantCols = @('CounterHigh', 'BaselineProbability', 'BaselineEv', 'ModelLowConfidence', 'ModelOverconfident', 'DivergenceTag', 'DivergenceNote', 'HalfDrawRefined', 'FatigueTag')
+$wantCols = @('CounterHigh', 'BaselineProbability', 'BaselineEv', 'ModelLowConfidence', 'ModelOverconfident', 'DivergenceTag', 'DivergenceNote', 'HalfDrawRefined', 'FatigueTag', 'ModelVersion')
 $colList = ($wantCols | ForEach-Object { "'$_'" }) -join ','
 $cols = (Sql "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='FbMilkPick' AND COLUMN_NAME IN ($colList)") -join ','
 foreach ($c in $wantCols) {
@@ -556,6 +556,49 @@ WHERE StartedAt >= @d;
     }
 } catch {
     Warn ("interrupted-run check skipped - " + $_.Exception.Message)
+}
+
+# --- 4i. audit write-back: board written, snapshot / version stamp present -----
+# 2026-11-12: P0 audit layer deployed. Both writers are wrapped in try/catch, so a
+# broken INSERT is COMPLETELY silent: the board still renders, the log has no error,
+# the tables are just empty. That is the same failure shape as the BaselineEv SELECT
+# omission (field never read, judgement always null). This section is the only thing
+# that would notice.
+# Scope note: snapshots are stamped with the natural day, picks with the sales date,
+# so a late-night run can put picks on @d+1 - hence the IN (@d, @d+1) on picks.
+try {
+    $h = @(Sql @"
+DECLARE @d date = CAST(GETDATE() AS date);
+DECLARE @n date = DATEADD(day, 1, @d);
+SELECT CAST((SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate IN (@d, @n)) AS varchar(10)) + '|'
+     + CAST((SELECT COUNT(*) FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate = @d) AS varchar(10)) + '|'
+     + CAST((SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate IN (@d, @n) AND ModelVersion IS NOT NULL) AS varchar(10)) + '|'
+     + CAST((SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate IN (@d, @n) AND ModelVersion IS NULL) AS varchar(10)) + '|'
+     + ISNULL((SELECT TOP 1 ModelVersion FROM dbo.FbMilkPick WHERE ModelVersion IS NOT NULL ORDER BY PickId DESC), '');
+"@)
+    $p = @($h)[0]
+    if ($p -is [string] -and $p.Contains('|')) {
+        $q = $p -split '\|'
+        $picks = [int]$q[0]; $snaps = [int]$q[1]; $withVer = [int]$q[2]; $noVer = [int]$q[3]
+        $sample = if ($q.Count -gt 4) { $q[4] } else { '' }
+        if ($picks -eq 0) {
+            Ok "audit write-back: no picks today (nothing to cross-check, not a failure)"
+        } elseif ($snaps -eq 0) {
+            Fail ("audit write-back: " + $picks + " picks on the board but FbMilkProbSnapshot has 0 rows for today - the snapshot INSERT is being swallowed (it is inside try/catch), the audit trail is empty")
+        } elseif ($withVer -eq 0) {
+            Fail ("audit write-back: snapshots written (" + $snaps + ") but no pick carries ModelVersion - the model_version stamp is not reaching FbMilkPick.ModelVersion")
+        } else {
+            Ok ("audit write-back: picks=" + $picks + " snapshots=" + $snaps + " stamped=" + $withVer)
+            if ($noVer -gt 0) {
+                Warn ("audit write-back: " + $noVer + " pick(s) have NULL ModelVersion - rows written before the 11-12 deploy, or a writer path that bypasses PickVersion")
+            }
+            if ($sample -ne '') { Write-Output ("      newest stamp: " + $sample) }
+        }
+    } else {
+        Warn "audit write-back check skipped - unexpected result shape"
+    }
+} catch {
+    Warn ("audit write-back check skipped - " + $_.Exception.Message)
 }
 
 # --- 5. decision --------------------------------------------------------------

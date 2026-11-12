@@ -137,7 +137,13 @@ public static class Program
         // 审计表端到端自检（2026-11-12 加）。会写库，但只写 2090-01-01 这个远离真实数据的日期，
         // 跑完自动清理。存在的理由：两套手写 INSERT 一旦列数不齐，线上会被 try/catch 静默吞掉。
         if (args.Any(a => a.Equals("audit-check", StringComparison.OrdinalIgnoreCase)))
-            return await AuditCheck.RunAsync(connStr);
+        {
+            // 可选第二参数 = 批量行数（默认 0：只验列对不对，不压测）。
+            // 给个 1500 就能看到「一次出榜的存档要写多久」，用来判断它会不会把作业拖过 10 分钟上限。
+            var ai = Array.FindIndex(args, a => a.Equals("audit-check", StringComparison.OrdinalIgnoreCase));
+            var bulk = ai >= 0 && ai + 1 < args.Length && int.TryParse(args[ai + 1], out var bn) ? bn : 0;
+            return await AuditCheck.RunAsync(connStr, bulk);
+        }
 
         // 比分（BF）只读评估（2026-11-12 加）：模型 Hit@1 / Hit@3 vs 历史频率 vs 市场。
         // 只读，且**不恢复出票**——`EnableScorePicks` 仍然关着，这里只回答「模型挑比分准不准」。
