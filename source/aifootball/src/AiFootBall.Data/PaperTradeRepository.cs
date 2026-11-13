@@ -95,14 +95,31 @@ END";
         await conn.ExecuteAsync(new CommandDefinition(Ddl, cancellationToken: ct));
 
         // 只冻「还在榜上」的注。已结算的不重冻（它们早就定稿），撤注的照样要进来。
+        //
+        // ★ 2026-11-13 第三轮：加上「只认最新成功轮」的条件。
+        // 四张表保留历史之后，同一天库里会有好几轮的注单——失败轮、被替换轮都在。
+        // 不过滤就会把**从没上过榜**的注冻进台账，直接破坏「台账=用户当时看到的票」这个前提。
+        // 老库还没建轮次表时退回旧行为（条件拼不进去，不能整条查询报错）。
+        var hasRunTables = await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+            @"SELECT CASE WHEN OBJECT_ID(N'dbo.FbMilkRunDate', N'U') IS NULL
+                            OR COL_LENGTH('dbo.FbMilkRun','Status') IS NULL THEN 0 ELSE 1 END",
+            cancellationToken: ct)) == 1;
+
+        var publishedGate = hasRunTables
+            ? @" AND (p.RunId IS NULL OR EXISTS (
+                        SELECT 1 FROM dbo.FbMilkRunDate rd
+                        JOIN dbo.FbMilkRun r ON r.RunId = rd.RunId
+                        WHERE rd.RunId = p.RunId AND rd.SalesDate = p.PickDate AND r.Status = 'success'))"
+            : string.Empty;
+
         var rows = (await conn.QueryAsync<PaperTradeRow>(new CommandDefinition(
             @"SELECT @d AS TradeDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      PlayType, OptionCode, OptionName, Odds,
                      ModelProbability, BaselineProbability, BaselineEv,
                      Ev AS ModelEv, CounterHigh, ModelOverconfident, ModelLowConfidence,
                      Voided, AlertSeverity, AlertReason
-              FROM dbo.FbMilkPick
-              WHERE PickDate = @d",
+              FROM dbo.FbMilkPick p
+              WHERE p.PickDate = @d" + publishedGate,
             new { d }, cancellationToken: ct))).ToList();
 
         if (rows.Count == 0) return (0, 0);

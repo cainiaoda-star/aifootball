@@ -209,8 +209,9 @@ public static class AuditCheck
         if (inputAfterEmpty != 0) failures.Add($"输入凭证空集重写后本轮仍有 {inputAfterEmpty} 行（应清空）");
         if (otherRunLeft != 1) failures.Add($"空集重写误删了别的轮：B 轮应留 1 行，实存 {otherRunLeft}");
 
-        // ---------- 5) 轮次头（2026-11-13 第二轮） ----------
+        // ---------- 5) 轮次头与状态（2026-11-13 第二轮加，第三轮补状态） ----------
         // 存在的理由：「全被过滤」的那一轮在四张表里都不留行，与「作业没跑」无法区分。
+        // 第三轮补 Status：没有它，只靠 MAX(RunId) 选榜面 = 失败轮也能顶掉上一轮成功的榜。
         var run = new MilkRun
         {
             RunId = probeRunA,
@@ -219,11 +220,10 @@ public static class AuditCheck
             SalesDates = new[] { probeDate },
             VersionTag = pick.ModelVersion
         };
-        await repo.SaveRunAsync(run, probeDate, inputRows.Count, snapshotRows.Count, 0, 0, "rewrite", "自检轮次", default);
-        await repo.SaveRunAsync(run, probeDate, inputRows.Count, snapshotRows.Count, 1, 2, "rewrite", "自检轮次重复写", default);
-        var runStored = (await conn.QueryAsync<(string RunId, int Raw, int Snap, int Gate, int Pick, string Mode, string? Note)>(
-            @"SELECT RunId, RawMatches AS Raw, SnapshotRows AS Snap, GateRows AS Gate,
-                     PickRows AS Pick, BoardMode AS Mode, Note
+        await repo.StartRunAsync(run, probeDate, "rewrite", "自检轮次", default);
+        await repo.StartRunAsync(run, probeDate, "rewrite", "自检轮次重复写", default);
+        var runStored = (await conn.QueryAsync<(string RunId, int Raw, string Status, DateTime? Published)>(
+            @"SELECT RunId, RawMatches AS Raw, Status, PublishedAt AS Published
               FROM dbo.FbMilkRun WHERE RunDate=@d",
             new { d = probeDate })).ToList();
         if (runStored.Count != 1) failures.Add($"轮次头应为 1 行（同一 RunId 幂等），实存 {runStored.Count}");
@@ -231,8 +231,9 @@ public static class AuditCheck
         {
             var r = runStored[0];
             if (r.Raw != 11) failures.Add($"轮次头 RawMatches 未落库：{r.Raw}");
-            if (r.Gate != 1 || r.Pick != 2) failures.Add($"轮次头计数未更新：gate={r.Gate} pick={r.Pick}");
-            if (r.Mode != "rewrite") failures.Add($"轮次头 BoardMode 不对：{r.Mode}");
+            // 开一轮只写 running：此时还没发布，任何读取都不该把它当成榜面。
+            if (r.Status != MilkRunStatus.Running) failures.Add($"开轮状态应为 running，实为 {r.Status}");
+            if (r.Published != null) failures.Add($"未发布的轮次 PublishedAt 应为 NULL，实为 {r.Published:O}");
         }
 
         // ---------- 6) 闸门表按轮写 + 读路径钉最新一轮（2026-11-13 第二轮） ----------
@@ -261,26 +262,120 @@ public static class AuditCheck
             }
         };
         var gateWritten = await repo.SaveGateAsync(probeDate, gateA, probeRunA, default);
-        var gateReadA = await repo.GetGateAsync(probeDate, default);          // 读路径也要能自愈建列
         if (gateWritten != 2) failures.Add($"闸门写入 {gateWritten} 行，期望 2");
-        if (gateReadA.Count != 2) failures.Add($"闸门读回 {gateReadA.Count} 行，期望 2（最新一轮）");
 
         await repo.SaveGateAsync(
             probeDate,
             new[] { new MilkDirectionDiagnosis { MatchId = probeMatchId + 2, MatchNo = "自检002", Verdict = MilkGateVerdicts.Pass } },
             probeRunB, default);
-        var gateReadLatest = await repo.GetGateAsync(probeDate, default);
         var gateRunAStored = await conn.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM dbo.FbMilkGate WHERE GateDate=@d AND RunId=@run",
             new { d = probeDate, run = probeRunA });
-        if (gateReadLatest.Count != 1)
-            failures.Add($"闸门读的是最新一轮吗：期望 1 行（B 轮），实读 {gateReadLatest.Count}");
         if (gateRunAStored != 2) failures.Add($"闸门 A 轮被改写：应留 2 行，实存 {gateRunAStored}");
+
+        // ---------- 7) 榜面发布：只切到最近一个「成功」轮（2026-11-13 第三轮） ----------
+        //
+        // 这一段是用户点名的端到端口径，必须真读库、真经过 SQL：
+        //   A 轮成功、2 注     → 榜面 2 行
+        //   B 轮成功、0 注     → 榜面归零（关键形态：不删任何行，只切发布指针）
+        //   C 轮失败、1 注、RunId 故意更大 → 榜面仍是 0（失败轮不许被 MAX(RunId) 选中）
+        //   D 轮采集不完整（partial）、1 注 → 榜面仍是 0
+        // 同时断言「历史保留」：库里行数 > 榜面行数。
+        const string probeRunC = "20900101T140000-cccccc";
+        const string probeRunD = "20900101T150000-dddddd";
+
+        MilkPick ProbePick(long id, string no, DateTime at) => new()
+        {
+            MatchNo = no,
+            MatchId = id,
+            LeagueName = "自检联赛",
+            HomeTeam = "自检主队",
+            AwayTeam = "自检客队" + (id % 100),
+            MatchTime = at,
+            PlayType = JcPlayTypes.Jq,
+            OptionCode = "3",
+            OptionName = "3球",
+            Odds = 4.10m,
+            ModelProbability = 20m,
+            Ev = 0.82m,
+            ModelVersion = "SELFCHECK"
+        };
+
+        var pickB = ProbePick(probeMatchId + 1, "自检001", probeDate.AddHours(14));
+        var pickC = ProbePick(probeMatchId + 2, "自检002", probeDate.AddHours(16));
+        var pickD = ProbePick(probeMatchId + 3, "自检003", probeDate.AddHours(18));
+
+        // A：2 注 + 发布
+        await repo.SaveDayAsync(probeDate, new[] { pick, pickB }, probeRunA);
+        var publishedA = await repo.PublishRunAsync(
+            probeRunA,
+            new[] { new MilkRunDateCount { SalesDate = probeDate, PickCount = 2 } },
+            inputRows.Count, snapshotRows.Count, gateA.Length, 2, "自检 A 轮", default);
+        var boardA = await repo.GetDayAsync(probeDate);
+        var gateReadA = await repo.GetGateAsync(probeDate, default);
+        if (publishedA != 1) failures.Add($"A 轮发布影响 {publishedA} 行，期望 1");
+        if (boardA.Count != 2) failures.Add($"A 轮发布后榜面应 2 行，实读 {boardA.Count}");
+        if (gateReadA.Count != 2) failures.Add($"A 轮发布后闸门应 2 行，实读 {gateReadA.Count}");
+
+        // B：成功但 0 注 → 榜面必须归零，且 A 的行仍在库里（保留历史）
+        await repo.StartRunAsync(
+            new MilkRun { RunId = probeRunB, StartedAt = probeDate.AddHours(13), RawMatches = 11, SalesDates = new[] { probeDate } },
+            probeDate, "rewrite", "自检 B 轮", default);
+        await repo.PublishRunAsync(
+            probeRunB,
+            new[] { new MilkRunDateCount { SalesDate = probeDate, PickCount = 0 } },
+            0, 0, 1, 0, "自检 B 轮 0 注", default);
+        var boardB = await repo.GetDayAsync(probeDate);
+        var gateB = await repo.GetGateAsync(probeDate, default);
+        var rowsInDbAfterB = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate=@d", new { d = probeDate });
+        if (boardB.Count != 0) failures.Add($"B 轮发布 0 注后榜面应归零，实读 {boardB.Count} 行");
+        // B 轮只写过 1 条诊断（A 轮是 2 条）：读回 1 条且是 B 那条，才说明「跟的是发布轮」。
+        if (gateB.Count != 1 || gateB[0].MatchId != probeMatchId + 2)
+            failures.Add($"B 轮发布后闸门应只剩 B 的 1 条（{probeMatchId + 2}），实读 {gateB.Count} 条");
+        if (rowsInDbAfterB != 2) failures.Add($"发布 0 注不应删掉历史行：应留 2 行，实存 {rowsInDbAfterB}");
+
+        // C：失败轮（RunId 比 B 大）+ 1 注 + 1 条诊断 → 榜面与闸门都不许切
+        await repo.SaveDayAsync(probeDate, new[] { pickC }, probeRunC);
+        await repo.StartRunAsync(
+            new MilkRun { RunId = probeRunC, StartedAt = probeDate.AddHours(14), RawMatches = 11, SalesDates = new[] { probeDate } },
+            probeDate, "rewrite", "自检 C 轮", default);
+        await repo.SaveGateAsync(probeDate, new[]
+        {
+            new MilkDirectionDiagnosis { MatchId = probeMatchId + 3, MatchNo = "自检003", Verdict = MilkGateVerdicts.Pass }
+        }, probeRunC, default);
+        await repo.CloseRunAsync(probeRunC, MilkRunStatus.Failed, "自检失败轮", 1, 0, 1, 1, default);
+        var boardC = await repo.GetDayAsync(probeDate);
+        var gateC = await repo.GetGateAsync(probeDate, default);
+        if (boardC.Count != 0) failures.Add($"失败轮被选中：榜面应 0 行，实读 {boardC.Count}");
+        if (gateC.Count != 1 || gateC[0].MatchId != probeMatchId + 2)
+            failures.Add($"失败轮的诊断被选中：闸门应仍是 B 的 1 条（{probeMatchId + 2}），实读 {gateC.Count} 条");
+
+        // D：采集不完整（partial）+ 1 注 → 同样不许切
+        await repo.SaveDayAsync(probeDate, new[] { pickD }, probeRunD);
+        await repo.StartRunAsync(
+            new MilkRun { RunId = probeRunD, StartedAt = probeDate.AddHours(15), RawMatches = 8, SalesDates = new[] { probeDate } },
+            probeDate, "partial", "自检 D 轮", default);
+        await repo.CloseRunAsync(probeRunD, MilkRunStatus.Partial, "只采到 8/11 场", 1, 0, 0, 1, default);
+        var boardD = await repo.GetDayAsync(probeDate);
+        if (boardD.Count != 0) failures.Add($"partial 轮被选中：榜面应 0 行，实读 {boardD.Count}");
+
+        // 历史保留：A/C/D 三轮共 4 行都还在，只是没发布
+        var rowsInDbFinal = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate=@d", new { d = probeDate });
+        var runsFinal = (await conn.QueryAsync<(string RunId, string Status)>(
+            "SELECT RunId, Status FROM dbo.FbMilkRun WHERE RunDate=@d ORDER BY RunId",
+            new { d = probeDate })).ToList();
+        if (rowsInDbFinal != 4) failures.Add($"历史未保留：应 4 行（A2+C1+D1），实存 {rowsInDbFinal}");
+        if (runsFinal.Count != 4) failures.Add($"轮次头应 4 行，实存 {runsFinal.Count}");
+        else if (runsFinal.Count(r => r.Status == MilkRunStatus.Success) != 2)
+            failures.Add($"成功轮应 2 个（A/B），实有 {runsFinal.Count(r => r.Status == MilkRunStatus.Success)}");
 
         // ---------- 清理 ----------
         await conn.ExecuteAsync("DELETE FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate=@d", new { d = probeDate });
         await conn.ExecuteAsync("DELETE FROM dbo.FbMilkPick WHERE PickDate=@d", new { d = probeDate });
         await conn.ExecuteAsync("DELETE FROM dbo.FbMilkInput WHERE InputDate=@d", new { d = probeDate });
+        await conn.ExecuteAsync("DELETE FROM dbo.FbMilkRunDate WHERE SalesDate=@d", new { d = probeDate });
         await conn.ExecuteAsync("DELETE FROM dbo.FbMilkRun WHERE RunDate=@d", new { d = probeDate });
         await conn.ExecuteAsync("DELETE FROM dbo.FbMilkGate WHERE GateDate=@d", new { d = probeDate });
         var leftPick = await conn.ExecuteScalarAsync<int>(
@@ -293,8 +388,10 @@ public static class AuditCheck
             "SELECT COUNT(*) FROM dbo.FbMilkRun WHERE RunDate=@d", new { d = probeDate });
         var leftGate = await conn.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM dbo.FbMilkGate WHERE GateDate=@d", new { d = probeDate });
-        if (leftPick != 0 || leftSnap != 0 || leftInput != 0 || leftRun != 0 || leftGate != 0)
-            failures.Add($"清理不干净：pick={leftPick} snapshot={leftSnap} input={leftInput} run={leftRun} gate={leftGate}");
+        var leftRunDate = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM dbo.FbMilkRunDate WHERE SalesDate=@d", new { d = probeDate });
+        if (leftPick != 0 || leftSnap != 0 || leftInput != 0 || leftRun != 0 || leftGate != 0 || leftRunDate != 0)
+            failures.Add($"清理不干净：pick={leftPick} snapshot={leftSnap} input={leftInput} run={leftRun} gate={leftGate} runDate={leftRunDate}");
 
         Console.WriteLine($"# 审计表自检  {DateTime.Now:yyyy-MM-dd HH:mm}");
         Console.WriteLine();
@@ -307,19 +404,25 @@ public static class AuditCheck
         Console.WriteLine($"| 同轮重写后行数（幂等） | {afterRewrite} |");
         Console.WriteLine($"| 写新一轮后总行数 / 旧轮保留 | {afterSecondRun} / {runARows}（期望 {snapshotRows.Count + 1} / {snapshotRows.Count}） |");
         Console.WriteLine($"| 输入凭证 写入 / 读回 / 空集后 | {inputWritten} / {inputStored} / {inputAfterEmpty}（别的轮剩 {otherRunLeft}） |");
-        Console.WriteLine($"| 轮次头幂等 / 计数回写 | {(runStored.Count == 1 ? "1 行" : runStored.Count + " 行")} |");
-        Console.WriteLine($"| 闸门 写入 / 读旧轮 / 读最新轮 | {gateWritten} / {gateReadA.Count} / {gateReadLatest.Count}（A 轮保留 {gateRunAStored}） |");
+        Console.WriteLine($"| 轮次头幂等 / 开轮状态 | {(runStored.Count == 1 ? "1 行" : runStored.Count + " 行")} / {(runStored.Count == 1 ? runStored[0].Status : "?")} |");
+        Console.WriteLine($"| 闸门 写入 / A 轮保留 | {gateWritten} / {gateRunAStored} |");
+        Console.WriteLine($"| 榜面 A 轮发布 2 注 | {boardA.Count} 行（期望 2） |");
+        Console.WriteLine($"| 榜面 B 轮发布 0 注 | {boardB.Count} 行（期望 0，历史仍 {rowsInDbAfterB} 行） |");
+        Console.WriteLine($"| 榜面 失败轮 C（RunId 更大） | {boardC.Count} 行（期望 0） |");
+        Console.WriteLine($"| 榜面 采集不完整轮 D | {boardD.Count} 行（期望 0） |");
+        Console.WriteLine($"| 历史保留 / 轮次头 | {rowsInDbFinal} 行 / {runsFinal.Count} 轮（成功 {runsFinal.Count(r => r.Status == MilkRunStatus.Success)}） |");
         if (bulkExpected > 0)
         {
             var perSec = bulkMs > 0 ? bulkExpected * 1000 / bulkMs : bulkExpected;
             Console.WriteLine($"| 批量写入 {bulkExpected} 行 | {bulkWritten} 行 / {bulkMs} ms（≈{perSec} 行/秒） |");
             Console.WriteLine($"| 出榜作业预算 | 10 分钟硬上限，存档占 {bulkMs / 600.0:0.0}% |");
         }
-        Console.WriteLine($"| 清理后残留 | pick={leftPick} snapshot={leftSnap} input={leftInput} run={leftRun} gate={leftGate} |");
+        Console.WriteLine($"| 清理后残留 | pick={leftPick} snapshot={leftSnap} input={leftInput} run={leftRun} gate={leftGate} runDate={leftRunDate} |");
         Console.WriteLine();
         if (failures.Count == 0)
         {
-            Console.WriteLine("**全部通过。** 两套 INSERT 的列与值数量一致，新列能落库也能读回。");
+            Console.WriteLine("**全部通过。** 两套 INSERT 的列与值数量一致，新列能落库也能读回；"
+                              + "榜面只切到最近一个状态为 success 的轮次，失败轮与不完整轮都不会顶掉它。");
             return 0;
         }
 

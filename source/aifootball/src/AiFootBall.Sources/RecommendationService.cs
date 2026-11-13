@@ -920,6 +920,24 @@ public sealed class RecommendationService
         // 轮次头五处都写同一个 RunId，验收按轮核对，不再拿上一轮的存档冒充本轮覆盖。
         var runAt = DateTime.Now;
         var build = await RecommendMilkWithGateAsync(jcRecs, ct);
+
+        // ★ 采集状态（2026-11-13 第三轮）：`RawMatches > 0` 只证明「拿到了一些场次」。
+        // 部分采集会让 `GetCardsAsync` 的工作集凭空缩小（其余行停在上一批的 CapturedAt），
+        // 按不完整的工作集重写，没采到的那几场的旧票就会被撤掉。
+        // 这里取「本批 vs 该期已知在售场次」，不给结论——结论在 MilkBoardPlan 里。
+        MilkCaptureState capture;
+        try
+        {
+            var (batchAt, issues) = await _repo.GetJcCaptureStateAsync(ct);
+            capture = MilkCaptureState.Build(batchAt, runAt, MilkCaptureState.MaxBatchAge, issues);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            // 查不到采集状态 = 无法证明完整，按「不完整」处理（不清榜），不猜。
+            capture = MilkCaptureState.Missing($"采集状态查询失败：{ex.GetType().Name}: {ex.Message}");
+        }
+
         var run = new MilkRun
         {
             RunId = MilkRun.NewId(runAt),
@@ -927,37 +945,81 @@ public sealed class RecommendationService
             RawMatches = jcRecs?.Count ?? 0,
             SalesDates = SalesDatesFor(jcRecs, today),
             VersionTag = build.Inputs.FirstOrDefault()?.VersionTag
-                         ?? build.ProbSnapshots.FirstOrDefault()?.ModelVersion
+                         ?? build.ProbSnapshots.FirstOrDefault()?.ModelVersion,
+            Capture = capture
         };
         var plan = MilkBoardPlan.Create(run, build.Picks, today);
 
-        var pickRows = 0;
-        if (plan.Mode == MilkBoardMode.Skip)
+        // ★ 顺序（2026-11-13 第三轮，用户明确要求）：先落 running 头 → 再写四类数据 →
+        // 全部成功才标 success 并发布。中途崩溃留下的是 running，**永远不会**被榜面选中；
+        // 反过来的顺序（先写数据后标状态）会留下没有轮次头的孤儿行，事后无从判断算不算数。
+        var started = false;
+        try
         {
-            // 「没取得期号」和「今天没有推荐」是两件事，日志必须能分开看。
-            await _milkPicks.LogAsync("milk:picks", "SKIP", 0,
-                $"[{run.RunId}] {plan.Reason}；本轮一行不动，注单 0 不等于今天没有推荐",
+            await _milkPicks.StartRunAsync(run, today, plan.Mode.ToString().ToLowerInvariant(), plan.Reason, ct);
+            started = true;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            await _milkPicks.LogAsync("milk:run", "FAIL", 0,
+                $"[{run.RunId}] 轮次头写入失败，本轮不发布（榜面保持上一轮）："
+                + $"{ex.GetType().Name}: {ex.Message}", CancellationToken.None);
+        }
+
+        var steps = new MilkRunSteps();
+
+        var pickRows = 0;
+        if (plan.Mode != MilkBoardMode.Rewrite)
+        {
+            // Skip / Partial 都是「一行不动」。但两者原因不同，日志必须分开：
+            // Skip = 没取得可用期号；Partial = 期号确认了、采集不完整。
+            steps.Ok("picks");
+            await _milkPicks.LogAsync("milk:picks",
+                plan.Mode == MilkBoardMode.Partial ? "PARTIAL" : "SKIP", 0,
+                $"[{run.RunId}] {plan.Reason}；本轮不写不删，注单 0 不等于今天没有推荐",
                 CancellationToken.None);
         }
         else
         {
-            foreach (var w in plan.Writes)
-                pickRows += await _milkPicks.SaveDayAsync(w.SalesDate, w.Picks, run.RunId, ct);
+            try
+            {
+                foreach (var w in plan.Writes)
+                    pickRows += await _milkPicks.SaveDayAsync(w.SalesDate, w.Picks, run.RunId, ct);
+                steps.Ok("picks");
 
-            await _milkPicks.LogAsync("milk:picks", "OK", pickRows,
-                $"[{run.RunId}] {plan.Reason}"
-                + $"，受注日 {string.Join(",", plan.Writes.Select(w => w.SalesDate.ToString("MM-dd")))}"
-                + $"；实际写库 {pickRows} 行（只删未开赛，已开赛与已撤注保留）",
-                CancellationToken.None);
+                await _milkPicks.LogAsync("milk:picks", "OK", pickRows,
+                    $"[{run.RunId}] {plan.Reason}"
+                    + $"，受注日 {string.Join(",", plan.Writes.Select(w => w.SalesDate.ToString("MM-dd")))}"
+                    + $"；本轮写库 {pickRows} 行（旧轮的行保留，榜面只显示本轮）",
+                    CancellationToken.None);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                // 注单写失败 = 这一轮不完整，不许发布；否则用户看到的是半份榜。
+                steps.Fail("picks", ex);
+                await _milkPicks.LogAsync("milk:picks", "FAIL", pickRows,
+                    $"[{run.RunId}] 注单写入失败（本轮不发布）：{ex.GetType().Name}: {ex.Message}",
+                    CancellationToken.None);
+            }
         }
 
         // 方向闸的诊断与榜同批落库（2026-11-05）。存下来才回答得了
         // 「11-04 那三场当时模型指哪、市场指哪」——快照一滚就再也追不回来了。
         // 2026-11-13 第二轮：按 RunId 追加 + 保留历史，同一场不再互相覆盖。
         var gateRows = 0;
-        try { gateRows = await _milkPicks.SaveGateAsync(DateTime.Today, build.Gates, run.RunId, ct); }
+        try { gateRows = await _milkPicks.SaveGateAsync(DateTime.Today, build.Gates, run.RunId, ct); steps.Ok("gate"); }
         catch (OperationCanceledException) { throw; }
-        catch { /* 台账表还没建时不影响出票，下一轮再记 */ }
+        catch (Exception ex)
+        {
+            // 闸门是「这场为什么没发」的唯一凭证，属于四类必须齐全的落库之一：
+            // 写不进去这一轮就不发布，否则会出现「榜更新了、诊断还停在上一轮」。
+            steps.Fail("gate", ex);
+            await _milkPicks.LogAsync("milk:gate", "FAIL", 0,
+                $"[{run.RunId}] 方向闸写入失败（本轮不发布）：{ex.GetType().Name}: {ex.Message}",
+                CancellationToken.None);
+        }
 
         // 单列候选判定与榜同批落库（2026-11-08）：判定原因（模型否决 / 比值越界 / 联赛无基线）
         // 是出榜那一刻的模型算出来的，模型每天重拟合，事后还原不出「当时为什么没选它」。
@@ -984,7 +1046,9 @@ public sealed class RecommendationService
         try
         {
             inputRows = await _milkPicks.SaveInputsAsync(today, build.Inputs, run.RunId, ct);
+            steps.Ok("input");
             snapRows = await _milkPicks.SaveProbSnapshotsAsync(today, build.ProbSnapshots, run.RunId, ct);
+            steps.Ok("snapshot");
             var note = build.ProbSnapshots.Count == 0 ? "；本轮 0 档，不写存档（上一轮的行原样保留）" : "";
             await _milkPicks.LogAsync("milk:snapshot", "SUCCESS", snapRows,
                 $"[{run.RunId}] 输入 {build.Inputs.Count} 场 / 凭证 {inputRows} 行；"
@@ -994,26 +1058,71 @@ public sealed class RecommendationService
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            // 存档写不进去不能挡住出票——但必须留下能查的一行。
+            // 失败同样要留下能查的一行——11-13 那张表被清空时，库里没有任何一行能说明
+            // 是「本次 0 行」还是「写坏了」。这一轮也不会发布（见下面的发布判据）。
+            steps.Fail(inputRows == 0 ? "input" : "snapshot", ex);
             await _milkPicks.LogAsync("milk:snapshot", "FAIL", 0,
-                $"[{run.RunId}] 输入 {build.Inputs.Count} 场 / 档位 {build.ProbSnapshots.Count} 行 写入失败："
-                + $"{ex.GetType().Name}: {ex.Message}", CancellationToken.None);
+                $"[{run.RunId}] 输入 {build.Inputs.Count} 场 / 档位 {build.ProbSnapshots.Count} 行 写入失败"
+                + $"（本轮不发布）：{ex.GetType().Name}: {ex.Message}", CancellationToken.None);
         }
 
         // 轮次头（2026-11-13 第二轮）：本轮算了几场、出了几注、走的是哪种模式，落一行。
         // 没有它，「全被过滤」的一轮在库里只表现为「四张表都没变化」，与「作业没跑」无法区分。
-        try
+        // 收尾（2026-11-13 第三轮）：**四类全部成功才发布**；否则标成失败/跳过，榜面继续显示上一轮。
+        //
+        // 「发布」= 在一个事务里写 `FbMilkRunDate`（含 0 注的受注日）并把头标成 success。
+        // 榜面读的是 `FbMilkRunDate ⋈ FbMilkRun(Status='success')`，失败轮 RunId 再大也选不上。
+        if (started)
         {
-            await _milkPicks.SaveRunAsync(
-                run, today, build.Inputs.Count, snapRows, gateRows, plan.PickTotal,
-                plan.Mode == MilkBoardMode.Skip ? "skip" : "rewrite", plan.Reason,
-                CancellationToken.None);
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
-        {
-            await _milkPicks.LogAsync("milk:run", "FAIL", 0,
-                $"[{run.RunId}] 轮次头写入失败：{ex.GetType().Name}: {ex.Message}", CancellationToken.None);
+            try
+            {
+                if (plan.Mode != MilkBoardMode.Rewrite)
+                {
+                    await _milkPicks.CloseRunAsync(run.RunId, plan.RunStatus, plan.Reason,
+                        build.Inputs.Count, snapRows, gateRows, 0, CancellationToken.None);
+                    await _milkPicks.LogAsync("milk:run", plan.Mode == MilkBoardMode.Partial ? "PARTIAL" : "SKIP", 0,
+                        $"[{run.RunId}] 未发布（{plan.RunStatus}）：{plan.Reason}", CancellationToken.None);
+                }
+                else if (!steps.AllOk("picks", "gate", "input", "snapshot")
+                         || !MilkRunSteps.SnapshotCoversInputs(build.Inputs.Count, snapRows))
+                {
+                    var extra = MilkRunSteps.SnapshotCoversInputs(build.Inputs.Count, snapRows)
+                        ? steps.Detail
+                        : $"存档缺失：输入 {build.Inputs.Count} 场但存档 0 行。{steps.Detail}";
+                    await _milkPicks.CloseRunAsync(run.RunId, MilkRunStatus.Failed,
+                        $"落库未全部成功：{steps.Summary}。{extra}",
+                        build.Inputs.Count, snapRows, gateRows, pickRows, CancellationToken.None);
+                    await _milkPicks.LogAsync("milk:run", "FAIL", pickRows,
+                        $"[{run.RunId}] 未发布（failed）：{steps.Summary}；{extra}", CancellationToken.None);
+                }
+                else
+                {
+                    var dates = plan.Writes
+                        .Select(w => new MilkRunDateCount { SalesDate = w.SalesDate, PickCount = w.Picks.Count })
+                        .ToList();
+                    await _milkPicks.PublishRunAsync(run.RunId, dates,
+                        build.Inputs.Count, snapRows, gateRows, pickRows, plan.Reason, ct);
+                    await _milkPicks.LogAsync("milk:run", "SUCCESS", pickRows,
+                        $"[{run.RunId}] 已发布：{plan.Reason}；受注日 "
+                        + string.Join(",", dates.Select(x => $"{x.SalesDate:MM-dd}({x.PickCount}注)"))
+                        + $"；{steps.Summary}", CancellationToken.None);
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                // 发布失败（含事务中途失败）：尽力把这一轮标成 failed，别让它停在 running。
+                try
+                {
+                    await _milkPicks.CloseRunAsync(run.RunId, MilkRunStatus.Failed,
+                        $"发布失败：{ex.GetType().Name}: {ex.Message}", ct: CancellationToken.None);
+                }
+                catch { /* 连标记都失败时，running 本身也不会被榜面选中 */ }
+
+                await _milkPicks.LogAsync("milk:run", "FAIL", 0,
+                    $"[{run.RunId}] 发布失败（榜面保持上一轮）：{ex.GetType().Name}: {ex.Message}",
+                    CancellationToken.None);
+            }
         }
 
         // 票只装**当日受注**的那批注（2026-11-10 随上面的分组一起改）。

@@ -71,6 +71,50 @@ public sealed class BettingRepository
     }
 
     /// <summary>
+    /// 竞彩受注批次的采集状态（2026-11-13 第三轮）。
+    ///
+    /// 判「采集完整」只能拿**本批**与该期**已知在售场次**比：`BettingCard` 按
+    /// (Board, Expect, MatchNo) MERGE，一次只抓到 8 场时另外 3 行的 `CapturedAt` 停在上一批，
+    /// 而 <see cref="GetCardsAsync"/> 只读 `CapturedAt = MAX(...)` 那一批 ——
+    /// 也就是说**部分采集会让工作集凭空缩小**。若不识别，按不完整的工作集重写榜面，
+    /// 没采到的那几场的旧票会被当成「本轮没出」撤掉。
+    ///
+    /// 只统计 `MatchTime &gt; now` 的行：已开赛的场次本来就不该在批里，
+    /// 把它算进「已知」会让每晚的重算都被误判成「不完整」。
+    /// </summary>
+    public async Task<(DateTime? BatchAt, List<MilkIssueState> Issues)> GetJcCaptureStateAsync(
+        CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+
+        var cap = await conn.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
+            "SELECT MAX(CapturedAt) FROM dbo.BettingCard WHERE Board='jc'", cancellationToken: ct));
+        if (cap is null) return (null, new List<MilkIssueState>());
+
+        var rows = (await conn.QueryAsync<(string Issue, int Batch, int Known)>(new CommandDefinition(
+            @"SELECT LEFT(MatchNo, 2) AS Issue,
+                     COUNT(DISTINCT CASE WHEN CapturedAt=@cap THEN MatchNo END) AS Batch,
+                     COUNT(DISTINCT MatchNo) AS Known
+              FROM dbo.BettingCard
+              WHERE Board='jc' AND MatchNo IS NOT NULL AND MatchTime > SYSDATETIME()
+              GROUP BY LEFT(MatchNo, 2)
+              HAVING COUNT(DISTINCT CASE WHEN CapturedAt=@cap THEN MatchNo END) > 0",
+            new { cap }, cancellationToken: ct))).ToList();
+
+        var issues = rows
+            .Where(r => !string.IsNullOrWhiteSpace(r.Issue))
+            .Select(r => new MilkIssueState
+            {
+                Issue = r.Issue,
+                BatchMatches = r.Batch,
+                KnownMatches = r.Known
+            })
+            .ToList();
+
+        return (cap, issues);
+    }
+
+    /// <summary>
     /// 大奶回测用的历史受注场次：当天开赛、或当天受注过的场次。
     ///
     /// 不复用 <see cref="GetCardsByKickoffAsync"/>（2026-11-05 实测踩到）：BettingCard 按
