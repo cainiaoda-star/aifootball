@@ -88,3 +88,17 @@ try {
     Write-Output "   PID=$($conn.OwningProcess)  但探活失败：$($_.Exception.Message)"
     exit 1
 }
+
+# 部署历史（2026-11-13 加）。
+# 起因：11-13 一天部署了四次，事后要回答「几点、哪个提交、哪个构建上了线」时，
+# logs\api-dll-backup-* 只留了**旧** dll，没有任何一行记下提交与执行时间——
+# 结果只能靠文件时间戳倒推，还答不出是谁触发的。
+# 这里每次追加一行；coreHash 取部署后 Core.dll 的 SHA256 前 8 位，
+# 与 /api/health 的 build（MVID 前 8 位）不是同一个哈希，但同样能用来比对「这个包跑没跑」。
+$corePath = Join-Path $api 'AiFootBall.Core.dll'
+$coreHash = if (Test-Path $corePath) { (Get-FileHash $corePath -Algorithm SHA256).Hash.Substring(0, 8) } else { 'missing' }
+$head = 'unknown'
+try { $head = (& git -C $root rev-parse --short HEAD) } catch { }
+$hist = Join-Path $dep 'logs\deploy-history.log'
+Add-Content -Path $hist -Value ("{0}  head={1}  coreHash={2}  pid={3}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $head, $coreHash, $conn.OwningProcess)
+Write-Output "   部署历史已追加：$hist"
