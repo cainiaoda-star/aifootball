@@ -31,11 +31,12 @@
 - **三种形态分开**（`MilkBoardPlan`）：①期号确认+采集完整+全被过滤→按**过滤前**受注日重写（空列表=撤失效旧票）；②只采到部分→`Partial` 不写不删；③过滤前 0 场/批次不可用→一行不动。判据 `MilkCaptureState`（本批在售 vs 该期已知在售）。
 - **发布是状态机不是 `MAX(RunId)`**：`FbMilkRun.Status`；先落 running 头 → 写 picks/gate/input/snapshot → 全成功才同事务写 `FbMilkRunDate`（0 注也写行）并标 success。失败轮 RunId 再大也不许顶榜。读路径全认 `Status='success'`，无新轮退回 `RunId IS NULL`。
 - **唯一键必须含 RunId**：`UX_FbMilkPick_Run(PickDate,RunId,MatchId,Play,Opt)`、`UX_FbMilkGate_Run(GateDate,RunId,MatchId)`。不加就存不了第二轮（真库撞 2601）。
-- ★ **发布前逐档核对，预期从输入侧推**：`MilkInputMatch.Options`（`Distributed++` 处记的赔率档位清单）× 档位域（SPF/NSPF 三向、BQ 九组合、JQ 0~7、BF 全档）= 应有存档。漏一场/漏一档即 failed 不发布。合法缺项只能申报固定枚举（no-odds / code-outside-domain / unknown-play / nspf-dirty-option / bq-joint-unavailable / engine-skipped），未知原因判失败；豁免键两边都不参与比对，原因进日志。0 注对 0 行必须通过。
+- ★ **发布前逐档核对，预期从输入侧推**：`MilkInputMatch.Options`（`Distributed++` 处记的赔率档位清单）× 档位域（SPF/NSPF 三向、BQ 九组合、JQ 0~7、BF 全档）= 应有存档。漏一场/漏一档即 failed 不发布。**0 注对 0 行必须通过**。
+- ★★★ **豁免必须带证据，`engine-skipped` 不接受**（11-13 第六轮）：原因只认 `no-odds`/`code-outside-domain`/`unknown-play`/`nspf-dirty-option`/`bq-joint-unavailable`，每条绑定「允许条件+证据前缀」（`options=0`、`code=JQ/8`、`play=XYZ`、`points=9;joint=absent`）。空证据/证据不符 → 失败。`engine-skipped` 列为 `Accepted=false`：整轮无输入时两边都是 0 本就不需豁免，单场无赔率必须逐场按 `no-odds` 报。**被拒的豁免不产生 ignore 键**（否则「拒绝」与「放行」账本表现一致）。`CrossCheck`：no-odds 的场次出了票 → `exempt-violated` 不发布（赔率缺失不许借豁免继续推荐）。
 - **历史战绩不能照抄榜面「最新轮」**（会让昨天那注随今天重算消失），也不能把多副本全算（同一注算 3~5 次）。口径：按 (受注日,场次,玩法,档位) 去重——**价格取首份、命中取任一副本、撤注/结算以冻结台账为准**。升级前 `RunId IS NULL` 的行天然满足，历史不丢。
 - ★★ **价格与撤注是两条语义，不能同一次去重**：`MIN(PickId)` 取价时把 `Voided` 也冻结成首份 → 撤注永远同步不进台账（隔离库实测）。**结算即终态**：`SettledAt` 非空后不许再改撤注，否则出现「未撤注、已结算、收益空」的行。
 - **撤注不进命中率分子分母**，单列计数（`MilkPlayStat.Voided/VoidedHit`）。生产 11-13 因此 9/28=32.1% → 9/27=33.3%（`PickId=10608`）。
-- **隔离库 `AiFootBall_AuditTest`**（用户同意建）：`milk-isolated-check` 从生产 `SELECT * INTO ... WHERE 1=0` 克隆 9 张表结构，补 PK/唯一键/默认值（SELECT INTO 不带默认值），造多轮副本验三种形态，12 项断言要求**报表与空跑台账逐项相等**。硬编码库名，指向生产库名直接拒绝。
+- **隔离库 `AiFootBall_AuditTest`**（用户同意建，**保留勿删**）：`milk-isolated-check` 从生产 `SELECT * INTO ... WHERE 1=0` 克隆 9 张表结构，补 PK/唯一键/默认值（SELECT INTO 不带默认值），造多轮副本验三种形态，12 项断言要求**报表与空跑台账逐项相等**。硬编码库名，指向生产库名直接拒绝。
 
 ## 六 赔率新鲜度（按链路分开）
 - **竞彩 `FbJcOddsHistory`**（出票价）：2min 一轮，最大间隔 4min → 数据没坏；`GetLatestAsync` **零 age 守卫**。
