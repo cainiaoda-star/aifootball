@@ -51,6 +51,8 @@ foreach ($n in $files) {
     if (Test-Path $f) { Copy-Item $f -Destination $bak -Force }
 }
 Write-Output "   旧程序集备份：$bak"
+$oldCore = Join-Path $bak 'AiFootBall.Core.dll'
+$oldHash = if (Test-Path $oldCore) { (Get-FileHash $oldCore -Algorithm SHA256).Hash.Substring(0, 8) } else { 'fresh' }
 
 Write-Output '== 3/4 替换程序集 =='
 foreach ($n in $files) {
@@ -83,22 +85,57 @@ if (-not $conn) {
 
 try {
     $code = (Invoke-WebRequest 'http://127.0.0.1:5088/' -UseBasicParsing -TimeoutSec 10).StatusCode
-    Write-Output "   PID=$($conn.OwningProcess)  / => HTTP $code"
+    Write-Output "   PID=$((@($conn)[0]).OwningProcess)  / => HTTP $code"
 } catch {
-    Write-Output "   PID=$($conn.OwningProcess)  但探活失败：$($_.Exception.Message)"
+    Write-Output "   PID=$((@($conn)[0]).OwningProcess)  但探活失败：$($_.Exception.Message)"
     exit 1
 }
 
-# 部署历史（2026-11-13 加）。
+# 部署历史（2026-11-13 加，同日补全）。
 # 起因：11-13 一天部署了四次，事后要回答「几点、哪个提交、哪个构建上了线」时，
 # logs\api-dll-backup-* 只留了**旧** dll，没有任何一行记下提交与执行时间——
 # 结果只能靠文件时间戳倒推，还答不出是谁触发的。
-# 这里每次追加一行；coreHash 取部署后 Core.dll 的 SHA256 前 8 位，
-# 与 /api/health 的 build（MVID 前 8 位）不是同一个哈希，但同样能用来比对「这个包跑没跑」。
+# 现在每行记：时间 / HEAD / 旧 coreHash / 新 coreHash / PID / 备份目录 / 触发者 / health.build。
+# 回滚 = 把 bak 目录里的 dll 拷回 app\api 再启动；用 old coreHash 能核对回滚的是哪一版。
+#
+# 2026-11-13 16:0x 修两处：`git` 不在 PowerShell 的 PATH 里（head 恒 unknown）
+# 与 `$conn` 是多元素数组（pid 记成 System.Object[]）。HEAD 改为「git 取不到就直接读 .git\HEAD」。
 $corePath = Join-Path $api 'AiFootBall.Core.dll'
 $coreHash = if (Test-Path $corePath) { (Get-FileHash $corePath -Algorithm SHA256).Hash.Substring(0, 8) } else { 'missing' }
-$head = 'unknown'
-try { $head = (& git -C $root rev-parse --short HEAD) } catch { }
+$head = ''
+try { $head = ((& git -C $root rev-parse --short HEAD) | Select-Object -First 1) } catch { }
+if (-not $head) {
+    try {
+        $gitHead = Join-Path $root '.git\HEAD'
+        if (Test-Path $gitHead) {
+            $ref = (Get-Content $gitHead -TotalCount 1).Trim()
+            if ($ref -like 'ref: *') {
+                $refPath = Join-Path $root ('.git\' + ($ref.Substring(5) -replace '/', '\'))
+                if (Test-Path $refPath) {
+                    $sha = (Get-Content $refPath -TotalCount 1).Trim()
+                    if ($sha.Length -ge 7) { $head = $sha.Substring(0, 7) }
+                }
+            } elseif ($ref.Length -ge 7) { $head = $ref.Substring(0, 7) }
+        }
+    } catch { }
+}
+if (-not $head) { $head = 'unknown' }
+
+# 触发者：部署脚本的直接父进程（人工终端 / 计划任务 / 智能体会话壳）。
+$trigger = 'unknown'
+try {
+    $me = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $PID) -ErrorAction SilentlyContinue
+    if ($me) {
+        $par = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $me.ParentProcessId) -ErrorAction SilentlyContinue
+        if ($par) { $trigger = $par.Name + '#' + $par.ProcessId }
+    }
+} catch { }
+
+$build = 'n/a'
+try { $build = (Invoke-RestMethod 'http://127.0.0.1:5088/api/health' -TimeoutSec 30).build } catch { $build = 'health-err' }
+
+$pidn = (@($conn)[0]).OwningProcess
 $hist = Join-Path $dep 'logs\deploy-history.log'
-Add-Content -Path $hist -Value ("{0}  head={1}  coreHash={2}  pid={3}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $head, $coreHash, $conn.OwningProcess)
+Add-Content -Path $hist -Value ("{0}  head={1}  old={2}  new={3}  build={4}  pid={5}  bak={6}  trigger={7}" -f `
+    (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $head, $oldHash, $coreHash, $build, $pidn, (Split-Path $bak -Leaf), $trigger)
 Write-Output "   部署历史已追加：$hist"
