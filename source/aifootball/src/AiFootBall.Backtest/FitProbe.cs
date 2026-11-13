@@ -21,7 +21,7 @@ namespace AiFootBall.Backtest;
 ///     容差已全部删除，现在判据只有一条：**进训练集就是 FAIL**。
 ///   · 线上拟合显式传 asOf（HitProbabilityService），SQL 层再用 GETDATE() 兜底，两层都卡。
 ///
-/// 本探针查八件事，任一条不成立就退出码 1：
+/// 本探针前七节任一条不成立就退出码 1（第八节只报数，不参与判定）：
 ///   1. 真实取样回来的样本，MatchTime 是不是都不为空、都不晚于取数时刻；
 ///   2. 线上口径（显式 asOf = 取数时刻）的拟合窗口是不是真实日期，且 FitTo 不越过该时刻；
 ///   2b. 同一时刻取两次样，版本戳是否逐字相同（取样顺序不稳会让 rho 乱跳，见第二节的注）；
@@ -31,6 +31,9 @@ namespace AiFootBall.Backtest;
 ///   6. 衰减对比用过的样本路径有没有时间字段（`ModelWeightStudy` 自己那条 SQL）；
 ///   7. 这次过滤到底动了什么：被剔掉的场次、涉及的联赛与球队、λ 的实际变化。
 ///      —— 概率不是「零变化」，这一节就是「变了多少」的留痕。
+///   8. 「开赛 + 150 分钟」这条闸到底有多可信：拿库里唯一与入库时刻有关的字段
+///      （`FbMatch.UpdatedAt`，即最后一次写入）量化残余泄漏，并明确写出回测局限。
+///      —— 这一节只报数，不参与 PASS/FAIL：没有任何历史证据能证明「当时确实已入库」。
 ///
 /// 用法：dotnet run --project src/AiFootBall.Backtest -c Release -- fit-probe [截止日偏移天数]
 /// 默认偏移 30 天。全程只读，不写任何表。
@@ -115,14 +118,18 @@ public static class FitProbe
         else if (model.FitGames != all.Count - unusable)
             failures.Add($"FitGames={model.FitGames} ≠ 取样 {all.Count} − 不可用 {unusable}——"
                 + "有样本在 Fit 里被静默丢掉，窗口戳与实际训练集不一致");
+        else if (Math.Abs(model.Rho - ScorelineModel.DefaultRho) > 1e-9)
+            failures.Add($"rho={model.Rho:0.000} ≠ 固定值 {ScorelineModel.DefaultRho:0.000}"
+                + "——估计路径又回来了，同代码同数据会出两张榜");
         else
             Console.WriteLine("数值判定：**PASS** —— 窗口是真实日期，FitTo 不越过取数时刻，"
-                + "场次数 = 取样 − 不可用样本（差额有据可查）。");
+                + $"场次数 = 取样 − 不可用样本，rho 等于固定值 {ScorelineModel.DefaultRho:0.000}。");
         Console.WriteLine();
-        Console.WriteLine($"注：rho 由 `FitRho` 按 1/{Math.Max(1, all.Count / 2500)} 的步长子采样估计，"
-            + $"网格步长 0.01。样本组成微变（本次剔掉 2 场）就可能让它跳一格，"
-            + $"所以 rho 只作留痕、不当判据。取样 SQL 已加 `ORDER BY MatchTime, MatchId`，"
-            + $"保证两次取样抽出同一批子样本——下一节就是钉这件事。");
+        Console.WriteLine($"注：ρ 自 2026-11-13 起是**固定值 {ScorelineModel.DefaultRho:0.000}**（用户拍板选项 B），"
+            + "不再由 `FitRho` 抽样估计。当初那条路径按步长抽 2500 个子样本，"
+            + "同一份 178177 场三次跑出 0.010 / 0.000 / -0.010；加了 ORDER BY 之后稳定落在 -0.060。"
+            + "前向测试集显示 -0.060 的 1X2 Brier 显著更差（+0.00072），所以恢复基准值而不是采用它。"
+            + "下一节开始钉的是「同一时刻取两次样，版本戳必须逐字相同」。");
         Console.WriteLine();
 
         // ---------- 2b. 取样可重复性 ----------
@@ -304,13 +311,114 @@ public static class FitProbe
             }
         }
 
+        // ---------- 8. 「已完赛」这条闸有多可信 ----------
+        // 用户 2026-11-13：开赛 + 150 分钟只是完赛代理，不是「当时已完赛」的证据；
+        // 要优先用实际完赛／结果入库时间，缺证据就明确说清回测局限，不许宣称已彻底消除。
+        // 库里的候选证据只有 FbMatch.UpdatedAt，而它是**最后一次写入**：重采会把老场刷成当前批次。
+        // 所以这一节能回答的只有两件事：① 训练集里有多少样本「能证明」当时已入库；② 可观测的
+        // 首写延迟分布长什么样。全部只报数，没有 PASS 条款——我们确实没有 18 个月的入库留痕。
+        Console.WriteLine();
+        Console.WriteLine("## 八、结论入库证据（「开赛 + 150 分钟」的残余泄漏）");
+        Console.WriteLine();
+        await using (var conn = await factory.OpenAsync())
+        {
+            // 两个时点必须都看：asOf=now 时「能证明已入库」几乎必然 100%（库里每一行都写在这之前），
+            // 那正是线上口径，本来就没有泄漏；真正要量化的是历史 asOf —— 回测用它重建「当时已知什么」。
+            static string TrainCond(string p) => $@"f.Status = 3 AND f.HomeScore IS NOT NULL AND f.AwayScore IS NOT NULL
+                    AND f.MatchTime >= DATEADD(month, -18, GETDATE())
+                    AND f.MatchTime <= DATEADD(minute, -@dur, {p})";
+
+            var proof = (await conn.QueryAsync<(int Na, int Pa, int Ra, int Nb, int Pb, int Rb)>(
+                $@"SELECT
+                     (SELECT COUNT(*) FROM dbo.FbMatch f WHERE {TrainCond("@a")}) AS Na,
+                     (SELECT COUNT(*) FROM dbo.FbMatch f WHERE {TrainCond("@a")}
+                        AND f.UpdatedAt IS NOT NULL AND f.UpdatedAt <= @a) AS Pa,
+                     (SELECT COUNT(*) FROM dbo.FbMatch f WHERE {TrainCond("@a")}
+                        AND f.UpdatedAt > DATEADD(day, 3, f.MatchTime)) AS Ra,
+                     (SELECT COUNT(*) FROM dbo.FbMatch f WHERE {TrainCond("@b")}) AS Nb,
+                     (SELECT COUNT(*) FROM dbo.FbMatch f WHERE {TrainCond("@b")}
+                        AND f.UpdatedAt IS NOT NULL AND f.UpdatedAt <= @b) AS Pb,
+                     (SELECT COUNT(*) FROM dbo.FbMatch f WHERE {TrainCond("@b")}
+                        AND f.UpdatedAt > DATEADD(day, 3, f.MatchTime)) AS Rb",
+                new { a = fetchedAt, b = cut, dur = ScorelineModel.MatchDurationMinutes })).Single();
+
+            // 可观测首写延迟：只取 UpdatedAt 落在开赛 +24h 内的行——这些行没被后续重采覆盖过，
+            // 它们的 UpdatedAt 近似「第一次写入时刻」。被重采刷过的行（多数）无法还原，这一点必须写明。
+            var lat = (await conn.QueryAsync<(int N, int Le150, int Le240, int Le360, int MaxM)>(
+                @"SELECT COUNT(*) AS N,
+                         ISNULL(SUM(CASE WHEN m <= 150 THEN 1 ELSE 0 END), 0) AS Le150,
+                         ISNULL(SUM(CASE WHEN m <= 240 THEN 1 ELSE 0 END), 0) AS Le240,
+                         ISNULL(SUM(CASE WHEN m <= 360 THEN 1 ELSE 0 END), 0) AS Le360,
+                         ISNULL(MAX(m), 0) AS MaxM
+                  FROM (SELECT DATEDIFF(minute, MatchTime, UpdatedAt) AS m
+                        FROM dbo.FbMatch
+                        WHERE HomeScore IS NOT NULL AND AwayScore IS NOT NULL
+                          AND MatchTime >= DATEADD(day, -30, GETDATE())
+                          AND UpdatedAt >= MatchTime
+                          AND DATEDIFF(minute, MatchTime, UpdatedAt) <= 1440) t")).Single();
+
+            // 赛果抓取节奏：football 作业的实际间隔（决定「结果要等多久才进库」）。
+            var runs = (await conn.QueryAsync<DateTime>(
+                @"SELECT StartedAt FROM dbo.SyncLog
+                  WHERE TaskName = 'football' AND StartedAt >= DATEADD(day, -14, GETDATE())
+                  ORDER BY StartedAt")).ToList();
+            var gaps = new List<double>();
+            for (var i = 1; i < runs.Count; i++) gaps.Add((runs[i] - runs[i - 1]).TotalMinutes);
+            gaps.Sort();
+            var gapMed = gaps.Count > 0 ? gaps[gaps.Count / 2] : 0;
+            var logFrom = (await conn.ExecuteScalarAsync<DateTime?>(
+                "SELECT MIN(StartedAt) FROM dbo.SyncLog WHERE TaskName = 'football'")) ?? default;
+
+            string Pc(int part, int whole) => whole == 0 ? "—" : $"{100.0 * part / whole:0.00}%";
+            Console.WriteLine($"| 项目 | 线上口径（asOf={fetchedAt:MM-dd HH:mm}） | 回测口径（asOf={cut:MM-dd}） |");
+            Console.WriteLine("|---|---|---|");
+            Console.WriteLine($"| 训练集场次（开赛 + {ScorelineModel.MatchDurationMinutes} 分钟 ≤ asOf） | {proof.Na} | {proof.Nb} |");
+            Console.WriteLine($"| 能用 `UpdatedAt ≤ asOf` 证明当时已入库 | {proof.Pa}（{Pc(proof.Pa, proof.Na)}） "
+                + $"| {proof.Pb}（{Pc(proof.Pb, proof.Nb)}） |");
+            Console.WriteLine($"| 只有代理证据（`UpdatedAt` 已被重采刷晚） | {proof.Na - proof.Pa} "
+                + $"| {proof.Nb - proof.Pb} |");
+            Console.WriteLine($"| 训练集里 `UpdatedAt` 晚于开赛 3 天（被重采刷过） | {proof.Ra}（{Pc(proof.Ra, proof.Na)}） "
+                + $"| {proof.Rb}（{Pc(proof.Rb, proof.Nb)}） |");
+            Console.WriteLine();
+            Console.WriteLine("读法：线上口径本来就无泄漏（SQL 带 `Status=3` + 比分非空，取到的一定是当时已知的结果），");
+            Console.WriteLine("所以那一列接近 100% 是必然的；**要看的是回测那一列**——它才是「当时已知什么」的重建精度。");
+            Console.WriteLine("可观测首写延迟（近 30 天、`UpdatedAt` 落在开赛 +24h 内的行；被重采刷过的行无法还原）：");
+            Console.WriteLine();
+            Console.WriteLine("| 开赛到入库 | 场次 | 占可观测样本 |");
+            Console.WriteLine("|---|---|---|");
+            string Pct(int n) => lat.N == 0 ? "—" : $"{100.0 * n / lat.N:0.0}%";
+            Console.WriteLine($"| ≤ 150 分钟（现有闸放行的口径） | {lat.Le150} | {Pct(lat.Le150)} |");
+            Console.WriteLine($"| 151–240 分钟 | {lat.Le240 - lat.Le150} | {Pct(lat.Le240 - lat.Le150)} |");
+            Console.WriteLine($"| 241–360 分钟 | {lat.Le360 - lat.Le240} | {Pct(lat.Le360 - lat.Le240)} |");
+            Console.WriteLine($"| > 360 分钟 | {lat.N - lat.Le360} | {Pct(lat.N - lat.Le360)} |");
+            Console.WriteLine($"| 可观测样本合计 | {lat.N} | 最长 {lat.MaxM} 分钟 |");
+            Console.WriteLine();
+            Console.WriteLine($"赛果抓取作业 `football`：近 14 天 {runs.Count} 次，间隔中位 **{gapMed:0} 分钟**"
+                + $"（最小 {gaps.FirstOrDefault():0}、最大 {gaps.LastOrDefault():0}）；"
+                + $"作业日志只从 **{(logFrom == default ? "—" : logFrom.ToString("yyyy-MM-dd"))}** 起有记录，"
+                + "覆盖不了 18 个月训练窗口，所以历史入库时刻**不可还原**。");
+            Console.WriteLine();
+            Console.WriteLine("结论（必须原样引用，不许改写成「已消除」）：");
+            Console.WriteLine($"- 「开赛 + {ScorelineModel.MatchDurationMinutes} 分钟」是**完赛代理**，不是「当时确实已入库」的证据。");
+            Console.WriteLine("- 加时、延期、中断，以及抓取作业的小时间隔，都可能让样本在截止时刻其实还没入库；");
+            Console.WriteLine($"  上表可观测样本里只有 {Pct(lat.Le150)} 落在 150 分钟内，说明这条闸**偏松**而不是偏紧。");
+            Console.WriteLine("- 影响面仅限**回测**：线上拟合的 SQL 自带 `Status=3` + 比分非空，取到的一定是当时已知的结果，");
+            Console.WriteLine("  不存在这个泄漏。历史回测里 21:30 之后开赛的晚场，其赛果当天往往还没入库。");
+            Console.WriteLine("- 要真正消除，需要「首次入库时间」的历史留痕（现在没有），或用抓取网格重建 cutoff——");
+            Console.WriteLine("  两者都是新一轮工作，不在本次修复范围内，也不许拿「常见延迟」当参数拍脑袋定。");
+        }
+
         // ---------- 结论 ----------
         Console.WriteLine();
         Console.WriteLine("## 结论");
         Console.WriteLine();
         if (failures.Count == 0)
         {
-            Console.WriteLine("**PASS** —— 取样时间字段、拟合窗口、asOf 截断、before 时间闸、未来场次零泄漏五项全部成立。");
+            Console.WriteLine("**PASS** —— 取样时间字段、拟合窗口、asOf 截断、before 时间闸、未来场次零泄漏、rho 固定六项全部成立。");
+            Console.WriteLine();
+            Console.WriteLine("但第八节是**已知局限**，不是通过项：「开赛 + 150 分钟」只是完赛代理，"
+                + "历史入库时刻在库里无法还原（回测口径下 100% 的行被重采刷晚）。"
+                + "任何结论都不许写成「泄漏已彻底消除」。");
             return 0;
         }
 

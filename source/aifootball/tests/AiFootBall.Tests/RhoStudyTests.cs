@@ -110,4 +110,53 @@ public class RhoStudyTests
 
         Assert.Equal(samples.Count - 1, n);
     }
+
+    // ---------------- ρ 固定（2026-11-13 用户拍板选项 B） ----------------
+
+    /// <summary>
+    /// 钉死拍板值。改这个常量等于改模型，必须带前向回测与用户批准；
+    /// 让它先红一条测试，比让它悄悄变一个数字安全。
+    /// </summary>
+    [Fact]
+    public void DefaultRho_IsApprovedBaseline()
+        => Assert.Equal(0.010, ScorelineModel.DefaultRho, 12);
+
+    /// <summary>
+    /// ρ 不再由数据估计：不同样本形态（进球多的、进球少的、平局多的）都必须落同一个值。
+    /// 旧实现这里会随样本变化，正是「同一份代码换顺序就出不同 ρ」的根。
+    /// </summary>
+    [Theory]
+    [InlineData(2, 1)]
+    [InlineData(0, 0)]
+    [InlineData(4, 0)]
+    [InlineData(1, 1)]
+    public void Fit_UsesFixedRho_ForAnySampleShape(int homeGoals, int awayGoals)
+    {
+        var model = ScorelineModel.Fit(Make(homeGoals: homeGoals, awayGoals: awayGoals));
+
+        Assert.True(model.Ready);
+        Assert.Equal(ScorelineModel.DefaultRho, model.Rho, 12);
+        Assert.Contains($"rho={ScorelineModel.DefaultRho:0.000}", model.VersionTag);
+    }
+
+    /// <summary>
+    /// 换物理顺序（正序/倒序/随机）必须得到逐字相同的版本戳。
+    /// 这是审计的前提：版本戳不同，事后就无法解释「这条注当时用的哪个模型」。
+    /// </summary>
+    [Fact]
+    public void Fit_RhoDoesNotDependOnSampleOrder()
+    {
+        var samples = Make(600);
+        var forward = ScorelineModel.Fit(samples);
+        var backward = ScorelineModel.Fit(Enumerable.Reverse(samples).ToList());
+        var rnd = new Random(20261113);
+        var shuffled = samples.OrderBy(_ => rnd.Next()).ToList();
+        var byShuffle = ScorelineModel.Fit(shuffled);
+
+        Assert.Equal(ScorelineModel.DefaultRho, forward.Rho, 12);
+        Assert.Equal(forward.Rho, backward.Rho, 12);
+        Assert.Equal(forward.Rho, byShuffle.Rho, 12);
+        Assert.Equal(forward.VersionTag, backward.VersionTag);
+        Assert.Equal(forward.VersionTag, byShuffle.VersionTag);
+    }
 }

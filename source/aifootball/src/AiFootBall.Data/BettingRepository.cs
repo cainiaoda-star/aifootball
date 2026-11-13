@@ -515,11 +515,21 @@ public sealed class BettingRepository
     /// 差别只在历史回测：截止 10-14 23:00 拟合时，10-14 22:30 开赛的那场**当时还没踢完**，
     /// 却因为「今天库里有比分」被算进训练集——这是用未来结果训练过去的模型。
     /// 150 分钟与完场判据（`Status==3 || MatchTime<=now-150min`）同源；线上 asOf=now，代价是刚完场的几场。
+    /// 这个分钟数只在 <see cref="ScorelineModel.MatchDurationMinutes"/> 定义一次，这里当参数传，别再写第二个字面量。
     ///
-    /// <c>ORDER BY f.MatchTime, f.MatchId</c> 不是装饰（2026-11-13 加）：<c>ScorelineModel.FitRho</c>
-    /// 是按**下标等距**子采样的（17.8 万场取 2500 个，步长 71）。取样顺序一变，被抽中的样本就换了，
-    /// rho 会在网格上跳格——实测同一份 178177 场、同样的代码，三次跑出 0.010 / 0.000 / -0.010。
-    /// 那是「同代码同数据出两张榜」，审计等于白做。加上稳定的排序键之后 rho 可复现。
+    /// ★ 但「开赛 + 150 分钟」只是**完赛代理**，不是「当时确实已完赛」的证据（用户 2026-11-13 指出）。
+    /// 为什么不能直接用库里的时间戳：`FbMatch.UpdatedAt` 是**最后一次写入**时间，
+    /// 每次重采都会把老场刷成当前批次（实测近 3 个月 42951 行里 38597 行 UpdatedAt 晚于开赛 3 天，89.9%），
+    /// 所以它只能证明「此刻已知」，证明不了「当时未知」。用它当门槛只有两种结局：
+    /// 收紧（要求 UpdatedAt ≤ asOf）→ 历史样本几乎被剔光；放松（UpdatedAt ≤ asOf 即放行）→
+    /// 同一场是否入模取决于抓取批次，等于把刚修掉的「不可复现」再引进来。
+    /// 因此这里保留代理口径，并明确承认残余风险：加时/延期/中断、以及抓取作业每小时一次带来的延迟，
+    /// 都可能让个别样本在截止时刻其实还没入库。量化这个残余的工具是 `fit-probe` 第八节。
+    ///
+    /// <c>ORDER BY f.MatchTime, f.MatchId</c> 不是装饰（2026-11-13 加）：当初 <c>FitRho</c>
+    /// 按**下标等距**子采样（17.8 万场取 2500 个，步长 71），顺序一变抽中的样本就换，rho 会在网格上跳格
+    /// （实测同一份 178177 场三次跑出 0.010 / 0.000 / -0.010）。ρ 现已固定（<see cref="ScorelineModel.DefaultRho"/>），
+    /// 但排序键保留：浮点累加、拟合窗口、未来任何抽样都得有确定顺序，否则「同代码同数据出两张榜」会再来一次。
     /// </summary>
     public async Task<List<ScoreSample>> GetScoreSamplesAsync(
         CancellationToken ct = default, DateTime? before = null, DateTime? asOf = null)
@@ -540,10 +550,10 @@ public sealed class BettingRepository
                 AND f.HomeScore IS NOT NULL AND f.AwayScore IS NOT NULL
                 AND f.MatchTime >= DATEADD(month, -18, GETDATE())
                 AND (@before IS NULL OR f.MatchTime < @before)
-                AND (@asOf IS NULL OR f.MatchTime <= DATEADD(minute, -150, @asOf))
-                AND f.MatchTime <= DATEADD(minute, -150, GETDATE())
+                AND (@asOf IS NULL OR f.MatchTime <= DATEADD(minute, -@dur, @asOf))
+                AND f.MatchTime <= DATEADD(minute, -@dur, GETDATE())
               ORDER BY f.MatchTime, f.MatchId",
-            new { before, asOf }, cancellationToken: ct));
+            new { before, asOf, dur = ScorelineModel.MatchDurationMinutes }, cancellationToken: ct));
         return rows.ToList();
     }
 

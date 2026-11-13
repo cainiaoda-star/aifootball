@@ -71,8 +71,38 @@ public sealed class ScorelineModel
     /// 线上因为 fitMoment = now 且 Status=3，几乎碰不到；回测天天碰。
     /// 判据只认「开赛时间 + 150 分钟 ≤ 截止时刻」，不认「现在有比分」——有比分不代表当时有。
     /// 150 分钟与完场判据（`Status==3 || MatchTime<=now-150min`）同源。
+    ///
+    /// ★ 这是**代理**，不是「当时已完赛」的严格证据（用户 2026-11-13 指出）：
+    ///   · 加时、点球、伤停补时超长、延期、中断都可能超过 150 分钟；
+    ///   · 库里唯一与「入库时刻」有关的字段是 `FbMatch.UpdatedAt`，但它是**最后一次写入**时间，
+    ///     重采会把老场的 UpdatedAt 全部刷成当前批次（实测 3 个月内 89.9% 的行 UpdatedAt 晚于开赛 3 天），
+    ///     所以它只能证明「此刻已知」，不能证明「当时未知」；
+    ///   · 真实赛果抓取作业 `football` 每小时跑一次（近 2 天实测间隔 60 分钟），
+    ///     所以即使踢满 110 分钟，结果也要等到下一个整点才入库 —— 150 分钟只够覆盖「踢完 + 不到一小时的抓取延迟」。
+    /// 结论：这条闸把「明显还在踢」的样本挡住了，**残余泄漏风险仍然存在，不许宣称已彻底消除**。
+    /// 严格口径要等有「首次入库时间」的历史留痕才能做，`fit-probe` 第八节在量化这个残余。
     /// </summary>
     public const int MatchDurationMinutes = 150;
+
+    /// <summary>
+    /// 低位比分相关系数 ρ，**固定值**（2026-11-13 用户拍板，选项 B）。
+    ///
+    /// 原来由 <c>FitRho</c> 按 count/2500 步长抽 2500 个子样本、网格搜索 −0.20..+0.05 得到。
+    /// 这条路径的问题不是「不够准」，而是**不可复现**：同一份 178177 场、同一份代码，
+    /// 取样顺序一变就落过 +0.010 / 0.000 / −0.010；加了 ORDER BY 之后稳定落在 −0.060。
+    ///
+    /// 11-13 用前向测试集（53,488 场，切点 2026-07-12，测试集不参与 ρ 选择）对比过：
+    ///   ρ=+0.010（基准） 1X2 Brier 0.61661 / 0:0 校准 −0.11pp
+    ///   ρ=−0.060（新值） 1X2 Brier 0.61733（+0.00072，95% 区间 [+0.00056,+0.00089] 显著变差）
+    ///                    0:0 预测 6.99%（实际 6.36%，过度修正 +0.63pp）、1:1 高估 +1.14pp
+    ///   ρ=0 的 1X2 与 +0.010 差 0.00006，属噪声级；比分 LogLoss 各档差 ≤0.0004。
+    /// 所以「可复现」不等于「更准」。用户裁定：**先恢复基准 +0.010，不借这次审计修复选新参数**；
+    /// ρ=0 与「全量似然重估」留作下一轮的独立验证（换一个没看过的时段，不重复使用这批测试集）。
+    ///
+    /// 因此 <c>Fit</c> 不再估计 ρ：同代码 + 同数据 + 同窗口 ⇒ 恒定版本戳。
+    /// 改这个常量等于改模型，必须带回测与用户批准，不要在别处写第二个值。
+    /// </summary>
+    public const double DefaultRho = 0.010;
 
     /// <summary>本联赛样本达到这个数就不跨联赛取（与出注门槛 MinTeamGames 一致）。</summary>
     private const int MinOwnGames = 5;
@@ -586,9 +616,10 @@ public sealed class ScorelineModel
         }
 
         var namesByLeague = BuildNameIndex(teams);
-        var draft = new ScorelineModel(true, globalHome, globalAway, leagues, teams, teamTotals, namesByLeague, -0.1, crossLeague, strength, fitFrom, fitTo, fitGames);
-        var rho = draft.FitRho(usable, decaying ? WeightOf : null);
-        return new ScorelineModel(true, globalHome, globalAway, leagues, teams, teamTotals, namesByLeague, rho, crossLeague, strength, fitFrom, fitTo, fitGames);
+        // ρ 固定（2026-11-13 用户拍板选项 B，见 DefaultRho 的注释）：不再调 FitRho 估计。
+        // 官方理由是可复现，不是「更准」——拟合出的 −0.060 在前向测试集上 1X2 显著更差。
+        return new ScorelineModel(true, globalHome, globalAway, leagues, teams, teamTotals, namesByLeague,
+            DefaultRho, crossLeague, strength, fitFrom, fitTo, fitGames);
     }
 
     /// <summary>
@@ -774,10 +805,10 @@ public sealed class ScorelineModel
     /// <summary>
     /// 只换 ρ、其余参数完全不变的副本（2026-11-13 加）。
     ///
-    /// 存在的理由：ρ 是 11-13 唯一一个「同一份代码、同一份数据能算出不同值」的参数——
-    /// <see cref="FitRho"/> 按 count/2500 步长抽子样本，取样顺序不定时实测跑出过 +0.010 / 0.000 / −0.010。
-    /// 回测要回答「ρ=a 与 ρ=b 哪个预测更准」，必须固定 λ、只动 ρ 各跑一遍；
-    /// 否则两次 Fit 抽中的子样本不同，比的是抽样噪声，不是 ρ。
+    /// 存在的理由：回测要回答「ρ=a 与 ρ=b 哪个预测更准」，必须固定 λ、只动 ρ 各跑一遍。
+    /// 线上 <see cref="Fit"/> 已固定 <see cref="DefaultRho"/>，所以这里只服务回测台
+    /// （`rho-study` 的候选档、`fit-probe` 的对照），**没有第二条线上路径**。
+    /// 下一轮验证 ρ=0 / 全量似然重估时会走这条入口，届时必须用没看过的时段。
     /// </summary>
     public ScorelineModel WithRho(double rho)
         => Ready
@@ -788,8 +819,8 @@ public sealed class ScorelineModel
     /// <summary>
     /// 这批样本在本 ρ 下的平均逐场对数似然（2026-11-13 加，供 ρ 的全量似然重估）。
     ///
-    /// 与 <see cref="FitRho"/> 的区别只有一条：**不抽子样本**。FitRho 为了上线速度按 count/2500
-    /// 步进抽样（17.8 万场只算 2500 点），ρ 因此弱识别；这里全量遍历，只给回测台算一次。
+    /// 与回测台的关系：`rho-study` 用它做「全量似然重估」这一档——不抽子样本，全量遍历。
+    /// 只给回测算一次，不进线上路径。
     /// 返回的 Games 是真正参与计算的场次，不是传入数——调用方要能看出剔掉了多少。
     /// </summary>
     public (double MeanLogLikelihood, int Games) Score(IReadOnlyList<ScoreSample> samples)
@@ -890,36 +921,6 @@ public sealed class ScorelineModel
         var att = (total.AttSum + PriorGames) / (total.Weight + PriorGames);
         var def = (total.DefSum + PriorGames) / (total.Weight + PriorGames);
         return (Math.Clamp(att, 0.2, 4.5), Math.Clamp(def, 0.2, 4.5));
-    }
-
-    private double FitRho(List<ScoreSample> samples, Func<ScoreSample, double>? weightOf = null)
-    {
-        var bestRho = -0.1;
-        var best = double.NegativeInfinity;
-        var step = samples.Count > 2500 ? samples.Count / 2500 : 1;
-        for (var rho = -0.20; rho <= 0.05; rho += 0.01)
-        {
-            _ = rho;
-            double ll = 0;
-            var ok = true;
-            for (var i = 0; i < samples.Count; i += step)
-            {
-                var s = samples[i];
-                var (lh, la) = Lambdas(s.LeagueName, s.HomeTeam, s.AwayTeam, null);
-                var tau = TauAt(s.HomeScore, s.AwayScore, lh, la, rho);
-                if (tau <= 1e-6) { ok = false; break; }
-                var p = tau * Poisson(Math.Min(s.HomeScore, MaxGoals), lh) * Poisson(Math.Min(s.AwayScore, MaxGoals), la);
-                if (p <= 1e-12) p = 1e-12;
-                // 加权似然：不加权时 weightOf 为 null，等价于原来的等权求和。
-                ll += (weightOf is null ? 1.0 : weightOf(s)) * Math.Log(p);
-            }
-            if (ok && ll > best)
-            {
-                best = ll;
-                bestRho = rho;
-            }
-        }
-        return bestRho;
     }
 
     private double Tau(int x, int y, double lh, double la) => TauAt(x, y, lh, la, _rho);

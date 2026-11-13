@@ -14,13 +14,18 @@ namespace AiFootBall.Backtest;
 /// 不证明这个值更准；「落在足坛常见的 −0.03~−0.13」也只是先验，不能当上线依据。
 ///
 /// 这个台子回答三件事，顺序固定、训练集唯一：
-///   1. ρ 到底有多不可识别：同一份训练集换个物理顺序，Fit 给出的 ρ 散布多大；
+///   1. ρ 到底有多不可识别：同一份训练集换个物理顺序，Fit 给出的 ρ 散布多大
+///      （2026-11-13 起 ρ 已固定，这一节退化成「确定性回归」——各顺序必须全等）；
 ///   2. 固定 λ 只换 ρ，在前向测试集上比分 LogLoss / 胜平负 Brier / 半全场 Brier / 总进球 Brier
 ///      与低比分档校准差多少（配对差 + 95% 区间，不是只报均值）；
 ///   3. 全量似然（不抽子样本）重估出来的 ρ 是多少——**另列**，不默认它更好。
 ///
 /// 纪律：测试集完全不参与 ρ 的选择。ρ 的候选值来自三处——旧代码实际落过的值（+0.010 / 0.000 / −0.010，
 /// 有历史版本戳为证）、当前值 −0.060、以及只用训练集算出的全量似然最优值。
+///
+/// ★ 2026-11-13 用户拍板（选项 B）：线上 ρ **固定 +0.010**，不再抽样估计。
+///   本台子保留，供下一轮用**没看过的时段**验证 ρ=0 与全量似然重估（选项 A/C）；
+///   这一批 2026-07-12 之后的测试集已经被看过，不能再当「新参数的独立验收集」。
 /// </summary>
 public static class RhoStudy
 {
@@ -106,8 +111,9 @@ ORDER BY f.MatchTime, f.MatchId")).ToList();
         // ---------- 一、ρ 的可识别性：同一份训练集，换物理顺序 ----------
         Console.WriteLine("## 一、同一份训练集，换物理顺序时 Fit 给出的 ρ");
         Console.WriteLine();
-        Console.WriteLine("旧代码的取样 SQL 没有 `ORDER BY`，SQL Server 返回顺序一变，`FitRho` 按步长抽中的");
-        Console.WriteLine("2500 个子样本就换了。下表就是那个不稳定性本身。");
+        Console.WriteLine("历史事实：旧代码的 `FitRho` 按步长抽 2500 个子样本，取样顺序一变，抽中的样本就换，");
+        Console.WriteLine("同一份 17.8 万场跑出过 +0.010 / 0.000 / −0.010。11-13 起 ρ 固定为 "
+            + $"{ScorelineModel.DefaultRho:0.000}，本节变成**确定性回归**：换任何顺序都必须全等。");
         Console.WriteLine();
         Console.WriteLine("| 顺序 | ρ | 场次 |");
         Console.WriteLine("|---|---|---|");
@@ -129,9 +135,9 @@ ORDER BY f.MatchTime, f.MatchId")).ToList();
         Console.WriteLine();
         Console.WriteLine($"散布：min **{orderRhos.Min():0.000}** / max **{orderRhos.Max():0.000}**，"
             + $"极差 **{orderRhos.Max() - orderRhos.Min():0.000}**。"
-            + (orderRhos.Max() - orderRhos.Min() >= 0.02
-                ? " → ρ 本身弱识别，单个值（含 −0.060）都不能当成「估准了」。"
-                : " → 本次顺序扰动不大，但不构成精度证据。"));
+            + (orderRhos.Max() - orderRhos.Min() >= 1e-12
+                ? " → **FAIL**：ρ 仍随顺序变化，固定没生效。"
+                : " → 固定生效：同代码同数据必出同一版本戳。不能由此推出「估准了」。"));
         Console.WriteLine();
 
         // ---------- 二、全量似然重估（另列方案，不默认更好） ----------
@@ -160,9 +166,12 @@ ORDER BY f.MatchTime, f.MatchId")).ToList();
         // 线上 11-13 版本戳里的值（全库 178177 场按 count/2500 抽样得到的）。它与训练集上重估的
         // 子采样值不一定相同——这正是「弱识别」的证据，两档必须并排出现在同一张表里。
         candidates.Add(("线上当前值 -0.060（全库子采样）", -0.060));
-        candidates.Add(($"训练集子采样重估 {baseModel.Rho:0.000}", baseModel.Rho));
+        candidates.Add(($"线上固定值 {baseModel.Rho:0.000}（2026-11-13 起）", baseModel.Rho));
         candidates.Add(($"训练集全量重估 {bestRho:0.000}", bestRho));
         candidates.Add(("ρ = 0（不修正）", 0.0));
+        // 固定 ρ 之后「线上固定值」与 LegacyRhos 里的 +0.010 是同一档，去重，避免同一行出现两次。
+        var seenRho = new HashSet<double>();
+        candidates = candidates.Where(c => seenRho.Add(Math.Round(c.Rho, 6))).ToList();
 
         var results = new List<(string Label, double Rho, Acc A)>();
         foreach (var (label, rho) in candidates)
