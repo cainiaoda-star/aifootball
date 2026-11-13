@@ -315,7 +315,9 @@ public sealed class RecommendationService
         // 得到的只能是「这道闸什么也没拦」。
         // 口径说明：一天里所有场次共用一个「当日 0 点」的模型，比线上逐场赛前重算略保守。
         var samples = await _repo.GetScoreSamplesAsync(ct, day.Date);
-        var scores = ScorelineModel.Fit(samples);
+        // 截止时刻显式传给 Fit（2026-11-13）：与 SQL 里的 before 同值，两层都说「只用这一天之前的」。
+        // Fit 内部遇到没有 MatchTime 的样本在给了 asOf 时一律排除——「不知道」不能当「安全」。
+        var scores = ScorelineModel.Fit(samples, asOf: day.Date);
 
         return MilkPickEngine.BuildDetailed(recs, odds, scores, asian);
     }

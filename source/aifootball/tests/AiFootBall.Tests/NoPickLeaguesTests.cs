@@ -20,6 +20,8 @@ public class NoPickLeaguesTests
     [InlineData("友谊赛")]
     [InlineData("国际友谊赛")]
     [InlineData("球会友谊")]
+    [InlineData("国际赛")]     // 竞彩对国家队热身赛的叫法（2026-11-13 补，11-13 周五001 就是这么漏的）
+    [InlineData("热身赛")]
     [InlineData("欧U17")]
     [InlineData("亚U17")]
     [InlineData("欧U19")]
@@ -34,6 +36,9 @@ public class NoPickLeaguesTests
     [InlineData("巴甲")]
     [InlineData("澳超")]   // 澳超只是不进串关，单关照发——两张名单不能混
     [InlineData("英冠")]
+    [InlineData("世界杯")]      // 正式国际赛事不受「国际赛=友谊赛」的连累
+    [InlineData("欧洲杯")]
+    [InlineData("世预赛")]
     public void 常规联赛照常出注(string league)
         => Assert.False(NoPickLeagues.IsExcluded(league), $"{league} 不该被拦");
 

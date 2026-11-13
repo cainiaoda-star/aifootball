@@ -503,9 +503,22 @@ public sealed class BettingRepository
     /// 不传就是全量——线上正常用。回测历史必须传，否则模型已经见过当天的赛果，
     /// 「模型当时怎么想」这个问题就永远答不出来（2026-11-05 实测：按全量重训去回测 11-04 的朗斯，
     /// 模型竟然给出「客胜」，因为它已经知道科莫打了 9 个球）。
+    ///
+    /// <paramref name="asOf"/> 是**拟合时刻**：只取这一刻之前开赛的比赛（2026-11-13 加）。
+    /// 不传时 SQL 自己用 GETDATE() 兜底，所以「未来才开赛却已有比分」的场次永远进不了训练集，
+    /// 不依赖调用方守规矩。为什么必须在这层挡（而不是只在 Fit 里挡）：
+    /// 库里有 2 场「开赛在未来、Status=3、比分齐全」的脏数据（威冠联 11-14 22:00、萨尔超 11-15 10:00，
+    /// 都不在任何盘口、没有竞彩赔率），它们把拟合窗口推到两天之后——
+    /// 只要有人拿全量样本跑 A/B，那就是「模型提前知道答案」的入口。
+    /// **有比分、没有赔率，不构成可以进训练集的理由**：能不能用只看开赛时间在不在拟合时刻之前。
+    ///
+    /// <c>ORDER BY f.MatchTime, f.MatchId</c> 不是装饰（2026-11-13 加）：<c>ScorelineModel.FitRho</c>
+    /// 是按**下标等距**子采样的（17.8 万场取 2500 个，步长 71）。取样顺序一变，被抽中的样本就换了，
+    /// rho 会在网格上跳格——实测同一份 178177 场、同样的代码，三次跑出 0.010 / 0.000 / -0.010。
+    /// 那是「同代码同数据出两张榜」，审计等于白做。加上稳定的排序键之后 rho 可复现。
     /// </summary>
     public async Task<List<ScoreSample>> GetScoreSamplesAsync(
-        CancellationToken ct = default, DateTime? before = null)
+        CancellationToken ct = default, DateTime? before = null, DateTime? asOf = null)
     {
         await using var conn = await _factory.OpenAsync(ct);
         // ★ 2026-11-13 修：这里原来**没 SELECT f.MatchTime**，Dapper 映射到 ScoreSample 时
@@ -514,8 +527,7 @@ public sealed class BettingRepository
         //   · 衰减的 anchor 也拿 null，就算传了 halfLifeDays 也会被 WeightOf 当成「没有时间」退回等权，
         //     时间衰减形同虚设（当时恰好没启用，所以没炸）；
         //   · 任何 Fit(samples, asOf: x) 走这条 repo，样本会被 475 行的截止日过滤**全部剔光**、直接返回 Empty。
-        // 线上两条调用（RecommendationService.cs:317、HitProbabilityService.cs:76）都不传 asOf/halfLife，
-        // 所以补上这一列**不改变任何概率**，只把窗口与场次写进版本戳。别因为「看起来没影响」又把它删掉。
+        // 补上这一列会顺带改变概率（多剔掉 2 场未来场次），所以不要再把它说成「零变化」。
         var rows = await conn.QueryAsync<ScoreSample>(new CommandDefinition(
             @"SELECT f.LeagueName, f.HomeTeamName AS HomeTeam, f.AwayTeamName AS AwayTeam,
                      f.MatchTime, f.HomeScore, f.AwayScore
@@ -523,8 +535,11 @@ public sealed class BettingRepository
               WHERE f.Status = 3
                 AND f.HomeScore IS NOT NULL AND f.AwayScore IS NOT NULL
                 AND f.MatchTime >= DATEADD(month, -18, GETDATE())
-                AND (@before IS NULL OR f.MatchTime < @before)",
-            new { before }, cancellationToken: ct));
+                AND (@before IS NULL OR f.MatchTime < @before)
+                AND (@asOf IS NULL OR f.MatchTime <= @asOf)
+                AND f.MatchTime <= GETDATE()
+              ORDER BY f.MatchTime, f.MatchId",
+            new { before, asOf }, cancellationToken: ct));
         return rows.ToList();
     }
 

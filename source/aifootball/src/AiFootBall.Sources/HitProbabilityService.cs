@@ -71,16 +71,22 @@ public sealed class HitProbabilityService
 
             try
             {
+                // 拟合时刻只取一次，取样与 Fit 用同一个值（2026-11-13）。
+                // 之前线上 Fit 不传 asOf，模型对「开赛时间在未来却已有比分」的场次毫无防备：
+                // 库里有 2 场这种脏数据，把版本戳的拟合窗口推到两天之后。
+                // 现在取样 SQL 与 Fit 两层都卡这个时刻，任何一层漏了，另一层还能兜住。
+                var fitMoment = DateTime.Now;
                 var rows = await _repo.GetHitTrainingRowsAsync(ct);
                 var buckets = await _repo.GetHitBucketsAsync(ct);
-                var scores = await _repo.GetScoreSamplesAsync(ct);
+                var scores = await _repo.GetScoreSamplesAsync(ct, asOf: fitMoment);
                 var map = new Dictionary<(char Side, string Band), (int Hits, int Total)>();
                 foreach (var b in buckets)
                 {
                     if (string.IsNullOrEmpty(b.Side)) continue;
                     map[(b.Side[0], b.Band)] = (b.Hits, b.Total);
                 }
-                _cache = new Snapshot(HitProbabilityModel.Fit(rows), map, true, ScorelineModel.Fit(scores));
+                _cache = new Snapshot(HitProbabilityModel.Fit(rows), map, true,
+                    ScorelineModel.Fit(scores, asOf: fitMoment));
                 LastError = null;
             }
             catch (OperationCanceledException)

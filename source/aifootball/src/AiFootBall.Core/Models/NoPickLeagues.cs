@@ -21,11 +21,24 @@ namespace AiFootBall.Core.Models;
 /// 样本只有 13 注，统计学上不足以断言「欧国联永远不能推」；但足以说明
 /// **按现在这套模型推它会持续亏**，而用户要的是提高命中率，不是填满榜面。
 ///
+/// ★ 2026-11-13 补「国际赛」：竞彩受注卡把国家队热身赛叫「国际赛」，FbMatch 记「友谊赛」，
+/// 名单当时只认「友谊赛」→ 整类漏网。库内该叫法 3 场，3/3 映射 FbMatch 友谊赛，
+/// 周五001 新加坡 vs 巴拉圭 就是这样进了引擎并出了注（本地 20:00 开赛）。
+/// 所以除了加名字，还改成与 <see cref="LeagueCategory"/> 同源判定——名单里的字面值和
+/// 引擎对「友谊赛」的理解从此只有一份，不会再出现「同一天两道闸各判一套」。
+/// 判定顺序上正式国际赛事（世界杯/欧洲杯/欧国联/世预…）优先，不会被当成热身赛砍掉。
+///
 /// 恢复某类联赛：从 <see cref="Names"/> 删掉即可，不要在调用点硬编码。
 /// </summary>
 public static class NoPickLeagues
 {
     /// <summary>完全不出注的联赛名（含子串匹配，「欧国联」也拦「女欧国联」）。</summary>
+    /// <remarks>
+    /// ★「国际赛」故意**不放进这张表**，靠 <see cref="LeagueCategory.IsFriendly"/> 生效。
+    /// 放进来的话，子串匹配会把「国际赛-世界杯预选赛」这种拼接叫法一起砍掉——
+    /// 正式国际赛事被当成热身赛，正是本名单最怕的「多拦一类」（测试钉住了这条）。
+    /// 判定只能有一处：正式赛事优先，其次才是友谊赛类。
+    /// </remarks>
     private static readonly string[] Names =
     {
         "欧国联",     // 实测 0/13，模型对顺风档高估 2~4 倍，且无联赛分层基线
@@ -39,6 +52,10 @@ public static class NoPickLeagues
     {
         if (string.IsNullOrWhiteSpace(leagueName)) return false;
         var lg = leagueName.Trim();
+
+        // 与引擎同源：友谊赛类（含「国际赛」「热身赛」以及以后新增的叫法）一律不出。
+        if (LeagueCategory.IsFriendly(lg)) return true;
+
         foreach (var n in Names)
         {
             if (lg.Equals(n, StringComparison.Ordinal)) return true;

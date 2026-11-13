@@ -1587,7 +1587,7 @@ public static class MilkPickEngine
                 // 半全场「平负(1-0)/负负(0-0)」是最高频落点，该档提到与零封同级。
                 // 注意教训1f 的边界：这只对杯赛成立——联赛低水热门常是真碾压（悉尼FC 3:0），
                 // 赛季初的联赛场次不适用反向。友谊赛则整类砍掉反转档（反转档仅 2.7%）。
-                var leagueCat = LeagueCategory(r.LeagueName);
+                var leagueCat = LeagueCategory.Of(r.LeagueName);
                 var spfHome = points.FirstOrDefault(p => p.PlayType == JcPlayTypes.Spf && p.OptionCode == "3");
                 // 碾压型真强队（画像：反转低+零封低）不做反向——假热门规律硬套真碾压就是负 alpha
                 // （教训1f：悉尼FC 低水真碾压 3:0；教训1h：拜仁/巴黎/勒沃库森反转+零封双低）。
@@ -2550,41 +2550,9 @@ public static class MilkPickEngine
     private static bool IsOtherScoreCode(MilkPick pick)
         => pick.PlayType == JcPlayTypes.Bf && pick.OptionCode.EndsWith("其它", StringComparison.Ordinal);
 
-    /// <summary>
-    /// 赛事类型分类（2026-11-06 加，2026-11-07 起被半全场选注消费）。
-    /// 冷门是「赛事类型放大的」：杯赛反转档合计 15.1% > 联赛 11.1% > 友谊赛 2.7%（39.5万场实测）；
-    /// 友谊赛反转档整类不发、杯赛低水热门触发平负/负负提级（见 CupHotFade）。
-    /// 返回 "CUP"=杯赛 / "FRIENDLY"=友谊赛 / "LEAGUE"=联赛。
-    /// </summary>
-    private static string LeagueCategory(string? leagueName)
-    {
-        if (string.IsNullOrWhiteSpace(leagueName)) return "LEAGUE";
-        if (leagueName.Contains("友谊", StringComparison.Ordinal) || leagueName.Contains("热身", StringComparison.Ordinal))
-            return "FRIENDLY";
-        if (leagueName.Contains("杯", StringComparison.Ordinal)
-            || leagueName.Contains("欧冠", StringComparison.Ordinal)
-            || leagueName.Contains("欧罗巴", StringComparison.Ordinal)
-            || leagueName.Contains("欧会", StringComparison.Ordinal)
-            || leagueName.Contains("欧协", StringComparison.Ordinal)
-            || leagueName.Contains("亚冠", StringComparison.Ordinal)
-            || leagueName.Contains("欧国联", StringComparison.Ordinal)
-            || leagueName.Contains("世预", StringComparison.Ordinal)
-            || leagueName.Contains("世界杯", StringComparison.Ordinal)
-            || leagueName.Contains("欧洲杯", StringComparison.Ordinal)
-            || leagueName.Contains("美洲杯", StringComparison.Ordinal)
-            || leagueName.Contains("亚洲杯", StringComparison.Ordinal)
-            || leagueName.Contains("非洲杯", StringComparison.Ordinal)
-            || leagueName.Contains("超级杯", StringComparison.Ordinal)
-            || leagueName.Contains("联赛杯", StringComparison.Ordinal)
-            || leagueName.Contains("足总", StringComparison.Ordinal)
-            || leagueName.Contains("国王杯", StringComparison.Ordinal)
-            || leagueName.Contains("总统杯", StringComparison.Ordinal)
-            || leagueName.Contains("冠军", StringComparison.Ordinal)
-            || leagueName.Contains("资格", StringComparison.Ordinal)
-            || leagueName.Contains("附加", StringComparison.Ordinal))
-            return "CUP";
-        return "LEAGUE";
-    }
+    // 赛事类型分类（2026-11-06 加，2026-11-13 迁到 Core 的 LeagueCategory）。
+    // 迁出去的原因：NoPickLeagues 也要判「是不是友谊赛」，两处各写一份必然分叉——
+    // 11-13 就是这样漏掉了竞彩叫「国际赛」的那批国家队热身赛（见 LeagueCategory 注释）。
 
     /* ---------------- 票 ---------------- */
 

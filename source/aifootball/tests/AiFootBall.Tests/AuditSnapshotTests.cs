@@ -61,9 +61,26 @@ public class AuditSnapshotTests
     }
 
     [Fact]
+    public void Fit_KeepsSampleExactlyAtAsOf()
+    {
+        // 边界口径：asOf 是「含」的（比赛在截止时刻开赛仍算已知）。
+        // SQL 侧 asOf 用 `<=`、回测的 before 用 `<`，两处语义不同（一个是拟合时刻、一个是「当天 0 点之前」），
+        // 所以这里把 Fit 的边界钉住，免得哪天有人把 `<=` 改成 `<` 之后，当晚开赛的场次凭空消失。
+        var cutoff = new DateTime(2026, 6, 1, 12, 0, 0);
+        var samples = MakeSamples("甲队", "乙队", cutoff.AddDays(-3 * 39), 40);
+
+        var model = ScorelineModel.Fit(samples, asOf: cutoff);
+
+        Assert.Equal(40, model.FitGames);
+        Assert.Equal(cutoff, model.FitTo);
+    }
+
+    [Fact]
     public void Fit_WithoutAsOf_StillUsesEverything()
     {
-        // 兜底：不给 asOf 时行为必须与改动前一致（线上走的正是这条路径）。
+        // 不给 asOf 时不额外过滤：这是回测/研究口径（那些工具自己带 MatchTime 闸）。
+        // 线上从 2026-11-13 起一律显式传 asOf（HitProbabilityService、BacktestMilkAsync），
+        // 所以「线上恰好走这条路径」这句话已经不成立了——别拿它当线上口径的证明。
         var cutoff = new DateTime(2026, 6, 1);
         var samples = MakeSamples("甲队", "乙队", cutoff.AddDays(-120), 40)
             .Concat(MakeSamples("丙队", "丁队", cutoff.AddDays(1), 20)).ToList();
