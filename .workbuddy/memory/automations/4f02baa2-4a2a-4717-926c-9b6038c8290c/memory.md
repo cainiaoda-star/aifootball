@@ -15,3 +15,12 @@
 - 部署已就位：deploy-package/app/api/AiFootBall.Data.dll 11-12 11:06，晚于 f89549a 10:47:37。
 - 表名/路径勘误（下轮直接用）：表是 `dbo.BettingCard`（**无** Fb 前缀）、`dbo.SyncLog` 用 `TaskName` 非 JobName；`NoPickLeagues.cs` 在 `AiFootBall.Core/Models/` 而非 `.Sources`。PowerShell 里 `LIKE '%X%'` 会被安全策略误判为 %VAR%，改用 `CHARINDEX`。
 - 结论未变：审计层写入路径尚未被真实流量验证，正式判定仍归 11-14 08:55。
+
+## 2026-11-13 10:10 第三次执行（周五期已出榜，查加场 + 终版快照）
+- 仍是提前执行：现在 10:10，周五期停售 21:58 未到，注单为盘中态不是终版。11-14 08:55 那次才算正式判定。
+- 主目的结论：**期号未加场**。BettingCard 周五期 8 场（周五002–009，全欧国联），仅 08:30:31 一批（job:cards-daily 08:30:28 一天只跑一次，故榜面表 11:40/16:40/20:40 不会留行）。
+- 加场的**旁证**用赔率采样：FbJcOddsHistory 10:12 仍为 8 场（002–009），无新增号、无非欧国联赛事 → 10:12 时点确实未加场。
+- 周五001 本期不存在（最后一次出现 11-06 20:32），所以编号从 002 起是正常的，不要当漏场。
+- 快照：@d=2026-11-13 注单 0 / 带戳 0 / 存档 0 行 / 闸门 0；FbMilkPick 全表仍 28 行且 28 行 ModelVersion 全 NULL（MaxPickDate 2026-11-11）、FbMilkProbSnapshot 全表 0 行 → 审计写入路径**依旧没有被真实流量验证过**。
+- 零行原因＝无输入：save-recommendations 08:40:16「漏斗 jc 0」，8 场全欧国联命中 NoPickLeagues。
+- 口径新增：job:save-recommendations 一天跑多次（8:40/11:40/16:40/20:40，视是否用得上才写 SyncLog），所以「若下午真加场，11:40 之后仍有可能补算出票」——加场结论必须晚场复看一次。
