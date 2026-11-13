@@ -1131,7 +1131,11 @@ public sealed class RecommendationService
                         await _milkPicks.LogAsync("milk:run", "SUCCESS", pickRows,
                             $"[{run.RunId}] 已发布：{plan.Reason}；受注日 "
                             + string.Join(",", dates.Select(x => $"{x.SalesDate:MM-dd}({x.PickCount}注)"))
-                            + $"；{steps.Summary}；逐档核对 {ledger.Summary}",
+                            + $"；{steps.Summary}；逐档核对 {ledger.Summary}"
+                            // 采集口径要写全：`Batch >= Known` 只到「与库内已知集合一致」，
+                            // 不是「源站没漏场」，也不是「赔率新鲜」。日志里不写清，事后会被当成保证。
+                            + $"；采集 {capture.IssueText}（与库内已知集合一致，非源站基准；"
+                            + $"批次 {capture.BatchAt:MM-dd HH:mm} 不代表赔率新鲜）",
                             CancellationToken.None);
                     }
                 }

@@ -42,7 +42,17 @@ public sealed class MilkIssueState
     /// <summary>该期已知的在售场次数（含停留在旧批次的残留行）。</summary>
     public int KnownMatches { get; init; }
 
-    /// <summary>本批是否已覆盖该期已知的全部在售场次。</summary>
+    /// <summary>
+    /// 本批是否已覆盖该期已知的全部在售场次。
+    ///
+    /// ★ 局限（2026-11-13 用户指出，必须写明）：`BatchMatches &gt;= KnownMatches` 只能证明
+    /// 「本批覆盖了**库里已知**的在售场次」，**证明不了源站没漏场**。
+    /// 源站少给两场时，库里也不会有那两场，两边一起少，等式照样成立。
+    /// 要真正证明源站完整，需要库外基准（官方期号场次数，或历史同期均值）；
+    /// 本项目目前没有这个基准，所以这里的「完整」只到「与库内已知集合一致」为止——
+    /// 它能挡住「只抓到 8 场就按 8 场重写」这种形态（那会把其余 3 场的旧票误撤），
+    /// 挡不住「源站整期只给 8 场、而这期本来有 11 场」。
+    /// </summary>
     public bool Complete => BatchMatches > 0 && BatchMatches >= KnownMatches;
 
     public int Missing => Math.Max(0, KnownMatches - BatchMatches);
@@ -66,6 +76,13 @@ public sealed class MilkCaptureState
     /// 取值依据：`cards-daily` 一天只在几个时点重写 BettingCard（实测 11-13 只有 16:31 一批），
     /// 夜间到次日早上会隔十来个小时。这里放宽到 12 小时，只用来挡「采集早就死了、
     /// 拿昨天的批次当今天算」这种形态；「采到几场」由 <see cref="Complete"/> 判，不靠时长。
+    ///
+    /// ★ 这个阈值**不代表赔率新鲜**（2026-11-13 用户指出）：
+    /// 一个 11 小时前抓到的批次完全满足「未过期」，可它的价格早就不是市场上的价了。
+    /// 赔率新鲜度必须按链路单独判定（竞彩约 30 分钟、欧赔 3 小时起，均为**待验证**阈值），
+    /// 且超龄时的正确处置是「停掉该玩法推荐并标注数据过期」，
+    /// **不是**退回纯模型继续出票——那会绕过冻结市场权重与 JQ 的市场主导。
+    /// 本字段只回答「这个批次还能不能用」，不回答「这个价格还能不能买」。
     /// </summary>
     public static readonly TimeSpan MaxBatchAge = TimeSpan.FromHours(12);
 
