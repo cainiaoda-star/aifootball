@@ -31,16 +31,19 @@
 - ★ 150 分钟只是**完赛代理**：`UpdatedAt` 是最后写入（回测口径 162737 场 **100%** 被刷）；首写延迟仅 **1.9% ≤150min**、**84% >360min** → 泄漏**未消除**，不许写「已消除」。
 - `ModelVersion`＝`dc1|窗口|n|rho|MVID|w|bf`；NSPF 调整净胜=(主−客)+让球数。
 
-### ★★ 存档事故（11-13，第二轮已改法，未部署）
-- **不是「从未写入」**：11:40 实测 48 行/1 场/3 玩法，17:15 变 0；`IDENT_CURRENT=1560` 证明写得成。根因：`SaveProbSnapshotsAsync` 先 `DELETE 当日` 再 `if(rows==0) return`——国际赛入禁推后某次重算 0 场，删成功、无行补。`SaveGateAsync` 同病（3 行诊断被抹）。空表上 `MAX(Id)` 恒 NULL，不能当证据。
-- ★★ **两形态必须分开**（`MilkBoardPlan`，纯函数可测）：
-  ① **取得有效期号、全部被过滤** → 按**过滤前**的受注日无条件重写（空列表=撤失效旧票），只删未开赛/未结算/未撤注；
-  ② **过滤前 0 场** → 一行不动。
-  范围只能来自 `jcRecs`（`RecommendAsync` 原样输出）：`build.Inputs`／`FbMilkGate`／`Recommendation` 全是算完之后的产物，全被过滤时同时为 0，拿它们判会正好把①判成②（11-13 旧票滞留就是这么来的）。
-- ★★ **每轮一个 `RunId`**（`yyyyMMddTHHmmss-六位`，可排序同秒不撞）：`FbMilkPick`/`FbMilkProbSnapshot`/`FbMilkGate`/`FbMilkInput` 都加 `RunId` 列，写入**按轮隔离、历史保留**（同轮重试幂等，别轮不动）；空集只清本轮。新增轮次头 `FbMilkRun`（Raw/SalesDates/Input/Snap/Gate/Pick/Mode）——「全被过滤的一轮」在四张表里都不留行，没有它就是「作业没跑」。
-- 四表 `Continue`/`Gate`：`GetGateAsync` 已改「钉最新一轮」（`MAX(RunId)`），否则同场出现三四行。
-- 写入成败都写 `SyncLog`（`milk:picks`/`milk:snapshot`/`milk:run`，带 `[RunId]`）。
-- 验证：全量 1067 测试通过（新增 `MilkBoardPlanTests` 8 条：全过滤仍重写、0 场不清榜、范围来自过滤前、禁推联赛实测接计划）；`audit-check` 五段全通过（含「写新一轮不抹旧轮 4/3」、空集只清本轮、轮次头幂等）。
+### ★★ 存档事故 → 榜面按轮发布（11-13，第三轮改法，未部署）
+- **不是「从未写入」**：11:40 实测 48 行/1 场/3 玩法，17:15 变 0；`IDENT_CURRENT=1560` 证明写得成。根因：`SaveProbSnapshotsAsync` 先 `DELETE 当日` 再 `if(rows==0) return`。空表上 `MAX(Id)` 恒 NULL，不能当证据。
+- ★★★ **三种形态必须分开**（`MilkBoardPlan`，纯函数可测）：
+  ① **期号确认 + 采集完整 + 全部被过滤** → 按**过滤前**受注日重写（空列表=撤失效旧票）；
+  ② **只采到部分场次** → `Partial`：不写不删，旧票保留；
+  ③ **过滤前 0 场 / 批次不可用** → 一行不动。
+  `RawMatches>0` 只证明「拿到一些场次」：`BettingCard` 按 (Board,Expect,MatchNo) MERGE，部分采集**不删旧行**、只把 `CapturedAt` 停在上一批，而 `GetCardsAsync` 只读 `MAX(CapturedAt)` → 工作集凭空缩小。判据 = `MilkCaptureState`（本批在售 vs 该期已知在售，均由 `BettingCard.MatchTime>now` 直接算，无需台账）。
+  范围只能来自 `jcRecs`：`build.Inputs`／`FbMilkGate`／`Recommendation` 全是算完之后的产物，全被过滤时同时为 0。
+- ★★★ **发布是状态机，不是 `MAX(RunId)`**：`FbMilkRun.Status`（running/success/failed/skipped/partial）+ `PublishedAt`；顺序 **先落 running 头 → 写 picks/gate/input/snapshot → 全部成功且「有输入就有存档」才在同一事务里写 `FbMilkRunDate` 并标 success**。失败轮 RunId 再大也不许被选中。
+- `FbMilkRunDate(RunId,SalesDate,PickCount)` 是榜面指针：**0 注也要写一行**，否则「榜面归零」与「这轮没管这天」同形。所有读路径（榜/闸/撤榜/风控/战绩/翻页/空跑冻结）都只认 `Status='success'` 的轮；无新轮退回 `RunId IS NULL` 旧口径。
+- ★★ **唯一键必须含 RunId**：`UX_FbMilkPick(Date,MatchId,Play,Opt)` 与 `UX_FbMilkGate(Date,MatchId)` 只能存一轮——自检在真库撞 2601 才暴露。改为 `+RunId` 后同轮内仍唯一（防交错重写），跨轮各留一份。`SaveDayAsync` 的 DELETE 也随之收窄到本轮（撤票=发布不含它的新轮次，不再跨轮 DELETE）。
+- 验证：1077 测试通过（新增 9 条）；`audit-check` 七段全过——A 轮发布 2 注→榜 2、B 轮成功 0 注→榜 0 且历史仍 2 行、C 轮 failed 且 **RunId 更大**→榜仍 0、D 轮 partial→榜仍 0、闸门同步跟发布轮。
+- ★ **结构变更也算改库**：加列/建表/改索引必须与数据变更一样登记 `OPS-DATA-CHANGES.md` 并纳入部署审批。11-13 18:20 与 19:04 两次 `audit-check` 确实在生产库改了结构（不是「完全未改库」）。
 
 ## 六 赔率新鲜度（按链路分开）
 - **竞彩 `FbJcOddsHistory`**（出票价）：2min 一轮，11-13 513 次 SUCCESS、最大间隔 4min → 数据没坏；`GetLatestAsync` **零 age 守卫**。
