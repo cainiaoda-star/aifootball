@@ -1306,6 +1306,9 @@ public static class MilkPickEngine
         // 一次计算只有一个模型、一套权重，所以戳也只有一个——每注各算一遍只会让它们有机会不一致。
         var versionTag = PickVersion(scores);
         var snapshots = new List<MilkProbSnapshot>();
+        // 输入凭证（2026-11-13 加）：哪些场真正进了引擎。与快照同批落库，
+        // 让「存档覆盖了没有」有一个不依赖下游结果的独立分母。
+        var inputs = new List<MilkInputMatch>();
 
         if (recs.Count == 0 || odds.Count == 0)
             return new MilkBuildResult { Picks = result, Gates = gates, Funnel = funnel, ProbSnapshots = snapshots };
@@ -1420,6 +1423,23 @@ public static class MilkPickEngine
             var mass = grid.Sum(c => c.P);
             if (mass <= 0) continue;
             funnel.Distributed++;
+
+            // 输入凭证记在这里（2026-11-13 加）：**算出分布之后、方向闸之前**。
+            // 再往前会有「模型不认识 / 样本不足」两类 continue，那些场其实没进模型；
+            // 再往后就会被 EnforceDirectionVeto / MarketStrongReverse 整场撤掉，
+            // 而被撤掉的场次恰恰是最需要事后解释「为什么当时算过它却没发」的。
+            // 从这里到 CollectSnapshots 之间没有场级 continue（1422→1793 已逐行核对），
+            // 所以 Inputs 与快照的场次集合天然应当一一对应。
+            inputs.Add(new MilkInputMatch
+            {
+                MatchId = mid,
+                MatchNo = r.MatchNo,
+                LeagueName = r.LeagueName,
+                HomeTeam = r.HomeTeam,
+                AwayTeam = r.AwayTeam,
+                MatchTime = r.MatchTime,
+                VersionTag = versionTag
+            });
 
             // 俱乐部画像（2026-11-07 落地）：模型热门方的历史反转倾向。
             // 队名先过 ScorelineModel.Resolve（竞彩简称→数据源全称），画像键是数据源全称。
@@ -2010,7 +2030,7 @@ public static class MilkPickEngine
 
             funnel.Final = perMatchPicks.Count;
             MarkBaseline(perMatchPicks, odds);
-            return new MilkBuildResult { Picks = perMatchPicks, Gates = gates, ShowRows = showRows, Funnel = funnel, ProbSnapshots = snapshots };
+            return new MilkBuildResult { Picks = perMatchPicks, Gates = gates, ShowRows = showRows, Funnel = funnel, ProbSnapshots = snapshots, Inputs = inputs };
         }
 
         // 4) 按玩法分组各取前几名，不混在一起排。
@@ -2301,7 +2321,8 @@ public static class MilkPickEngine
             ShowRows = showRows,
             Funnel = funnel,
             CounterCandidates = counterDiag,
-            ProbSnapshots = snapshots
+            ProbSnapshots = snapshots,
+            Inputs = inputs
         };
     }
 

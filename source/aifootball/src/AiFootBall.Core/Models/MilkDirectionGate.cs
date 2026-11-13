@@ -211,11 +211,43 @@ public sealed class MilkBuildResult
     /// </summary>
     public List<MilkCounterCandidate> CounterCandidates { get; init; } = new();
 
+    /// <summary>
+    /// 本次真正进了 Milk 引擎计算的场次（2026-11-13 加）。落库 <c>dbo.FbMilkInput</c>。
+    ///
+    /// 为什么需要它：验收要问「该日所有进入计算的场次，存档是否全覆盖」，而此前没有任何
+    /// 地方记得住「哪些场进了计算」——
+    ///   · <c>FbMilkGate</c> 只对走到方向闸的场次写行，被禁推名单/无赔率/样本不足挡掉的没有；
+    ///   · <c>Recommendation</c> 是**胜平负**那条链路的展示结果（经过 ForDisplay 过滤），
+    ///     跟 Milk 的输入集既不同源也不同量（11-13 实测：Recommendation 1 行，Milk 侧受注 11 场、
+    ///     禁推 8 场、真正计算 3 场）；
+    ///   · 用「几张下游表的并集」当分母，等于拿结果反推输入，少算一场就永远查不出来。
+    ///
+    /// 记录点固定在**算出分布之后、方向闸之前**（`funnel.Distributed++` 处），
+    /// 所以它既是「进了计算」的准确边界，也不会被后续撤注影响。
+    /// </summary>
+    public List<MilkInputMatch> Inputs { get; init; } = new();
+
     /// <summary>被方向闸挡下的场次数。</summary>
     public int DivergedMatches => Gates.Count(g => g.Verdict == MilkGateVerdicts.Diverge);
 
     /// <summary>被方向闸挡下的注数。</summary>
     public int BlockedPicks => Gates.Sum(g => g.BlockedPicks);
+}
+
+/// <summary>
+/// 一场「进了 Milk 引擎计算」的场次（2026-11-13 加，落库 <c>dbo.FbMilkInput</c>）。
+/// 只做输入凭证，不含任何概率——概率在 <see cref="MilkProbSnapshot"/> 里。
+/// </summary>
+public sealed class MilkInputMatch
+{
+    public long MatchId { get; init; }
+    public string? MatchNo { get; init; }
+    public string? LeagueName { get; init; }
+    public string? HomeTeam { get; init; }
+    public string? AwayTeam { get; init; }
+    public DateTime? MatchTime { get; init; }
+    /// <summary>整批共用的版本戳，与注单/存档同源。</summary>
+    public string? VersionTag { get; init; }
 }
 
 /// <summary>

@@ -54,6 +54,10 @@ public sealed class MilkPickRepository
               -- 任何复盘都只能说「大概是那天的模型」，无法证明也无法反驳。
               IF COL_LENGTH('dbo.FbMilkPick','ModelVersion') IS NULL
                   ALTER TABLE dbo.FbMilkPick ADD ModelVersion nvarchar(160) NULL;
+              -- 轮次标识（2026-11-13 第二轮）：注单要能和同一轮的输入凭证/存档/闸门对上。
+              -- 没有它，一期一天重算三五次之后，「这几行是不是同一批算出来的」只能靠 CreatedAt 猜。
+              IF COL_LENGTH('dbo.FbMilkPick','RunId') IS NULL
+                  ALTER TABLE dbo.FbMilkPick ADD RunId nvarchar(40) NULL;
               -- 告警去重键（2026-11-08）：Reason 带实时数值，拿它去重等于不去重。
               IF COL_LENGTH('dbo.FbTurnAlert','SignalCode') IS NULL
                   ALTER TABLE dbo.FbTurnAlert ADD SignalCode nvarchar(80) NULL;
@@ -78,7 +82,12 @@ public sealed class MilkPickRepository
     private static bool _columnsReady;
 
     /// <summary>重写当日未结算的大奶推荐；已结算的行（含取消终态）不动（重算不冲掉赛果）。</summary>
-    public async Task<int> SaveDayAsync(DateTime pickDate, IReadOnlyList<MilkPick> picks, CancellationToken ct = default)
+    public Task<int> SaveDayAsync(DateTime pickDate, IReadOnlyList<MilkPick> picks, CancellationToken ct = default)
+        => SaveDayAsync(pickDate, picks, null, ct);
+
+    /// <param name="runId">本轮标识（2026-11-13 第二轮）。传 null 表示无轮次的历史补档，行为与旧版一致。</param>
+    public async Task<int> SaveDayAsync(
+        DateTime pickDate, IReadOnlyList<MilkPick> picks, string? runId, CancellationToken ct = default)
     {
         var d = pickDate.Date;
         await using var conn = await _factory.OpenAsync(ct);
@@ -123,12 +132,12 @@ public sealed class MilkPickRepository
                      PlayType, OptionCode, OptionName, Odds, ModelProbability, Ev, CounterHigh,
                      BaselineProbability, BaselineEv, ModelLowConfidence, ModelOverconfident,
                      DivergenceTag, DivergenceNote, HalfDrawRefined, FatigueTag, ModelVsMarketRatio,
-                     HomePriceRich, ModelPctPure, ModelVersion)
+                     HomePriceRich, ModelPctPure, ModelVersion, RunId)
                   SELECT @d, @mid, @no, @lg, @home, @away, @time,
                           @play, @code, @name, @odds, @prob, @ev, @counterHigh,
                           @basePct, @baseEv, @lowConf, @overConf,
                           @divTag, @divNote, @halfDraw, @fatigue, @vsMarket, @priceRich,
-                          @purePct, @modelVer
+                          @purePct, @modelVer, @run
                   WHERE NOT EXISTS (
                       SELECT 1 FROM dbo.FbMilkPick
                        WHERE PickDate=@d AND MatchId=@mid AND PlayType=@play AND OptionCode=@code)",
@@ -179,7 +188,10 @@ public sealed class MilkPickRepository
                     purePct = p.ModelPctPure > 0m ? p.ModelPctPure : (decimal?)null,
                     // 模型版本快照（2026-11-12）：审计 P0。空串按 NULL 存——
                     // 「算的时候没有版本信息」和「版本是一串空」必须能区分开。
-                    modelVer = string.IsNullOrWhiteSpace(p.ModelVersion) ? null : p.ModelVersion
+                    modelVer = string.IsNullOrWhiteSpace(p.ModelVersion) ? null : p.ModelVersion,
+                    // 轮次（2026-11-13 第二轮）：把这一行绑到产生它的那一轮计算上。
+                    // 空串按 NULL——与 ModelVersion 同一口径，可区分「没传」和「传了空」。
+                    run = string.IsNullOrWhiteSpace(runId) ? null : runId
                 }, tx, cancellationToken: ct));
         }
 
@@ -192,15 +204,49 @@ public sealed class MilkPickRepository
     /// 和榜同一批数据算出来，就必须和榜同一时刻落库——赔率快照一滚，赛后谁也还原不出当时的市场方向。
     /// 表没建时抛给调用方，由上层决定吞不吞（出票不能因为台账写不进去就停）。
     /// </summary>
-    public async Task<int> SaveGateAsync(
+    public Task<int> SaveGateAsync(
         DateTime gateDate, IReadOnlyList<MilkDirectionDiagnosis> gates, CancellationToken ct = default)
+        => SaveGateAsync(gateDate, gates, null, ct);
+
+    /// <param name="runId">
+    /// 本轮标识。给了就按轮追加（同一轮重写幂等，其它轮的历史一行不碰）；
+    /// 传 null 是旧口径「整期覆盖」，只用于给闸上线之前那些天补历史。
+    /// </param>
+    public async Task<int> SaveGateAsync(
+        DateTime gateDate, IReadOnlyList<MilkDirectionDiagnosis> gates, string? runId, CancellationToken ct = default)
     {
         var d = gateDate.Date;
+
+        // ★ 2026-11-13 修：与存档同一个 bug 的第二种表现——空结果把已有台账删掉。
+        // 11-13 实测：11:40 那次闸表 3 行（001 pass、010/011 diverge），
+        // 16:40 那次受注场次全被禁推名单挡在闸之前，gates 为空 →
+        // 「DELETE 当日 + 一行不插」把 3 行诊断抹平，于是「为什么没推这几场」永久丢失。
+        // 闸表是审计台账，不是缓存：没有新诊断就保留上一版，宁可在页面上显示旧时点的判定。
+        if (gates.Count == 0) return 0;
+
         await using var conn = await _factory.OpenAsync(ct);
+
+        // 轮次列自愈（2026-11-13 第二轮）。闸表由历史迁移建，CREATE 不在这里，
+        // 所以只做「表在但列不在」时的补列；表都不在说明环境不对，交给 INSERT 直接报错。
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"IF OBJECT_ID(N'dbo.FbMilkGate', N'U') IS NOT NULL
+                  AND COL_LENGTH('dbo.FbMilkGate','RunId') IS NULL
+                  ALTER TABLE dbo.FbMilkGate ADD RunId nvarchar(40) NULL;",
+            cancellationToken: ct));
+
         await using var tx = await conn.BeginTransactionAsync(ct);
 
-        await conn.ExecuteAsync(new CommandDefinition(
-            "DELETE FROM dbo.FbMilkGate WHERE GateDate=@d", new { d }, tx, cancellationToken: ct));
+        if (string.IsNullOrWhiteSpace(runId))
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM dbo.FbMilkGate WHERE GateDate=@d", new { d }, tx, cancellationToken: ct));
+        }
+        else
+        {
+            // 按轮删：同一轮重试时幂等，其它轮（含更早的旧口径 NULL 行）一条都不动。
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM dbo.FbMilkGate WHERE RunId=@run", new { run = runId }, tx, cancellationToken: ct));
+        }
 
         var rows = 0;
         foreach (var g in gates)
@@ -212,12 +258,14 @@ public sealed class MilkPickRepository
                      ModelDirection, ModelHomePct, ModelDrawPct, ModelAwayPct, PickDirection,
                      MarketDirection, MarketSource, MarketHomePct, MarketDrawPct, MarketAwayPct,
                      AsianDirection, AsianOpen, AsianClose, ExchangeDirection, RatioHome, RatioAway,
-                     Verdict, AlertCode, AlertNote, BlockedPicks, BlockedBest, BlockedBestProbability)
+                     Verdict, AlertCode, AlertNote, BlockedPicks, BlockedBest, BlockedBestProbability,
+                     RunId)
                   VALUES (@d, @mid, @no, @lg, @home, @away, @time,
                           @mDir, @mh, @md2, @ma, @pDir,
                           @kDir, @src, @kh, @kd, @ka,
                           @aDir, @aOpen, @aClose, @eDir, @rh, @ra,
-                          @verdict, @alert, @note, @blocked, @best, @bestProb)",
+                          @verdict, @alert, @note, @blocked, @best, @bestProb,
+                          @run)",
                 new
                 {
                     d, mid, no = g.MatchNo, lg = g.LeagueName, home = g.HomeTeam, away = g.AwayTeam,
@@ -229,7 +277,8 @@ public sealed class MilkPickRepository
                     aDir = g.AsianDirection?.ToString(), aOpen = g.AsianOpen, aClose = g.AsianClose,
                     eDir = g.ExchangeDirection?.ToString(), rh = g.RatioHome, ra = g.RatioAway,
                     verdict = g.Verdict, alert = g.AlertCode, note = g.AlertNote,
-                    blocked = g.BlockedPicks, best = g.BlockedBest, bestProb = g.BlockedBestProbability
+                    blocked = g.BlockedPicks, best = g.BlockedBest, bestProb = g.BlockedBestProbability,
+                    run = string.IsNullOrWhiteSpace(runId) ? null : runId
                 }, tx, cancellationToken: ct));
         }
 
@@ -248,8 +297,17 @@ public sealed class MilkPickRepository
     ///
     /// 全部用一条多行 INSERT 参数化写入：单日约 1500 行，逐行 Execute 会退化成 1500 次往返。
     /// </summary>
-    public async Task<int> SaveProbSnapshotsAsync(
+    public Task<int> SaveProbSnapshotsAsync(
         DateTime snapshotDate, IReadOnlyList<MilkProbSnapshot> rows, CancellationToken ct = default)
+        => SaveProbSnapshotsAsync(snapshotDate, rows, null, ct);
+
+    /// <param name="runId">
+    /// 本轮标识（2026-11-13 第二轮）。给了就按轮追加并**保留历史**：
+    /// 同一轮重试幂等，前面几轮的存档原样留着，靠 RunId 区分「这是哪一版算的」。
+    /// 传 null 是旧口径（整期覆盖），只为兼容历史补档。
+    /// </param>
+    public async Task<int> SaveProbSnapshotsAsync(
+        DateTime snapshotDate, IReadOnlyList<MilkProbSnapshot> rows, string? runId, CancellationToken ct = default)
     {
         var d = snapshotDate.Date;
         await using var conn = await _factory.OpenAsync(ct);
@@ -261,7 +319,7 @@ public sealed class MilkPickRepository
                   Id            bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_FbMilkProbSnapshot PRIMARY KEY,
                   SnapshotDate  date           NOT NULL,
                   MatchId       bigint         NOT NULL,
-                  MatchNo       nvarchar(20)   NULL,
+                  MatchNo       nvarchar(32)   NULL,
                   PlayType      varchar(10)    NOT NULL,
                   OptionCode    varchar(20)    NOT NULL,
                   Odds          decimal(8,3)   NULL,
@@ -272,6 +330,9 @@ public sealed class MilkPickRepository
                   ModelVersion  nvarchar(160)  NULL,
                   CreatedAt     datetime2      NOT NULL CONSTRAINT DF_FbMilkProbSnapshot_Created DEFAULT(SYSDATETIME())
               );
+              -- 轮次列（2026-11-13 第二轮）：表已存在时补列。
+              IF COL_LENGTH('dbo.FbMilkProbSnapshot','RunId') IS NULL
+                  ALTER TABLE dbo.FbMilkProbSnapshot ADD RunId nvarchar(40) NULL;
               -- 复盘的主查询形态是「按日期取一期」和「按场次取全档」，两条索引都建上。
               -- 表刚建时数据量为 0，在这里建索引不影响出榜。
               IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_MilkProbSnapshot_Date'
@@ -281,14 +342,30 @@ public sealed class MilkPickRepository
               IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_MilkProbSnapshot_Match'
                              AND object_id=OBJECT_ID(N'dbo.FbMilkProbSnapshot'))
                   CREATE INDEX IX_MilkProbSnapshot_Match
-                      ON dbo.FbMilkProbSnapshot (MatchId, PlayType);",
+                      ON dbo.FbMilkProbSnapshot (MatchId, PlayType);
+              -- 验收按轮查：没有这条索引，后期几万行里挑一轮要走全表扫。
+              IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_MilkProbSnapshot_Run'
+                             AND object_id=OBJECT_ID(N'dbo.FbMilkProbSnapshot'))
+                  CREATE INDEX IX_MilkProbSnapshot_Run
+                      ON dbo.FbMilkProbSnapshot (RunId, SnapshotDate);",
             cancellationToken: ct));
 
-        await conn.ExecuteAsync(new CommandDefinition(
-            "DELETE FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate=@d", new { d }, cancellationToken: ct));
-
+        // ★ 2026-11-13 修：**空结果不许删旧存档**（这条 bug 当天把 11-13 已经写好的 48 行全抹了）.
+        //
+        // 旧顺序是「先 DELETE 当日，再 if (rows.Count == 0) return 0」。
+        // 于是只要某一次重算算出 0 行——11-13 是「国际赛」并入禁推名单之后，受注 11 场全被挡、
+        // 一场都没进模型——上一版存档就被删掉且没有新行补上。
+        // 后果不只是少一天数据：`IDENT_CURRENT` 已经到 1560，说明此前几十次重算都成功写过，
+        // 却因为最后这次空跑，整张表看起来像「从未写入」，差点被当成「写入路径坏了」去查。
+        //
+        // 2026-11-13 第二轮修正：光「不删」不够——那样一次失败重算会留下一版旧数据冒充本轮。
+        // 现在每轮有 `RunId`，写入按轮隔离、**历史保留**：
+        //   · 本轮有行 → 追加本轮的行（同轮重试先删本轮，幂等）；
+        //   · 本轮 0 行 → 一行不写，本轮在 FbMilkRun 里留一条「0 行」的记录，
+        //     验收按该轮核对时看得到「这一轮什么都没算」，不会拿上一轮的行充数。
         if (rows.Count == 0) return 0;
 
+        var withRun = !string.IsNullOrWhiteSpace(runId);
         var payload = rows.Select(r => new
         {
             d,
@@ -301,30 +378,242 @@ public sealed class MilkPickRepository
             pure = r.ModelPctPure,
             blend = r.BlendedPct,
             priced = r.MarketPriced,
-            ver = r.ModelVersion
+            ver = r.ModelVersion,
+            run = withRun ? runId : null
         }).ToList();
 
-        return await conn.ExecuteAsync(new CommandDefinition(
+        // DELETE 与 INSERT 必须在同一个事务里：原来两条语句各自提交，
+        // INSERT 一报错（列数/类型/长度任一处不对）就只剩「删除成功、写入失败」，
+        // 而且异常被调用方 catch 吞掉，表现是存档静默清零。
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        if (withRun)
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM dbo.FbMilkProbSnapshot WHERE RunId=@run", new { run = runId }, tx, cancellationToken: ct));
+        }
+        else
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate=@d", new { d }, tx, cancellationToken: ct));
+        }
+
+        var written = await conn.ExecuteAsync(new CommandDefinition(
             @"INSERT INTO dbo.FbMilkProbSnapshot
                 (SnapshotDate, MatchId, MatchNo, PlayType, OptionCode,
-                 Odds, MarketPct, ModelPctPure, BlendedPct, MarketPriced, ModelVersion)
-              VALUES (@d, @mid, @no, @play, @code, @odds, @mk, @pure, @blend, @priced, @ver)",
-            payload, cancellationToken: ct));
+                 Odds, MarketPct, ModelPctPure, BlendedPct, MarketPriced, ModelVersion, RunId)
+              VALUES (@d, @mid, @no, @play, @code, @odds, @mk, @pure, @blend, @priced, @ver, @run)",
+            payload, tx, cancellationToken: ct));
+        await tx.CommitAsync(ct);
+        return written;
     }
 
-    /// <summary>当日方向闸台账。背离的排前面，其余按开赛时间——页面上先看被挡掉的。</summary>
+    /// <summary>
+    /// 本次真正进了 Milk 引擎的场次（2026-11-13 加，落库 <c>dbo.FbMilkInput</c>）。
+    ///
+    /// 与 <see cref="SaveProbSnapshotsAsync"/> 的空值口径**故意不同**：
+    /// · 快照是「算出来的分布」，本次没有就保留上一版；
+    /// · 这里记的是「本次算过哪些场」，必须如实反映本次——否则分母就是在骗自己。
+    ///   本次一场没进模型，就写 0 行，让验收能一眼看出「这一版什么都没算」，
+    ///   而不是拿着上一版的场次集合当成本次的输入。
+    /// </summary>
+    public Task<int> SaveInputsAsync(
+        DateTime inputDate, IReadOnlyList<MilkInputMatch> rows, CancellationToken ct = default)
+        => SaveInputsAsync(inputDate, rows, null, ct);
+
+    /// <param name="runId">
+    /// 本轮标识。给了就按轮追加、保留历史；传 null 是旧口径（整期覆盖）。
+    /// 无论哪种，**空集都不许删别的轮**——「本轮算过 0 场」这件事由 FbMilkRun 记，不靠删行来表达。
+    /// </param>
+    public async Task<int> SaveInputsAsync(
+        DateTime inputDate, IReadOnlyList<MilkInputMatch> rows, string? runId, CancellationToken ct = default)
+    {
+        var d = inputDate.Date;
+        await using var conn = await _factory.OpenAsync(ct);
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"IF OBJECT_ID(N'dbo.FbMilkInput', N'U') IS NULL
+              CREATE TABLE dbo.FbMilkInput
+              (
+                  Id          bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_FbMilkInput PRIMARY KEY,
+                  InputDate   date           NOT NULL,
+                  MatchId     bigint         NOT NULL,
+                  MatchNo     nvarchar(32)   NULL,
+                  LeagueName  nvarchar(128)  NULL,
+                  HomeTeam    nvarchar(128)  NULL,
+                  AwayTeam    nvarchar(128)  NULL,
+                  MatchTime   datetime2      NULL,
+                  VersionTag  nvarchar(160)  NULL,
+                  CreatedAt   datetime2      NOT NULL CONSTRAINT DF_FbMilkInput_Created DEFAULT(SYSDATETIME())
+              );
+              -- 轮次列（2026-11-13 第二轮）：表已存在时补列。
+              IF COL_LENGTH('dbo.FbMilkInput','RunId') IS NULL
+                  ALTER TABLE dbo.FbMilkInput ADD RunId nvarchar(40) NULL;
+              IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_MilkInput_Date'
+                             AND object_id=OBJECT_ID(N'dbo.FbMilkInput'))
+                  CREATE INDEX IX_MilkInput_Date ON dbo.FbMilkInput (InputDate, MatchId);
+              IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_MilkInput_Run'
+                             AND object_id=OBJECT_ID(N'dbo.FbMilkInput'))
+                  CREATE INDEX IX_MilkInput_Run ON dbo.FbMilkInput (RunId, InputDate);",
+            cancellationToken: ct));
+
+        var withRun = !string.IsNullOrWhiteSpace(runId);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        if (withRun)
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM dbo.FbMilkInput WHERE RunId=@run", new { run = runId }, tx, cancellationToken: ct));
+        }
+        else
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM dbo.FbMilkInput WHERE InputDate=@d", new { d }, tx, cancellationToken: ct));
+        }
+
+        if (rows.Count == 0)
+        {
+            await tx.CommitAsync(ct);
+            return 0;
+        }
+
+        var payload = rows
+            .Where(r => r.MatchId > 0)
+            .GroupBy(r => r.MatchId)
+            .Select(g => g.First())
+            .Select(r => new
+            {
+                d,
+                mid = r.MatchId,
+                no = r.MatchNo,
+                lg = r.LeagueName,
+                home = r.HomeTeam,
+                away = r.AwayTeam,
+                time = r.MatchTime,
+                ver = r.VersionTag,
+                run = withRun ? runId : null
+            }).ToList();
+
+        var written = await conn.ExecuteAsync(new CommandDefinition(
+            @"INSERT INTO dbo.FbMilkInput
+                (InputDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime, VersionTag, RunId)
+              VALUES (@d, @mid, @no, @lg, @home, @away, @time, @ver, @run)",
+            payload, tx, cancellationToken: ct));
+        await tx.CommitAsync(ct);
+        return written;
+    }
+
+    /// <summary>
+    /// 写一条**轮次头**（2026-11-13 第二轮，落 <c>dbo.FbMilkRun</c>）。
+    ///
+    /// 存在的唯一理由：让「这一轮到底算没算、算了几场、出了几注」有一个不依赖下游行数的落点。
+    /// 没有它，一次全被过滤的重算在库里只表现为「四张表都没变化」，
+    /// 与「作业压根没跑」长得一模一样——这正是 11-13 那半天无法定论的原因。
+    /// 一轮一行，RunId 是主键，重写幂等。
+    /// </summary>
+    public async Task<int> SaveRunAsync(
+        MilkRun run, DateTime runDate,
+        int inputCount, int snapshotRows, int gateRows, int pickRows,
+        string mode, string? note, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"IF OBJECT_ID(N'dbo.FbMilkRun', N'U') IS NULL
+              CREATE TABLE dbo.FbMilkRun
+              (
+                  RunId        nvarchar(40)  NOT NULL CONSTRAINT PK_FbMilkRun PRIMARY KEY,
+                  RunDate      date          NOT NULL,
+                  StartedAt    datetime2     NOT NULL,
+                  RawMatches   int           NOT NULL CONSTRAINT DF_FbMilkRun_Raw   DEFAULT(0),
+                  SalesDates   nvarchar(200) NULL,
+                  InputCount   int           NOT NULL CONSTRAINT DF_FbMilkRun_In    DEFAULT(0),
+                  SnapshotRows int           NOT NULL CONSTRAINT DF_FbMilkRun_Snap  DEFAULT(0),
+                  GateRows     int           NOT NULL CONSTRAINT DF_FbMilkRun_Gate  DEFAULT(0),
+                  PickRows     int           NOT NULL CONSTRAINT DF_FbMilkRun_Pick  DEFAULT(0),
+                  BoardMode    varchar(12)   NOT NULL CONSTRAINT DF_FbMilkRun_Mode  DEFAULT('skip'),
+                  Note         nvarchar(400) NULL,
+                  VersionTag   nvarchar(160) NULL,
+                  CreatedAt    datetime2     NOT NULL CONSTRAINT DF_FbMilkRun_Created DEFAULT(SYSDATETIME())
+              );
+              IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_MilkRun_Date'
+                             AND object_id=OBJECT_ID(N'dbo.FbMilkRun'))
+                  CREATE INDEX IX_MilkRun_Date ON dbo.FbMilkRun (RunDate, StartedAt);",
+            cancellationToken: ct));
+
+        var p = new
+        {
+            run = run.RunId,
+            d = runDate.Date,
+            at = run.StartedAt,
+            raw = run.RawMatches,
+            dates = string.Join(",", run.SalesDates.Select(x => x.ToString("MM-dd"))),
+            inc = inputCount,
+            snap = snapshotRows,
+            gate = gateRows,
+            pick = pickRows,
+            mode,
+            note = string.IsNullOrWhiteSpace(note) ? null : (note.Length > 380 ? note[..380] : note),
+            ver = string.IsNullOrWhiteSpace(run.VersionTag) ? null : run.VersionTag
+        };
+
+        return await conn.ExecuteAsync(new CommandDefinition(
+            @"UPDATE dbo.FbMilkRun
+                 SET RunDate=@d, StartedAt=@at, RawMatches=@raw, SalesDates=@dates,
+                     InputCount=@inc, SnapshotRows=@snap, GateRows=@gate, PickRows=@pick,
+                     BoardMode=@mode, Note=@note, VersionTag=@ver
+               WHERE RunId=@run;
+              IF @@ROWCOUNT = 0
+                  INSERT INTO dbo.FbMilkRun
+                      (RunId, RunDate, StartedAt, RawMatches, SalesDates,
+                       InputCount, SnapshotRows, GateRows, PickRows, BoardMode, Note, VersionTag)
+                  VALUES (@run, @d, @at, @raw, @dates, @inc, @snap, @gate, @pick, @mode, @note, @ver);",
+            p, cancellationToken: ct));
+    }
+
+    /// <summary>
+    /// 写一条作业级日志到 <c>dbo.SyncLog</c>（2026-11-13 加）。
+    ///
+    /// 只为一件事：存档这类「审计材料」写失败时，库里要留下**可定位**的一行，
+    /// 而不是被 `catch { }` 吞掉之后只剩「表里没数据」。行里带输入行数、写入行数、异常类型与消息，
+    /// 一眼能分清是「本次没有输入」还是「有输入但写坏了」。
+    ///
+    /// 写日志本身失败绝不影响出票——它不是出票依赖。
+    /// </summary>
+    public async Task LogAsync(string task, string status, int rows, string message, CancellationToken ct = default)
+    {
+        try
+        {
+            if (message.Length > 1800) message = message[..1800];
+            await using var conn = await _factory.OpenAsync(ct);
+            await conn.ExecuteAsync(new CommandDefinition(
+                @"INSERT INTO dbo.SyncLog (TaskName, Source, StartedAt, FinishedAt, Status, RowsAffected, Message)
+                  VALUES (@t, N'milk', SYSDATETIME(), SYSDATETIME(), @s, @r, @m)",
+                new { t = task, s = status, r = rows, m = message }, cancellationToken: ct));
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { /* 日志写不进去不能影响主流程，也不该掩盖真正的异常 */ }
+    }
+
+    /// <summary>
+    /// 当日方向闸台账。背离的排前面，其余按开赛时间——页面上先看被挡掉的。
+    ///
+    /// 2026-11-13 第二轮：闸表改成按轮追加、保留历史（一行不再互相覆盖），
+    /// 所以读的时候必须钉住最新一轮，否则同一场会出现三四行、Verdict 各不相同。
+    /// 当日一行 RunId 都没有（旧口径的历史补档）时退回「全部」，保持老页面行为。
+    /// </summary>
     public async Task<List<MilkDirectionDiagnosis>> GetGateAsync(DateTime gateDate, CancellationToken ct = default)
     {
         var d = gateDate.Date;
         await using var conn = await _factory.OpenAsync(ct);
         return (await conn.QueryAsync<MilkDirectionDiagnosis>(new CommandDefinition(
-            @"SELECT MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
+            @"DECLARE @run nvarchar(40) =
+                  (SELECT MAX(RunId) FROM dbo.FbMilkGate WHERE GateDate=@d AND RunId IS NOT NULL);
+              SELECT MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
                      ModelDirection, ModelHomePct, ModelDrawPct, ModelAwayPct, PickDirection,
                      MarketDirection, MarketSource, MarketHomePct, MarketDrawPct, MarketAwayPct,
                      AsianDirection, AsianOpen, AsianClose, ExchangeDirection, RatioHome, RatioAway,
                      Verdict, AlertCode, AlertNote, BlockedPicks, BlockedBest, BlockedBestProbability
               FROM dbo.FbMilkGate
-              WHERE GateDate=@d
+              WHERE GateDate=@d AND (@run IS NULL OR RunId=@run)
               ORDER BY CASE WHEN Verdict='diverge' THEN 0 ELSE 1 END, MatchTime, MatchNo",
             new { d }, cancellationToken: ct))).ToList();
     }

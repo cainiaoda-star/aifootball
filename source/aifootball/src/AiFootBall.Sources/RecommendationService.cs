@@ -888,8 +888,6 @@ public sealed class RecommendationService
     {
         if (_milkPicks is null || _tickets is null) return;
 
-        var build = await RecommendMilkWithGateAsync(jcRecs, ct);
-
         // 2026-11-10 修：按**注单自己的受注日**分组落库，不再一律用 DateTime.Today。
         //
         // 出错形态（当晚实测）：22:11 手动重算时页面已切到「周三」期号，算出 3 注周三场次，
@@ -901,16 +899,63 @@ public sealed class RecommendationService
         // 「周三005」开球在 11-12 03:00，属于 11-11 那一期，不该记在 11-10 名下。
         // 分组之后，每一期只删自己那天，不同期互不覆盖。
         var today = DateTime.Today;
-        var bySalesDate = build.Picks
-            .GroupBy(p => SteadyPickRules.SalesDate(
-                string.IsNullOrWhiteSpace(p.MatchNo) ? null : p.MatchNo, p.MatchTime, today))
-            .ToList();
-        foreach (var g in bySalesDate)
-            await _milkPicks.SaveDayAsync(g.Key, g.ToList(), ct);
+
+        // ★ 2026-11-13 第二轮：**「全部被过滤」与「采集失败」必须分开**（用户当天指出）。
+        //
+        // 上一版的写法是「范围来自参与计算的受注日，0 场就什么都不动」。
+        // 它把 11-13 那种情况正好漏掉了：受注 11 场全被禁推名单挡在引擎之前，
+        // 于是 `scopeDates` 为空 → 一行不碰 → 11:40 那注新加坡 vs 巴拉圭继续挂在榜上，
+        // 而它按当时的规则根本不该存在。这不是「没有输入」，这是「有输入、全部被过滤」。
+        //
+        // 现在的口径写在 MilkBoardPlan 里（纯函数，可单测）：
+        //   · 范围来自**过滤前**的场次（`jcRecs`，即 RecommendAsync 的原样输出）。
+        //     全被挡掉时它仍然是 11 场，受注日仍然算得出来；
+        //     绝不能从 `build.Inputs`（禁推在它之前就 return 了）、`FbMilkGate`、
+        //     `Recommendation` 反推——那三者全是「算完之后」的产物，恰好同时为 0。
+        //   · 有受注日 → 按日重写，注单列表可以为空（= 撤掉该日应撤的旧票）；
+        //     SaveDayAsync 的删除谓词保证只删未开赛、已结算与已撤注保留。
+        //   · 过滤前就是 0 场 → 连期号都确认不了，本轮一行不动（采集中断不等于撤榜）。
+        //
+        // 另外每轮生成一个 RunId（2026-11-13 第二轮）：输入凭证、全档存档、闸门、注单、
+        // 轮次头五处都写同一个 RunId，验收按轮核对，不再拿上一轮的存档冒充本轮覆盖。
+        var runAt = DateTime.Now;
+        var build = await RecommendMilkWithGateAsync(jcRecs, ct);
+        var run = new MilkRun
+        {
+            RunId = MilkRun.NewId(runAt),
+            StartedAt = runAt,
+            RawMatches = jcRecs?.Count ?? 0,
+            SalesDates = SalesDatesFor(jcRecs, today),
+            VersionTag = build.Inputs.FirstOrDefault()?.VersionTag
+                         ?? build.ProbSnapshots.FirstOrDefault()?.ModelVersion
+        };
+        var plan = MilkBoardPlan.Create(run, build.Picks, today);
+
+        var pickRows = 0;
+        if (plan.Mode == MilkBoardMode.Skip)
+        {
+            // 「没取得期号」和「今天没有推荐」是两件事，日志必须能分开看。
+            await _milkPicks.LogAsync("milk:picks", "SKIP", 0,
+                $"[{run.RunId}] {plan.Reason}；本轮一行不动，注单 0 不等于今天没有推荐",
+                CancellationToken.None);
+        }
+        else
+        {
+            foreach (var w in plan.Writes)
+                pickRows += await _milkPicks.SaveDayAsync(w.SalesDate, w.Picks, run.RunId, ct);
+
+            await _milkPicks.LogAsync("milk:picks", "OK", pickRows,
+                $"[{run.RunId}] {plan.Reason}"
+                + $"，受注日 {string.Join(",", plan.Writes.Select(w => w.SalesDate.ToString("MM-dd")))}"
+                + $"；实际写库 {pickRows} 行（只删未开赛，已开赛与已撤注保留）",
+                CancellationToken.None);
+        }
 
         // 方向闸的诊断与榜同批落库（2026-11-05）。存下来才回答得了
         // 「11-04 那三场当时模型指哪、市场指哪」——快照一滚就再也追不回来了。
-        try { await _milkPicks.SaveGateAsync(DateTime.Today, build.Gates, ct); }
+        // 2026-11-13 第二轮：按 RunId 追加 + 保留历史，同一场不再互相覆盖。
+        var gateRows = 0;
+        try { gateRows = await _milkPicks.SaveGateAsync(DateTime.Today, build.Gates, run.RunId, ct); }
         catch (OperationCanceledException) { throw; }
         catch { /* 台账表还没建时不影响出票，下一轮再记 */ }
 
@@ -921,29 +966,85 @@ public sealed class RecommendationService
         catch (OperationCanceledException) { throw; }
         catch { /* 同上：判定表写不进去不能挡住出票 */ }
 
-        // 完整分布存档（2026-11-12 加）：每场每玩法**全部档位**的纯模型/市场/混合概率。
+        // 完整分布存档 + 输入凭证（2026-11-12 加，2026-11-13 加凭证与日志）。
         //
-        // 为什么不放进 SaveDayAsync：那张表只存上榜的注（一天 6 行），
-        // 「这场为什么一注都没有」在库里就查不到。存档表覆盖所有算过的场次（一天约 1500 行），
-        // 这才是第三方校验方案要的「事后能解释某场为什么没出票」。
+        // 为什么两件事要一起写：存档回答「这场算出了什么」，凭证回答「这场到底有没有算」。
+        // 只有存档时，一次空跑就能把两者一起抹掉，事后分不清「没算」和「写了但丢了」。
         //
-        // 整期覆盖而不是增量写：模型每天重拟合，同一期重算一次就该留最新一版，
-        // 像 FbMilkPick 那样保留旧行会得到两份互相矛盾的分布，反而更难解释。
-        try { await _milkPicks.SaveProbSnapshotsAsync(DateTime.Today, build.ProbSnapshots, ct); }
+        // 为什么不再用裸 `catch { }`：11-13 那张表被清空之后，库里没有任何一行能说明
+        // 是「本次 0 行」还是「写坏了」。现在无论成败都往 SyncLog 写一行，
+        // 带输入场次、档位行数、实际写入行数、版本戳与异常原文。
+        //
+        // 2026-11-13 第二轮：两者都按 RunId 写、历史保留。
+        // 「本轮 0 档」不再靠「一行没写」来表达——那与「写坏了」长得一样；
+        // 改由本轮在 FbMilkRun 里留一条 SnapshotRows=0 的记录，验收按轮一查便知。
+        var inputTag = run.VersionTag;
+        var inputRows = 0;
+        var snapRows = 0;
+        try
+        {
+            inputRows = await _milkPicks.SaveInputsAsync(today, build.Inputs, run.RunId, ct);
+            snapRows = await _milkPicks.SaveProbSnapshotsAsync(today, build.ProbSnapshots, run.RunId, ct);
+            var note = build.ProbSnapshots.Count == 0 ? "；本轮 0 档，不写存档（上一轮的行原样保留）" : "";
+            await _milkPicks.LogAsync("milk:snapshot", "SUCCESS", snapRows,
+                $"[{run.RunId}] 输入 {build.Inputs.Count} 场 / 凭证 {inputRows} 行；"
+                + $"档位 {build.ProbSnapshots.Count} 行 / 存档 {snapRows} 行{note}；版本 {inputTag}",
+                CancellationToken.None);
+        }
         catch (OperationCanceledException) { throw; }
-        catch { /* 存档写不进去不能挡住出票——它是审计材料，不是出票依赖 */ }
+        catch (Exception ex)
+        {
+            // 存档写不进去不能挡住出票——但必须留下能查的一行。
+            await _milkPicks.LogAsync("milk:snapshot", "FAIL", 0,
+                $"[{run.RunId}] 输入 {build.Inputs.Count} 场 / 档位 {build.ProbSnapshots.Count} 行 写入失败："
+                + $"{ex.GetType().Name}: {ex.Message}", CancellationToken.None);
+        }
+
+        // 轮次头（2026-11-13 第二轮）：本轮算了几场、出了几注、走的是哪种模式，落一行。
+        // 没有它，「全被过滤」的一轮在库里只表现为「四张表都没变化」，与「作业没跑」无法区分。
+        try
+        {
+            await _milkPicks.SaveRunAsync(
+                run, today, build.Inputs.Count, snapRows, gateRows, plan.PickTotal,
+                plan.Mode == MilkBoardMode.Skip ? "skip" : "rewrite", plan.Reason,
+                CancellationToken.None);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            await _milkPicks.LogAsync("milk:run", "FAIL", 0,
+                $"[{run.RunId}] 轮次头写入失败：{ex.GetType().Name}: {ex.Message}", CancellationToken.None);
+        }
 
         // 票只装**当日受注**的那批注（2026-11-10 随上面的分组一起改）。
         // 跨期混票会把「明天才开售/才停售」的场次塞进今天的方案：用户照着买，
         // 其中一半根本不在今天这一期里。榜可以同时挂着两期（页面按日期分区显示），
         // 但购买方案必须只对应一期，否则它既不是今天的方案也不是明天的。
-        var todayPicks = bySalesDate
-            .Where(g => g.Key == today)
-            .SelectMany(g => g)
-            .ToList();
+        var todayPicks = plan.Writes.FirstOrDefault(w => w.SalesDate == today)?.Picks
+                         ?? (IReadOnlyList<MilkPick>)Array.Empty<MilkPick>();
         var draft = MilkPickEngine.BuildTicket(todayPicks, today);
         if (draft is null) return;
         await _tickets.UpsertAsync(draft, ct);
+    }
+
+    /// <summary>
+    /// 本次重算覆盖到的受注日（2026-11-13 加）。
+    ///
+    /// 口径是「参与计算的场次属于哪一期」，不是「今天」。原因见 SaveMilkAsync 里的注释：
+    /// 22:00 之后重算会同时算出次日期的场次，用 Today 一刀切会把停售后定版的当期票删掉。
+    ///
+    /// 返回空集表示**这次没有任何输入**——调用方必须据此什么都不做，
+    /// 不能把「采集中断 / 期号还没放出来」当成「今天没有推荐」去清榜。
+    /// </summary>
+    internal static List<DateTime> SalesDatesFor(IReadOnlyList<MatchRecommendation>? recs, DateTime today)
+    {
+        if (recs is null || recs.Count == 0) return new List<DateTime>();
+        return recs
+            .Select(r => SteadyPickRules.SalesDate(
+                string.IsNullOrWhiteSpace(r.MatchNo) ? null : r.MatchNo, r.MatchTime, today))
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
     }
 
     /// <summary>
