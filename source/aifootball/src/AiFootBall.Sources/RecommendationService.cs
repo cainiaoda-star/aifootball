@@ -1113,7 +1113,8 @@ public sealed class RecommendationService
                     {
                         var why = ledger is null
                             ? $"逐档核对无法执行（{ledgerError}）"
-                            : $"逐档核对不通过（缺失 {ledger.Missing}、重复 {ledger.Duplicated}、多写 {ledger.Unexpected}）：{ledger.Detail}";
+                            : $"逐档核对不通过（缺失 {ledger.Missing}、重复 {ledger.Duplicated}、多写 {ledger.Unexpected}"
+                              + $"、豁免不成立 {ledger.ExemptDefects}）：{ledger.Detail}";
                         await _milkPicks.CloseRunAsync(run.RunId, MilkRunStatus.Failed,
                             $"落库核对失败：{why}",
                             build.Inputs.Count, snapRows, gateRows, pickRows, CancellationToken.None);
@@ -1201,13 +1202,17 @@ public sealed class RecommendationService
         var slate = MilkExpectedSlate.Build(build.Inputs, build.SlateExemptions);
         var pre = MilkRunLedger.UnlandablePicks(plan.Writes.SelectMany(w => w.Picks));
 
-        // 未知原因的「合法缺项」不当缺项：直接判失败。否则那条路会变成万能挡箭牌。
-        foreach (var e in slate.UnknownReasons)
+        // 不被接受的「合法缺项」不当缺项：直接判失败，并逐条说明是哪一环不成立
+        // （原因不在枚举 / 缺证据 / 证据对不上 / 该原因本身不接受）。否则那条路会变成万能挡箭牌。
+        foreach (var e in slate.Rejected)
             pre.Add(new MilkLedgerIssue
             {
-                Table = "snapshot", Kind = "unknown-exemption",
-                Key = $"{e.Key}|{e.Reason}", Expected = 0, Actual = 0
+                Table = "snapshot", Kind = "rejected-exemption",
+                Key = $"{e.Key}|{e.Reason}|{e.Defect}", Expected = 0, Actual = 0
             });
+
+        // 赔率缺失不能借豁免绕过推荐限制：no-odds 与该场出票不能同时成立。
+        pre.AddRange(MilkExpectedSlate.CrossCheck(slate, plan.Writes.SelectMany(w => w.Picks)));
 
         return MilkRunLedger.Verify(
             new[]
@@ -1222,7 +1227,8 @@ public sealed class RecommendationService
                 new MilkLedgerPair { Table = "input", Expected = MilkRunLedger.FromInputs(build.Inputs), Actual = Act("input") }
             },
             pre,
-            slate.Summary);
+            // 豁免必须连证据一起进日志：只写「有 3 条豁免」，事后无法判断当时成不成立。
+            $"{slate.Summary}；豁免明细 {slate.Detail}");
     }
 
     /// <summary>

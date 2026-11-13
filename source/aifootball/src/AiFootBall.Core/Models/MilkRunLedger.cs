@@ -24,6 +24,8 @@ public sealed class MilkLedgerIssue
     /// unexpected        实际有、预期没有（多写的档位）
     /// duplicate-expected 预期里本身就重复（引擎同一场同玩法出了两注同档位）
     /// unlandable        预期里有一条根本写不进去（MatchId 为空）
+    /// rejected-exemption 申报的「合法缺项」站不住（原因不在枚举 / 缺证据 / 证据对不上 / 原因不接受）
+    /// exempt-violated   豁免与注单互相矛盾（no-odds 的场次仍出了票）
     /// </summary>
     public string Kind { get; init; } = string.Empty;
 
@@ -76,6 +78,13 @@ public sealed class MilkLedgerReport
     public int Missing => Issues.Count(i => i.Kind is "missing" or "unlandable");
     public int Duplicated => Issues.Count(i => i.Kind is "duplicate" or "duplicate-expected");
     public int Unexpected => Issues.Count(i => i.Kind == "unexpected");
+
+    /// <summary>
+    /// 豁免本身站不住（2026-11-13 第六轮）：rejected-exemption（原因/证据不成立）
+    /// 与 exempt-violated（豁免与注单同时成立，如 no-odds 却出了票）。
+    /// 单列出来，免得读日志的人把它当成落库缺失去查。
+    /// </summary>
+    public int ExemptDefects => Issues.Count(i => i.Kind is "rejected-exemption" or "exempt-violated");
 }
 
 /// <summary>一张表的「预期 vs 实际」。</summary>

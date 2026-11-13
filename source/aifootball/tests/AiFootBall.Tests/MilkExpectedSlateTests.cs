@@ -163,7 +163,8 @@ public class MilkExpectedSlateTests
         {
             MatchId = 1, MatchNo = "周1",
             PlayType = o.Item1, OptionCode = o.Item2,
-            Reason = MilkSlateExemption.ReasonHalfFullJointMissing
+            Reason = MilkSlateExemption.ReasonHalfFullJointMissing,
+            Evidence = "points=9;joint=absent"
         }).ToList();
 
         var slate = MilkExpectedSlate.Build(new[] { m }, exempts);
@@ -171,7 +172,7 @@ public class MilkExpectedSlateTests
         // 预期只剩胜平负三档，半全场九档被豁免
         Assert.Equal(3, slate.Rows.Count);
         Assert.Equal(9, slate.Exemptions.Count);
-        Assert.Empty(slate.UnknownReasons);
+        Assert.Empty(slate.Rejected);
 
         var actual = ActualFrom(slate);  // 引擎实际也只写了三档
         var report = MilkRunLedger.Verify(new[]
@@ -207,12 +208,140 @@ public class MilkExpectedSlateTests
         {
             new MilkSlateExemption
             {
-                MatchId = 1, PlayType = JcPlayTypes.Spf, OptionCode = "3", Reason = "看着不顺眼"
+                MatchId = 1, PlayType = JcPlayTypes.Spf, OptionCode = "3",
+                Reason = "看着不顺眼", Evidence = "感觉=不对"
             }
         });
 
-        Assert.Single(slate.UnknownReasons);
-        Assert.False(slate.UnknownReasons[0].IsKnown);
+        Assert.Single(slate.Rejected);
+        Assert.False(slate.Rejected[0].IsKnown);
+        Assert.Contains("不在枚举内", slate.Rejected[0].Defect);
+    }
+
+    // ── 第六轮：豁免必须带证据，engine-skipped 不接受 ──────────────────────────
+
+    [Fact]
+    public void 引擎整体跳过_不接受作为豁免()
+    {
+        // 上一版把 engine-skipped 放进枚举 = 一条「整场什么都可以不写」的通用放行口子。
+        // 现在即使带上了格式正确的证据，也必须判失败。
+        var slate = MilkExpectedSlate.Build(new[] { Match(1, ThreeWay) }, new[]
+        {
+            new MilkSlateExemption
+            {
+                MatchId = 1, PlayType = "*", OptionCode = "*",
+                Reason = MilkSlateExemption.ReasonEngineSkipped, Evidence = "options=0"
+            }
+        });
+
+        var e = Assert.Single(slate.Rejected);
+        Assert.True(e.IsKnown);            // 原因认得出来
+        Assert.False(e.Accepted);          // 但不接受
+        Assert.Contains("engine-skipped", e.Defect, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void 引擎整体跳过的豁免_不把该场的档从预期里抹掉()
+    {
+        // 被拒的豁免不许顺手 ignore：否则「拒绝」和「放行」在账本上表现一样。
+        var slate = MilkExpectedSlate.Build(new[] { Match(1, ThreeWay) }, new[]
+        {
+            new MilkSlateExemption
+            {
+                MatchId = 1, PlayType = "*", OptionCode = "*",
+                Reason = MilkSlateExemption.ReasonEngineSkipped, Evidence = "options=0"
+            }
+        });
+
+        Assert.Equal(3, slate.Rows.Count);
+        Assert.Empty(slate.IgnoreKeys);
+
+        var report = MilkRunLedger.Verify(new[]
+        {
+            new MilkLedgerPair { Table = "snapshot", Expected = slate.Rows, Actual = Array.Empty<MilkLedgerRow>(), Ignore = slate.IgnoreKeys }
+        }, slate.Rejected.Select(r => new MilkLedgerIssue { Table = "snapshot", Kind = "rejected-exemption", Key = r.Key }).ToList());
+
+        Assert.False(report.Ok);
+        Assert.Equal(3, report.Missing);        // 三档仍然算缺
+        Assert.Equal(1, report.ExemptDefects);  // 且豁免本身站不住
+    }
+
+    [Fact]
+    public void 合法原因但没有证据_判失败()
+    {
+        var slate = MilkExpectedSlate.Build(new[] { Match(1, ThreeWay.Concat(NineHalfFull).ToArray()) },
+            NineHalfFull.Select(o => new MilkSlateExemption
+            {
+                MatchId = 1, PlayType = o.Item1, OptionCode = o.Item2,
+                Reason = MilkSlateExemption.ReasonHalfFullJointMissing   // 故意的：没写 Evidence
+            }).ToList());
+
+        Assert.Equal(9, slate.Rejected.Count);
+        Assert.All(slate.Rejected, e => Assert.Contains("缺证据", e.Defect));
+        Assert.Empty(slate.IgnoreKeys);   // 没证据就不享受豁免
+    }
+
+    [Fact]
+    public void 证据与原因不符_判失败()
+    {
+        // 原因说「联合分布缺失」，证据却是「options=0」——对不上。
+        var slate = MilkExpectedSlate.Build(new[] { Match(1, ThreeWay.Concat(NineHalfFull).ToArray()) },
+            NineHalfFull.Select(o => new MilkSlateExemption
+            {
+                MatchId = 1, PlayType = o.Item1, OptionCode = o.Item2,
+                Reason = MilkSlateExemption.ReasonHalfFullJointMissing, Evidence = "options=0"
+            }).ToList());
+
+        Assert.Equal(9, slate.Rejected.Count);
+        Assert.All(slate.Rejected, e => Assert.Contains("证据与原因不符", e.Defect));
+    }
+
+    [Fact]
+    public void 自动识别的豁免_自带证据()
+    {
+        var slate = MilkExpectedSlate.Build(new[]
+        {
+            Match(1),                                        // 整场无赔率
+            Match(2, (JcPlayTypes.Jq, "8")),                 // 域外档
+            Match(3, ("XYZ", "1"))                           // 未知玩法
+        });
+
+        Assert.Equal(3, slate.Exemptions.Count);
+        Assert.Empty(slate.Rejected);                        // 自动识别的都带证据，全部成立
+        Assert.Contains(slate.Exemptions, e => e.Evidence == "options=0");
+        Assert.Contains(slate.Exemptions, e => e.Evidence == "code=JQ/8");
+        Assert.Contains(slate.Exemptions, e => e.Evidence == "play=XYZ");
+    }
+
+    [Fact]
+    public void 赔率缺失却出了票_判失败()
+    {
+        // no-odds 只说明「没有可存档的赔率档」，不能同时理解成「可以照常出票」。
+        var slate = MilkExpectedSlate.Build(new[] { Match(9) });
+        Assert.Single(slate.Exemptions);
+
+        var picks = new List<MilkPick>
+        {
+            new() { MatchId = 9, MatchNo = "周9", PlayType = JcPlayTypes.Spf, OptionCode = "3" }
+        };
+
+        var issues = MilkExpectedSlate.CrossCheck(slate, picks);
+
+        var one = Assert.Single(issues);
+        Assert.Equal("exempt-violated", one.Kind);
+        Assert.Contains("no-odds", one.Key);
+    }
+
+    [Fact]
+    public void 赔率缺失且没有出票_不误报()
+    {
+        var slate = MilkExpectedSlate.Build(new[] { Match(9) });
+        var picks = new List<MilkPick>
+        {
+            new() { MatchId = 10, MatchNo = "周10", PlayType = JcPlayTypes.Spf, OptionCode = "3" }
+        };
+
+        Assert.Empty(MilkExpectedSlate.CrossCheck(slate, picks));
     }
 
     [Fact]

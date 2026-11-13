@@ -3000,12 +3000,21 @@ public static class MilkPickEngine
             // 它不知道 joint 有没有算出来；不报就会判成「半全场 9 档全缺」而拒绝发布。
             // 逐档报而不是报一条「BQ 整类」：核对的键是 (场次, 玩法, 档位)，
             // 通配键过滤不掉具体档位，结果还是要报 missing。
-            foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bq).GroupBy(p => p.OptionCode))
+            //
+            // 第六轮：必须带证据（该场半全场档数），且只报**档位域内**的档——
+            // 域外的脏代码由输入侧记 code-outside-domain，报在这里会让同一个键有两套说法。
+            var bqCoded = points
+                .Where(p => p.PlayType == JcPlayTypes.Bq)
+                .Where(p => HalfFullCombos.Contains(p.OptionCode, StringComparer.Ordinal))
+                .GroupBy(p => p.OptionCode)
+                .ToList();
+            foreach (var pt in bqCoded)
                 exempts.Add(new MilkSlateExemption
                 {
                     MatchId = mid, MatchNo = r.MatchNo,
                     PlayType = JcPlayTypes.Bq, OptionCode = pt.Key,
-                    Reason = MilkSlateExemption.ReasonHalfFullJointMissing
+                    Reason = MilkSlateExemption.ReasonHalfFullJointMissing,
+                    Evidence = $"points={bqCoded.Count};joint=absent"
                 });
         }
 
