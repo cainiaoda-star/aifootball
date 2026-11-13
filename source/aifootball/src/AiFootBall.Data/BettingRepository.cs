@@ -508,9 +508,17 @@ public sealed class BettingRepository
         CancellationToken ct = default, DateTime? before = null)
     {
         await using var conn = await _factory.OpenAsync(ct);
+        // ★ 2026-11-13 修：这里原来**没 SELECT f.MatchTime**，Dapper 映射到 ScoreSample 时
+        // MatchTime 恒为 null（它不在结果集里，不是取不到值）。后果不是报错，是静默：
+        //   · ScorelineModel.Fit 的窗口戳恒为 "?..?" —— 审计标准要求「版本戳含拟合窗口」永远读不到；
+        //   · 衰减的 anchor 也拿 null，就算传了 halfLifeDays 也会被 WeightOf 当成「没有时间」退回等权，
+        //     时间衰减形同虚设（当时恰好没启用，所以没炸）；
+        //   · 任何 Fit(samples, asOf: x) 走这条 repo，样本会被 475 行的截止日过滤**全部剔光**、直接返回 Empty。
+        // 线上两条调用（RecommendationService.cs:317、HitProbabilityService.cs:76）都不传 asOf/halfLife，
+        // 所以补上这一列**不改变任何概率**，只把窗口与场次写进版本戳。别因为「看起来没影响」又把它删掉。
         var rows = await conn.QueryAsync<ScoreSample>(new CommandDefinition(
             @"SELECT f.LeagueName, f.HomeTeamName AS HomeTeam, f.AwayTeamName AS AwayTeam,
-                     f.HomeScore, f.AwayScore
+                     f.MatchTime, f.HomeScore, f.AwayScore
               FROM dbo.FbMatch f
               WHERE f.Status = 3
                 AND f.HomeScore IS NOT NULL AND f.AwayScore IS NOT NULL

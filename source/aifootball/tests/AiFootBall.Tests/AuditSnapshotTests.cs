@@ -241,6 +241,225 @@ public class AuditSnapshotTests
         });
     }
 
+    [Fact]
+    public void CollectSnapshots_DuplicateOptionCode_CollapsesToOne()
+    {
+        // 采集端偶发把同一档写进快照两次（两次采样都取到了）。存档若不自己去重，
+        // 「覆盖了几档」这个数会虚高，档位覆盖率统计就错了。
+        var grid = new List<(int H, int A, double P)> { (1, 0, 0.2), (2, 1, 0.3), (0, 0, 0.25), (1, 1, 0.25) };
+        var mass = grid.Sum(c => c.P);
+        var bands = MilkPickEngine.GoalBands(grid, mass);
+        var bfPure = new Dictionary<string, decimal>(StringComparer.Ordinal) { ["2:1"] = 30m, ["胜其它"] = 5m };
+
+        var pts = Points();
+        pts.Add(Pt(JcPlayTypes.Jq, "2", 3.8m));   // 同档第二次出现，价也变了
+
+        var rows = MilkPickEngine.CollectSnapshots(
+            Rec(), 900001, pts, grid, mass,
+            bfPure, 1.410m, 1m, bands, 1.253m, 1m, Joint(), 1.254m, 1m,
+            "dc1|test", null);
+
+        var jq2 = rows.Where(x => x.PlayType == JcPlayTypes.Jq && x.OptionCode == "2").ToList();
+        Assert.Single(jq2);
+        Assert.Equal(3.8m, jq2[0].Odds);   // 保留后出现的那条（points 按采集时间排）
+
+        // 总档数仍是 6（7 条赔率里 1 条非法档位），没有因为重复而变多。
+        Assert.Equal(6, rows.Count);
+    }
+
+    [Fact]
+    public void CollectSnapshots_CoversSpfAndNspf_NotJustThreePlays()
+    {
+        // 2026-11-13 补：此前只存 BF/BQ/JQ。而 SPF 正是方向闸判「模型 vs 市场」用的量，
+        // 最该复盘的一列反而没存；NSPF 有 3 档赔率却一行不写。
+        var grid = new List<(int H, int A, double P)> { (1, 0, 0.2), (2, 1, 0.3), (0, 0, 0.25), (1, 1, 0.25) };
+        var mass = grid.Sum(c => c.P);   // = 1.0
+        var bands = MilkPickEngine.GoalBands(grid, mass);
+        var bfPure = new Dictionary<string, decimal>(StringComparer.Ordinal) { ["2:1"] = 30m, ["胜其它"] = 5m };
+
+        var pts = new List<JcOddsHistoryPoint>
+        {
+            Pt(JcPlayTypes.Spf, "3", 2.10m),
+            Pt(JcPlayTypes.Spf, "1", 3.20m),
+            Pt(JcPlayTypes.Spf, "0", 3.40m),
+            Pt(JcPlayTypes.Nspf, "3", 3.10m),
+            Pt(JcPlayTypes.Nspf, "1", 3.60m),
+            Pt(JcPlayTypes.Nspf, "0", 2.00m)
+        };
+
+        var rec = Rec();
+        rec.Handicap = -1m;   // 主让一球：让平 = 净胜恰 1 球
+
+        var rows = MilkPickEngine.CollectSnapshots(
+            rec, 900001, pts, grid, mass,
+            bfPure, 0m, 1m, bands, 0m, 1m, null, 0m, 1m,
+            "dc1|test", null);
+
+        Assert.Equal(6, rows.Count);
+        Assert.Equal(3, rows.Count(x => x.PlayType == JcPlayTypes.Spf));
+        Assert.Equal(3, rows.Count(x => x.PlayType == JcPlayTypes.Nspf));
+
+        // 胜平负：网格里主胜 0.5（1:0 + 2:1）、平 0.5（0:0 + 1:1）、客胜 0。
+        Assert.Equal(50m, rows.Single(x => x.PlayType == JcPlayTypes.Spf && x.OptionCode == "3").ModelPctPure);
+        Assert.Equal(50m, rows.Single(x => x.PlayType == JcPlayTypes.Spf && x.OptionCode == "1").ModelPctPure);
+        Assert.Equal(0m, rows.Single(x => x.PlayType == JcPlayTypes.Spf && x.OptionCode == "0").ModelPctPure);
+
+        // 让球 −1：净胜 1 的两格（1:0、2:1）合计 0.5 → 让平 50%；净胜 0 的两格合计 0.5 → 让负 50%；让胜 0。
+        Assert.Equal(50m, rows.Single(x => x.PlayType == JcPlayTypes.Nspf && x.OptionCode == "1").ModelPctPure);
+        Assert.Equal(50m, rows.Single(x => x.PlayType == JcPlayTypes.Nspf && x.OptionCode == "0").ModelPctPure);
+        Assert.Equal(0m, rows.Single(x => x.PlayType == JcPlayTypes.Nspf && x.OptionCode == "3").ModelPctPure);
+
+        // 三档齐全，说明水位/去水走的是同一套 StandardOverRound + SnapshotComplete。
+        Assert.All(rows, x => Assert.True(x.MarketPriced));
+    }
+
+    [Fact]
+    public void CollectSnapshots_Nspf_HandicapSignIsNotInverted()
+    {
+        // 让球数的符号是这套代码里最容易写反的地方（正=主受让、负=主让球）。
+        // 同一条网格，把让球从 −1 翻到 +1，「让胜」「让负」必须互换。
+        var grid = new List<(int H, int A, double P)> { (1, 0, 0.2), (2, 1, 0.3), (0, 0, 0.25), (1, 1, 0.25) };
+        var mass = grid.Sum(c => c.P);
+        var bands = MilkPickEngine.GoalBands(grid, mass);
+
+        var pts = new List<JcOddsHistoryPoint>
+        {
+            Pt(JcPlayTypes.Nspf, "3", 3.10m),
+            Pt(JcPlayTypes.Nspf, "1", 3.60m),
+            Pt(JcPlayTypes.Nspf, "0", 2.00m)
+        };
+
+        decimal PureOf(decimal hcp, string code)
+        {
+            var r = Rec();
+            r.Handicap = hcp;
+            var rows = MilkPickEngine.CollectSnapshots(
+                r, 900001, pts, grid, mass,
+                new Dictionary<string, decimal>(), 0m, 1m, bands, 0m, 1m, null, 0m, 1m,
+                "dc1|test", null);
+            return rows.Single(x => x.OptionCode == code).ModelPctPure!.Value;
+        }
+
+        // 主让一球（−1）：净胜 ≥2 才让胜 → 这里没有净胜 2 的格 → 0。
+        Assert.Equal(0m, PureOf(-1m, "3"));
+        Assert.Equal(50m, PureOf(-1m, "1"));   // 净胜恰 1
+        Assert.Equal(50m, PureOf(-1m, "0"));   // 净胜 ≤0
+
+        // 主受让一球（+1）：净胜 ≥0 全算让胜 → 100%，让平/让负都是 0。
+        Assert.Equal(100m, PureOf(1m, "3"));
+        Assert.Equal(0m, PureOf(1m, "1"));
+        Assert.Equal(0m, PureOf(1m, "0"));
+    }
+
+    [Fact]
+    public void CollectSnapshots_Nspf_WithoutHandicapLine_RecordsOddsButNoPureModel()
+    {
+        // 拿不到让球数时不编概率：档位与价格照记，纯模型列留空（null ≠ 0）。
+        var grid = new List<(int H, int A, double P)> { (1, 0, 0.5), (0, 0, 0.5) };
+        var bands = MilkPickEngine.GoalBands(grid, 1.0);
+        var pts = new List<JcOddsHistoryPoint>
+        {
+            Pt(JcPlayTypes.Nspf, "3", 3.10m),
+            Pt(JcPlayTypes.Nspf, "1", 3.60m),
+            Pt(JcPlayTypes.Nspf, "0", 2.00m)
+        };
+
+        var rec = Rec();
+        rec.Handicap = null;
+
+        var rows = MilkPickEngine.CollectSnapshots(
+            rec, 900001, pts, grid, 1.0,
+            new Dictionary<string, decimal>(), 0m, 1m, bands, 0m, 1m, null, 0m, 1m,
+            "dc1|test", null);
+
+        Assert.Equal(3, rows.Count);
+        Assert.All(rows, x =>
+        {
+            Assert.Null(x.ModelPctPure);
+            Assert.NotNull(x.Odds);
+        });
+    }
+
+    // ------------------------------------------------------------------ 存档与方向闸的先后
+
+    /// <summary>
+    /// 被整场撤掉的场次也必须进存档（2026-11-13 加）。
+    ///
+    /// 起因：11-13 有 3 场进引擎（`FbMilkGate` 3 行），存档只有 1 场。原因是
+    /// `CollectSnapshots` 放在方向闸之后，而 `MarketStrongReverse` / `EnforceDirectionVeto`
+    /// 两条分支都是 `continue` —— 被撤的场次一行都不写。
+    /// 而被撤的场次**恰恰是最该事后审计的**：「为什么没推这场」只能靠这时的分布回答。
+    ///
+    /// 这条测试的形状来自 11-08 埃尔切 vs 贝蒂斯：市场客胜大热、模型指主胜。
+    /// </summary>
+    [Fact]
+    public void BuildDetailed_MatchBlockedByGate_StillArchived()
+    {
+        var model = StrongHomeModel();
+        var rec = new MatchRecommendation
+        {
+            Board = Boards.Jc,
+            MatchNo = "周三001",
+            MatchId = 1,
+            LeagueName = "英超",
+            HomeTeam = "主队",
+            AwayTeam = "客队",
+            MatchTime = DateTime.Today.AddHours(20),
+            TotalLine = 2.5m,
+            Handicap = -1m
+        };
+
+        JcOddsHistoryPoint P(string play, string code, decimal odds) => new()
+        {
+            MatchId = 1, PlayType = play, OptionCode = code, OptionName = code, Odds = odds
+        };
+
+        var odds = new Dictionary<long, List<JcOddsHistoryPoint>>
+        {
+            [1] = new()
+            {
+                P(JcPlayTypes.Spf, "3", 3.62m),
+                P(JcPlayTypes.Spf, "1", 3.60m),
+                P(JcPlayTypes.Spf, "0", 1.71m),   // 客胜去水 51.4%，市场大热
+                P(JcPlayTypes.Nspf, "3", 2.40m),
+                P(JcPlayTypes.Nspf, "1", 3.60m),
+                P(JcPlayTypes.Nspf, "0", 2.30m),
+                P(JcPlayTypes.Bq, "3-3", 6.0m),
+                P(JcPlayTypes.Bq, "1-1", 6.0m),
+                P(JcPlayTypes.Bq, "0-0", 6.0m)
+            }
+        };
+
+        var r = MilkPickEngine.BuildDetailed(new[] { rec }, odds, model);
+
+        // 先确认这个 fixture 真的被撤了，否则测的就不是要测的东西。
+        Assert.True(r.Funnel.BlockedByGate >= 1,
+            $"这个 fixture 本应被方向闸整场撤掉，实测 BlockedByGate={r.Funnel.BlockedByGate}");
+        Assert.DoesNotContain(r.Picks, x => x.MatchId == 1);
+
+        // 核心断言：没出注，但分布存档必须在。
+        var snap = r.ProbSnapshots.Where(x => x.MatchId == 1).ToList();
+        Assert.NotEmpty(snap);
+        Assert.Contains(snap, x => x.PlayType == JcPlayTypes.Spf);
+        Assert.Contains(snap, x => x.PlayType == JcPlayTypes.Nspf);
+        // 版本戳必须一路带到存档行（第二个独立来源）。
+        // 这里只断言前缀：本 fixture 的样本没有 MatchTime，窗口段会是 ?..? —— 那是取样字段的问题，
+        // 由 fit-probe 在真库上验，不在这个单测的职责里。
+        Assert.All(snap, x => Assert.StartsWith("dc1|", x.ModelVersion));
+    }
+
+    /// <summary>主队强、客队弱的模型，用来复现「模型指主胜、市场指客胜」的背离形态。</summary>
+    static ScorelineModel StrongHomeModel()
+    {
+        var samples = new List<ScoreSample>();
+        for (var i = 0; i < 20; i++)
+        {
+            samples.Add(new ScoreSample { LeagueName = "英超", HomeTeam = "主队", AwayTeam = "客" + i, HomeScore = 2, AwayScore = 1 });
+            samples.Add(new ScoreSample { LeagueName = "英超", HomeTeam = "客队", AwayTeam = "主" + i, HomeScore = 1, AwayScore = 2 });
+        }
+        return ScorelineModel.Fit(samples);
+    }
+
     // ------------------------------------------------------------------ 版本戳
 
     [Fact]

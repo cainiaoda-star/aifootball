@@ -566,6 +566,15 @@ WHERE StartedAt >= @d;
 # that would notice.
 # Scope note: snapshots are stamped with the natural day, picks with the sales date,
 # so a late-night run can put picks on @d+1 - hence the IN (@d, @d+1) on picks.
+#
+# 2026-11-13: two more checks, both for defects that were invisible until now.
+#   (a) window '?..?' - the fit window comes from sample MatchTime. The sampling SQL
+#       did not SELECT f.MatchTime, so every stamp read dc1|?..?|... The window is an
+#       audit requirement, so an unknown window must FAIL, not pass silently.
+#   (b) duplicate (MatchId,PlayType,OptionCode) rows - the table has no unique
+#       constraint, so a repeated snapshot point writes the same tier twice and every
+#       "tier coverage" count becomes wrong. CollectSnapshots now dedupes, this is
+#       the backstop that proves it in production.
 try {
     $h = @(Sql @"
 DECLARE @d date = CAST(GETDATE() AS date);
@@ -574,13 +583,45 @@ SELECT CAST((SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate IN (@d, @n)) AS 
      + CAST((SELECT COUNT(*) FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate = @d) AS varchar(10)) + '|'
      + CAST((SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate IN (@d, @n) AND ModelVersion IS NOT NULL) AS varchar(10)) + '|'
      + CAST((SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate IN (@d, @n) AND ModelVersion IS NULL) AS varchar(10)) + '|'
+     + CAST((SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate IN (@d, @n) AND ModelVersion LIKE '%?..?%') AS varchar(10)) + '|'
+     + CAST((SELECT COUNT(*) FROM (SELECT MatchId, PlayType, OptionCode FROM dbo.FbMilkProbSnapshot
+                                    WHERE SnapshotDate = @d
+                                    GROUP BY MatchId, PlayType, OptionCode
+                                    HAVING COUNT(*) > 1) t) AS varchar(10)) + '|'
      + ISNULL((SELECT TOP 1 ModelVersion FROM dbo.FbMilkPick WHERE ModelVersion IS NOT NULL ORDER BY PickId DESC), '');
 "@)
     $p = @($h)[0]
     if ($p -is [string] -and $p.Contains('|')) {
         $q = $p -split '\|'
         $picks = [int]$q[0]; $snaps = [int]$q[1]; $withVer = [int]$q[2]; $noVer = [int]$q[3]
-        $sample = if ($q.Count -gt 4) { $q[4] } else { '' }
+        $badWin = if ($q.Count -gt 4) { [int]$q[4] } else { 0 }
+        $dup = if ($q.Count -gt 5) { [int]$q[5] } else { 0 }
+        # The stamp itself contains '|' (dc1|window|n=|rho=|build|w=|bf=), so splitting on
+        # '|' shreds it. Re-join everything past the fixed fields to get the full string back.
+        $sample = if ($q.Count -gt 6) { ($q[6..($q.Count - 1)] -join '|') } else { '' }
+
+        if ($dup -gt 0) {
+            Fail ("audit write-back: " + $dup + " duplicated (MatchId,PlayType,OptionCode) groups in FbMilkProbSnapshot for today - one tier written twice, tier-coverage counts are wrong (no unique constraint on the table, dedupe lives in CollectSnapshots)")
+        }
+        # 2026-11-13 fixed the sampling SQL (f.MatchTime was missing). Rows written before
+        # 11-14 still carry '?..?' legitimately; from 11-14 on it can only be a regression.
+        if ($badWin -gt 0 -and $picks -gt 0) {
+            $staleQ = @(Sql @"
+DECLARE @d date = CAST(GETDATE() AS date);
+DECLARE @n date = DATEADD(day, 1, @d);
+SELECT CAST((SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate IN (@d, @n) AND ModelVersion LIKE '%?..?%' AND PickDate < '2026-11-14') AS varchar(10)) + '|'
+     + CAST((SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate IN (@d, @n) AND ModelVersion LIKE '%?..?%' AND PickDate >= '2026-11-14') AS varchar(10));
+"@)
+            $s2 = (@($staleQ)[0]) -split '\|'
+            $preFix = if ($s2.Count -gt 0) { [int]$s2[0] } else { 0 }
+            $postFix = if ($s2.Count -gt 1) { [int]$s2[1] } else { 0 }
+            if ($postFix -gt 0) {
+                Fail ("audit write-back: " + $postFix + " pick(s) dated 11-14 or later carry an unknown fit window '?..?' - MatchTime is missing from the score-sample SQL again, the window/decay/anchor are all null and Fit(asOf) would drop every sample")
+            }
+            if ($preFix -gt 0) {
+                Warn ("audit write-back: " + $preFix + " pick(s) still carry '?..?' but they predate the 11-13 sampling fix - expected residue, not a regression")
+            }
+        }
         if ($picks -eq 0) {
             Ok "audit write-back: no picks today (nothing to cross-check, not a failure)"
         } elseif ($snaps -eq 0) {

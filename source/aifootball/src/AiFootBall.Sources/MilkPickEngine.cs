@@ -1777,6 +1777,24 @@ public static class MilkPickEngine
             if (matchPicks.Count > 0) funnel.Candidates++;
             else if (funnel.Skipped.Count < 20) funnel.Skipped.Add($"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：模型有分布但没生成候选注（赔率越界/被禁档）");
 
+            // 分布存档（2026-11-12 加，**2026-11-13 移到方向闸之前**）：这一场算过的**每一档**都记下来，
+            // 不只是进榜那几注。
+            //
+            // 位置为什么要在这里：原来放在闸后面（AddRange 前一行），而下面两条分支都是 `continue`——
+            // `EnforceDirectionVeto` 与 `MarketStrongReverse`。被整场撤掉的场次于是**一行存档都不写**。
+            // 11-13 实测：3 场进引擎、闸表 3 行、存档只有 1 场，而「为什么没推这场」恰恰是最该事后审计的。
+            // 用户给的标准是「该日**所有进入计算的场次**全档留存」，不是「所有出票的场次」。
+            //
+            // 位置为什么能在这里：CollectSnapshots 只依赖 grid / joint / jqBands / bfPure 这几个
+            // 幂等分布量 + points 赔率快照，全在候选生成结束时就已经定稿；`matchPicks` 只用来取
+            // 胜平/负平那两档走了 HalfDrawModel 的实际值，而那是**建候选时**就写好的标记，
+            // 后面的闸只改 DivergedFromMarket / FatigueTag 这类标注，不碰 ModelPctPure。
+            // 所以提前取不会漏值，也不会因为 picks 被撤而变化。
+            snapshots.AddRange(CollectSnapshots(
+                r, mid, points, grid, mass,
+                bfPure, bfOver, bfNorm, jqBands, jqOver, jqNorm, joint, bqOver, bqNorm, versionTag,
+                matchPicks));
+
             var diag = MilkDirectionGate.Judge(
                 r, points,
                 (decimal)ResultProbability(grid, mass, '3'),
@@ -1837,14 +1855,6 @@ public static class MilkPickEngine
                                        && diag.MarketDirection is not null
                                        && dir != diag.MarketDirection;
             }
-
-            // 分布存档（2026-11-12 加）：这一场算过的**每一档**都记下来，不只是进榜那几注。
-            // 放在方向闸之后、AddRange 之前：此处的 matchPicks 是该场进入排名前的完整候选集，
-            // 而 grid/joint/jqBands 还是同一个对象——过了这个点，局部变量就没了。
-            snapshots.AddRange(CollectSnapshots(
-                r, mid, points, grid, mass,
-                bfPure, bfOver, bfNorm, jqBands, jqOver, jqNorm, joint, bqOver, bqNorm, versionTag,
-                matchPicks));
 
             // 版本戳落到每注（审计 P0）：没有它，赛后无法回答「这条注是哪份模型 + 哪套 w 算的」。
             foreach (var p in matchPicks) p.ModelVersion = versionTag;
@@ -2874,14 +2884,28 @@ public static class MilkPickEngine
         var rows = new List<MilkProbSnapshot>(48);
         if (points.Count == 0) return rows;
 
+        // 同档去重（2026-11-13 加）：points 是当场的赔率快照，同一 PlayType+OptionCode 理论上只有一条，
+        // 但采集端偶发重复（同一档两次采样都进了快照）时，下面每个 foreach 会各自写一行，
+        // 于是同一档在 `FbMilkProbSnapshot` 里出现两次。
+        // 表上没有唯一约束（加约束会卡住历史上的重复行），所以只能在这里保证——
+        // 否则「覆盖了几档」这个数会虚高，事后统计档位覆盖率就是错的。
+        // 保留**后出现**的那条：points 按采集时间排，后面的更新。
+        var rowIndex = new Dictionary<string, int>(StringComparer.Ordinal);
+
         var salesDate = SteadyPickRules.SalesDate(
             string.IsNullOrWhiteSpace(r.MatchNo) ? null : r.MatchNo, r.MatchTime, DateTime.Today);
 
+        // 水位/归一：BF/JQ/BQ 由调用方算好传进来（候选生成要用同一份），SPF/NSPF 这里现算。
+        // 为什么 SPF/NSPF 不改成参数：它们不参与候选生成（PlayOrder 里没有 SPF，NSPF 只有让平一档），
+        // 加两个参数只为了让存档用一次，反而给 BuildDetailed 和所有测试多加两处要同步的地方。
+        // 口径仍是同一个函数：SnapshotComplete + StandardOverRound + BlendNormalizer，不另写算式。
         decimal Over(string play) => play switch
         {
             JcPlayTypes.Bf => bfOver,
             JcPlayTypes.Jq => jqOver,
             JcPlayTypes.Bq => bqOver,
+            JcPlayTypes.Spf or JcPlayTypes.Nspf
+                => SnapshotComplete(points, play) ? StandardOverRound(play) : 0m,
             _ => 0m
         };
 
@@ -2890,6 +2914,8 @@ public static class MilkPickEngine
             JcPlayTypes.Bf => bfNorm,
             JcPlayTypes.Jq => jqNorm,
             JcPlayTypes.Bq => bqNorm,
+            JcPlayTypes.Spf or JcPlayTypes.Nspf
+                => BlendNormalizer(points, play, Over(play)),
             _ => 1m
         };
 
@@ -2903,7 +2929,7 @@ public static class MilkPickEngine
                 ? Math.Round(Blend(pv / 100m, odds!.Value, over, play, Norm(play)) * 100m, 3)
                 : purePct;
 
-            rows.Add(new MilkProbSnapshot
+            var row = new MilkProbSnapshot
             {
                 SnapshotDate = salesDate,
                 MatchId = mid,
@@ -2916,7 +2942,15 @@ public static class MilkPickEngine
                 BlendedPct = blended,
                 MarketPriced = priced,
                 ModelVersion = versionTag
-            });
+            };
+
+            var key = play + "|" + code;
+            if (rowIndex.TryGetValue(key, out var at)) rows[at] = row;
+            else
+            {
+                rowIndex[key] = rows.Count;
+                rows.Add(row);
+            }
         }
 
         // ---- 比分：具体比分来自 bfPure；「其它」也在其中（余量算法见上面的候选段）----
@@ -2953,6 +2987,51 @@ public static class MilkPickEngine
                     : Math.Round(joint[SideIndex(pt.OptionCode[0]), SideIndex(pt.OptionCode[2])] * 100m, 3);
                 Add(JcPlayTypes.Bq, pt.OptionCode, odds, pure);
             }
+        }
+
+        // ---- 胜平负：三向直接取网格合计 ----
+        // 2026-11-13 加。此前只存 BF/BQ/JQ，而 SPF 恰恰是方向闸判「模型 vs 市场」用的那个量——
+        // 每场最想复盘的一列反而没存。这不是「采不到」：全库 FbJcOddsHistory 有 SPF 的场次 219 个
+        // （近 7 天 85/87），是存档里压根没写这个分支。
+        foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Spf))
+        {
+            char? side = pt.OptionCode switch { "3" => '3', "1" => '1', "0" => '0', _ => null };
+            if (side is null) continue;
+            var odds = pt.Odds > 1m ? pt.Odds : (decimal?)null;
+            Add(JcPlayTypes.Spf, pt.OptionCode, odds,
+                Math.Round((decimal)ResultProbability(grid, mass, side.Value) * 100m, 3));
+        }
+
+        // ---- 让球胜平负：净胜 + 让球数 的三向合计 ----
+        // 口径与候选段的让平**同一套**（那边是 hcpTarget = -hcpLine 取「净胜恰卡盘口」那一格）：
+        // `r.Handicap` 正 = 主受让、负 = 主让球，调整后净胜 =（主 − 客）+ 让球数。
+        //   > 0 让胜 / == 0 让平 / < 0 让负。半球盘永远取不到 0，让平自然为 0，不需要特判。
+        // 拿不到让球数时不编概率：仍记这一档的价格，纯模型列留空（null ≠ 0）。
+        var hcp = r.Handicap;
+        double nsWin = 0, nsDraw = 0, nsLose = 0;
+        if (hcp is decimal line)
+        {
+            foreach (var c in grid)
+            {
+                var adj = (c.H - c.A) + (double)line;
+                if (adj > 0) nsWin += c.P;
+                else if (adj == 0) nsDraw += c.P;
+                else nsLose += c.P;
+            }
+            if (mass > 0) { nsWin /= mass; nsDraw /= mass; nsLose /= mass; }
+        }
+        foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Nspf))
+        {
+            var odds = pt.Odds > 1m ? pt.Odds : (decimal?)null;
+            decimal? pure = hcp is null ? null : pt.OptionCode switch
+            {
+                "3" => Math.Round((decimal)nsWin * 100m, 3),
+                "1" => Math.Round((decimal)nsDraw * 100m, 3),
+                "0" => Math.Round((decimal)nsLose * 100m, 3),
+                _ => null
+            };
+            if (hcp is not null && pure is null) continue;   // 有让球数却不认识的档位：不是漏档，是脏档
+            Add(JcPlayTypes.Nspf, pt.OptionCode, odds, pure);
         }
 
         return rows;

@@ -134,6 +134,17 @@ public static class Program
             return await OddsConditionStudy.RunAsync(connStr, testStart);
         }
 
+        // 真实取样链路探针（2026-11-13 加）。只读。
+        // 起因：11-13 注单的版本戳是 `dc1|?..?|n=178179|...`，根因是取样 SQL 没 SELECT f.MatchTime，
+        // 拟合窗口恒为 ?、衰减 anchor 恒为 null、Fit(asOf) 会把样本全剔光。
+        // 这类缺陷编译能过、单测能过、线上不报错，只能拿真库跑一遍完整链路才看得见。
+        if (args.Any(a => a.Equals("fit-probe", StringComparison.OrdinalIgnoreCase)))
+        {
+            var fi = Array.FindIndex(args, a => a.Equals("fit-probe", StringComparison.OrdinalIgnoreCase));
+            var days = fi >= 0 && fi + 1 < args.Length && int.TryParse(args[fi + 1], out var dv) ? dv : 30;
+            return await FitProbe.RunAsync(connStr, days);
+        }
+
         // 审计表端到端自检（2026-11-12 加）。会写库，但只写 2090-01-01 这个远离真实数据的日期，
         // 跑完自动清理。存在的理由：两套手写 INSERT 一旦列数不齐，线上会被 try/catch 静默吞掉。
         if (args.Any(a => a.Equals("audit-check", StringComparison.OrdinalIgnoreCase)))

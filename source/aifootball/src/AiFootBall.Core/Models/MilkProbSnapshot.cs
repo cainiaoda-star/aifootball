@@ -24,7 +24,13 @@ public sealed class MilkProbSnapshot
     public long MatchId { get; set; }
     public string? MatchNo { get; set; }
 
-    /// <summary>BF=比分 / BQ=半全场 / JQ=总进球 / NSPF=让球胜平负。</summary>
+    /// <summary>
+    /// BF=比分 / BQ=半全场 / JQ=总进球 / SPF=胜平负 / NSPF=让球胜平负。
+    ///
+    /// 2026-11-13 补全：此前只有 BF/BQ/JQ 三类（`CollectSnapshots` 缺 SPF/NSPF 分支），
+    /// 而 SPF 正是方向闸判「模型 vs 市场」用的量——最该复盘的一列反而没存。
+    /// 现在五类齐了，其中 NSPF 拿不到让球数时 <see cref="ModelPctPure"/> 留空（null ≠ 0）。
+    /// </summary>
     public string PlayType { get; set; } = "";
 
     /// <summary>档位代码：比分 "3:1"、半全场 "3-0"、总进球 "0".."7"（7=7+）、让球 "3"/"1"/"0"。</summary>
