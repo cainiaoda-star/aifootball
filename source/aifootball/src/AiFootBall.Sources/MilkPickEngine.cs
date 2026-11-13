@@ -1309,9 +1309,13 @@ public static class MilkPickEngine
         // 输入凭证（2026-11-13 加）：哪些场真正进了引擎。与快照同批落库，
         // 让「存档覆盖了没有」有一个不依赖下游结果的独立分母。
         var inputs = new List<MilkInputMatch>();
+        // 合法缺项申报（2026-11-13 第五轮）：存档侧规范是「每一档都存」，
+        // 少数分支按规则确实不写（半全场算不出联合分布、让球盘脏档），
+        // 这些必须自己报出来——发布前核对不接受「没写而且说不出原因」。
+        var slateExempts = new List<MilkSlateExemption>();
 
         if (recs.Count == 0 || odds.Count == 0)
-            return new MilkBuildResult { Picks = result, Gates = gates, Funnel = funnel, ProbSnapshots = snapshots };
+            return new MilkBuildResult { Picks = result, Gates = gates, Funnel = funnel, ProbSnapshots = snapshots, SlateExemptions = slateExempts };
 
         foreach (var r in recs)
         {
@@ -1438,7 +1442,17 @@ public static class MilkPickEngine
                 HomeTeam = r.HomeTeam,
                 AwayTeam = r.AwayTeam,
                 MatchTime = r.MatchTime,
-                VersionTag = versionTag
+                VersionTag = versionTag,
+                // 该场的赔率档位清单（2026-11-13 第五轮）：发布前核对用它独立推出「该有几档」。
+                // 必须在这里取，而不是核对时回库查：核对发生在落库之后，那时报价可能已经变了。
+                Options = points
+                    .Select(pt => new MilkInputOption
+                    {
+                        PlayType = pt.PlayType ?? string.Empty,
+                        OptionCode = pt.OptionCode ?? string.Empty,
+                        Odds = pt.Odds
+                    })
+                    .ToList()
             });
 
             // 俱乐部画像（2026-11-07 落地）：模型热门方的历史反转倾向。
@@ -1813,7 +1827,7 @@ public static class MilkPickEngine
             snapshots.AddRange(CollectSnapshots(
                 r, mid, points, grid, mass,
                 bfPure, bfOver, bfNorm, jqBands, jqOver, jqNorm, joint, bqOver, bqNorm, versionTag,
-                matchPicks));
+                matchPicks, slateExempts));
 
             var diag = MilkDirectionGate.Judge(
                 r, points,
@@ -2030,7 +2044,7 @@ public static class MilkPickEngine
 
             funnel.Final = perMatchPicks.Count;
             MarkBaseline(perMatchPicks, odds);
-            return new MilkBuildResult { Picks = perMatchPicks, Gates = gates, ShowRows = showRows, Funnel = funnel, ProbSnapshots = snapshots, Inputs = inputs };
+            return new MilkBuildResult { Picks = perMatchPicks, Gates = gates, ShowRows = showRows, Funnel = funnel, ProbSnapshots = snapshots, Inputs = inputs, SlateExemptions = slateExempts };
         }
 
         // 4) 按玩法分组各取前几名，不混在一起排。
@@ -2322,7 +2336,8 @@ public static class MilkPickEngine
             Funnel = funnel,
             CounterCandidates = counterDiag,
             ProbSnapshots = snapshots,
-            Inputs = inputs
+            Inputs = inputs,
+            SlateExemptions = slateExempts
         };
     }
 
@@ -2868,7 +2883,8 @@ public static class MilkPickEngine
         decimal[] jqBands, decimal jqOver, decimal jqNorm,
         decimal[,]? joint, decimal bqOver, decimal bqNorm,
         string? versionTag,
-        IReadOnlyList<MilkPick>? picks = null)
+        IReadOnlyList<MilkPick>? picks = null,
+        List<MilkSlateExemption>? exempts = null)
     {
         var rows = new List<MilkProbSnapshot>(48);
         if (points.Count == 0) return rows;
@@ -2976,6 +2992,21 @@ public static class MilkPickEngine
                     : Math.Round(joint[SideIndex(pt.OptionCode[0]), SideIndex(pt.OptionCode[2])] * 100m, 3);
                 Add(JcPlayTypes.Bq, pt.OptionCode, odds, pure);
             }
+        }
+        else if (exempts is not null)
+        {
+            // 2026-11-13 第五轮：算不出 3×3 联合分布时整类半全场都不写。
+            // 这是规则内的缺失（不是漏写），但必须申报——发布前核对的预期来自输入侧，
+            // 它不知道 joint 有没有算出来；不报就会判成「半全场 9 档全缺」而拒绝发布。
+            // 逐档报而不是报一条「BQ 整类」：核对的键是 (场次, 玩法, 档位)，
+            // 通配键过滤不掉具体档位，结果还是要报 missing。
+            foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bq).GroupBy(p => p.OptionCode))
+                exempts.Add(new MilkSlateExemption
+                {
+                    MatchId = mid, MatchNo = r.MatchNo,
+                    PlayType = JcPlayTypes.Bq, OptionCode = pt.Key,
+                    Reason = MilkSlateExemption.ReasonHalfFullJointMissing
+                });
         }
 
         // ---- 胜平负：三向直接取网格合计 ----

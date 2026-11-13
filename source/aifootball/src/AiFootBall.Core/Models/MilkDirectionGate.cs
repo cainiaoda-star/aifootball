@@ -227,6 +227,17 @@ public sealed class MilkBuildResult
     /// </summary>
     public List<MilkInputMatch> Inputs { get; init; } = new();
 
+    /// <summary>
+    /// 引擎自己申报的合法缺项（2026-11-13 第五轮）。
+    ///
+    /// 与 <see cref="MilkExpectedSlate"/> 的分工：预期档位由「输入 × 玩法规则」独立推出，
+    /// 引擎只有在**规则内确实不该写**的时候才申报一条（例如半全场算不出联合分布、让球盘脏档）。
+    /// 申报不等于放行——原因必须是固定枚举，未知原因照样判失败。
+    /// 为什么必须由引擎报而不能让核对器去猜：这些分支的判据在引擎内部（joint 是否为 null、
+    /// 让球数是否可用），核对器看不到；猜就等于把「漏写」和「正常跳过」混为一谈。
+    /// </summary>
+    public List<MilkSlateExemption> SlateExemptions { get; init; } = new();
+
     /// <summary>被方向闸挡下的场次数。</summary>
     public int DivergedMatches => Gates.Count(g => g.Verdict == MilkGateVerdicts.Diverge);
 
@@ -248,6 +259,17 @@ public sealed class MilkInputMatch
     public DateTime? MatchTime { get; init; }
     /// <summary>整批共用的版本戳，与注单/存档同源。</summary>
     public string? VersionTag { get; init; }
+
+    /// <summary>
+    /// 进计算时这一场的竞彩赔率档位清单（2026-11-13 第五轮）。
+    ///
+    /// 为什么把它挂在这里：发布前核对需要一份**不来自引擎输出**的「该有几档」依据。
+    /// 之前那份预期取自 `build.ProbSnapshots`（引擎自己的输出），只能证明「算出来的都写了」，
+    /// 证明不了「该算的都算了」。这个清单在 `Distributed++` 处与输入凭证同时落，
+    /// 之后引擎怎么生成都不影响它，于是「漏一场 / 漏一档」才验得出来。
+    /// 只存内存，不落库（`FbMilkInput` 仍是场级一行）。
+    /// </summary>
+    public IReadOnlyList<MilkInputOption> Options { get; init; } = Array.Empty<MilkInputOption>();
 }
 
 /// <summary>

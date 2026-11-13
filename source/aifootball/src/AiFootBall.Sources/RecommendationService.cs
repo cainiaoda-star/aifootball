@@ -1131,7 +1131,7 @@ public sealed class RecommendationService
                         await _milkPicks.LogAsync("milk:run", "SUCCESS", pickRows,
                             $"[{run.RunId}] 已发布：{plan.Reason}；受注日 "
                             + string.Join(",", dates.Select(x => $"{x.SalesDate:MM-dd}({x.PickCount}注)"))
-                            + $"；{steps.Summary}；逐档核对 {ledger.Summary}"
+                            + $"；{steps.Summary}；逐档核对 {ledger.Summary}；{ledger.ExemptSummary}"
                             // 采集口径要写全：`Batch >= Known` 只到「与库内已知集合一致」，
                             // 不是「源站没漏场」，也不是「赔率新鲜」。日志里不写清，事后会被当成保证。
                             + $"；采集 {capture.IssueText}（与库内已知集合一致，非源站基准；"
@@ -1169,12 +1169,13 @@ public sealed class RecommendationService
     }
 
     /// <summary>
-    /// 发布前的逐档核对（2026-11-13 第四轮）。
+    /// 发布前的逐档核对（2026-11-13 第四轮；第五轮把预期改到输入侧）。
     ///
-    /// 预期账本从**本轮引擎输出**构建，不从库里反推：
+    /// 预期账本：
     ///   pick     = plan.Writes 里每一期的每一注（键含受注日）
     ///   gate     = build.Gates（一场一行）
-    ///   snapshot = build.ProbSnapshots（一场每档一行）
+    ///   snapshot = **<see cref="MilkExpectedSlate"/> 独立推出的档位**（输入 × 玩法规则），
+    ///              不是 `build.ProbSnapshots`——拿引擎输出当预期，引擎漏了永远发现不了
     ///   input    = build.Inputs（一场一行，与 SaveInputsAsync 的去重口径一致）
     /// 实际账本按 `RunId` 从四张表读回，逐键比对。读的是**本轮的行**，
     /// 所以上一轮的历史不会让核对结果看起来「多出来」。
@@ -1196,15 +1197,32 @@ public sealed class RecommendationService
             .SelectMany(w => MilkRunLedger.FromPicks(w.SalesDate, w.Picks))
             .ToList();
 
+        // 独立预期：输入里有哪些档 × 玩法规则允许哪些档。引擎少生成一场/一档都会在这里显形。
+        var slate = MilkExpectedSlate.Build(build.Inputs, build.SlateExemptions);
+        var pre = MilkRunLedger.UnlandablePicks(plan.Writes.SelectMany(w => w.Picks));
+
+        // 未知原因的「合法缺项」不当缺项：直接判失败。否则那条路会变成万能挡箭牌。
+        foreach (var e in slate.UnknownReasons)
+            pre.Add(new MilkLedgerIssue
+            {
+                Table = "snapshot", Kind = "unknown-exemption",
+                Key = $"{e.Key}|{e.Reason}", Expected = 0, Actual = 0
+            });
+
         return MilkRunLedger.Verify(
             new[]
             {
                 new MilkLedgerPair { Table = "pick", Expected = picks, Actual = Act("pick") },
                 new MilkLedgerPair { Table = "gate", Expected = MilkRunLedger.FromGates(build.Gates), Actual = Act("gate") },
-                new MilkLedgerPair { Table = "snapshot", Expected = MilkRunLedger.FromSnapshots(build.ProbSnapshots), Actual = Act("snapshot") },
+                new MilkLedgerPair
+                {
+                    Table = "snapshot", Expected = slate.Rows, Actual = Act("snapshot"),
+                    Ignore = slate.IgnoreKeys
+                },
                 new MilkLedgerPair { Table = "input", Expected = MilkRunLedger.FromInputs(build.Inputs), Actual = Act("input") }
             },
-            MilkRunLedger.UnlandablePicks(plan.Writes.SelectMany(w => w.Picks)));
+            pre,
+            slate.Summary);
     }
 
     /// <summary>

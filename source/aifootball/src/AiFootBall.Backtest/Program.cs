@@ -175,6 +175,12 @@ public static class Program
             return await MilkLedgerAuditStudy.RunAsync(connStr, days);
         }
 
+        // 隔离库集成验证（2026-11-13 第五轮）。**只在隔离库跑**，会建库建表、造多轮副本，
+        // 用来验「历史战绩的新统计口径」会不会重复计票、会不会改写已冻结的收益。
+        // 判据不是「看起来合理」，而是报表必须与空跑台账（冻结/结算规则）逐项相等。
+        if (args.Any(a => a.Equals("milk-isolated-check", StringComparison.OrdinalIgnoreCase)))
+            return await MilkIsolatedCheck.RunAsync(connStr);
+
         // 比分（BF）只读评估（2026-11-12 加）：模型 Hit@1 / Hit@3 vs 历史频率 vs 市场。
         // 只读，且**不恢复出票**——`EnableScorePicks` 仍然关着，这里只回答「模型挑比分准不准」。
         // 起因：校验方案要求「比分 Hit@1 在 8%~15% 算可用」，而这条数在项目里从来不存在。

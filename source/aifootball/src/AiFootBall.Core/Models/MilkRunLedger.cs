@@ -55,6 +55,9 @@ public sealed class MilkLedgerReport
 
     public bool Ok => Issues.Count == 0;
 
+    /// <summary>合法缺项摘要（2026-11-13 第五轮）：写日志用，说明「为什么预期比输入少几档」。</summary>
+    public string ExemptSummary { get; init; } = string.Empty;
+
     /// <summary>形如 `pick 6/6、gate 11/11、snapshot 105/105、input 3/3`。</summary>
     public string Summary => string.Join("、", Totals.Select(t => $"{t.Table} {t.Actual}/{t.Expected}"));
 
@@ -81,6 +84,14 @@ public sealed class MilkLedgerPair
     public string Table { get; init; } = string.Empty;
     public IReadOnlyList<MilkLedgerRow> Expected { get; init; } = Array.Empty<MilkLedgerRow>();
     public IReadOnlyList<MilkLedgerRow> Actual { get; init; } = Array.Empty<MilkLedgerRow>();
+
+    /// <summary>
+    /// 不参与判定的键（2026-11-13 第五轮）：合法缺项，原因已单独登记。
+    /// 两边都按它过滤——豁免项既不算「少写」，也不算「多写」。
+    /// 这不是「放宽判据」：豁免必须来自 <see cref="MilkExpectedSlate"/> 的固定原因枚举，
+    /// 未知原因照样判失败。
+    /// </summary>
+    public IReadOnlyCollection<string> Ignore { get; init; } = Array.Empty<string>();
 }
 
 /// <summary>
@@ -166,15 +177,24 @@ public static class MilkRunLedger
     /// </summary>
     public static MilkLedgerReport Verify(
         IReadOnlyList<MilkLedgerPair>? pairs,
-        IReadOnlyList<MilkLedgerIssue>? preIssues = null)
+        IReadOnlyList<MilkLedgerIssue>? preIssues = null,
+        string exemptSummary = "")
     {
         var issues = new List<MilkLedgerIssue>(preIssues ?? Array.Empty<MilkLedgerIssue>());
         var totals = new List<(string, int, int)>();
 
         foreach (var pair in pairs ?? Array.Empty<MilkLedgerPair>())
         {
-            var expList = pair.Expected ?? Array.Empty<MilkLedgerRow>();
-            var actList = pair.Actual ?? Array.Empty<MilkLedgerRow>();
+            var ignore = pair.Ignore is { Count: > 0 }
+                ? new HashSet<string>(pair.Ignore, StringComparer.Ordinal)
+                : null;
+
+            var expList = (pair.Expected ?? Array.Empty<MilkLedgerRow>())
+                .Where(r => ignore is null || !ignore.Contains(r.Key))
+                .ToList();
+            var actList = (pair.Actual ?? Array.Empty<MilkLedgerRow>())
+                .Where(a => ignore is null || !ignore.Contains(a.Key))
+                .ToList();
             totals.Add((pair.Table, expList.Count, actList.Sum(a => a.Count)));
 
             // 预期重复 = 引擎自己在同一场同玩法出了两注同档位。
@@ -233,6 +253,6 @@ public static class MilkRunLedger
             }
         }
 
-        return new MilkLedgerReport { Issues = issues, Totals = totals };
+        return new MilkLedgerReport { Issues = issues, Totals = totals, ExemptSummary = exemptSummary };
     }
 }

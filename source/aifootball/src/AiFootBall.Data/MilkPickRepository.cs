@@ -805,28 +805,62 @@ public sealed class MilkPickRepository
     ///   · 赔率 / 概率 = **首次上榜**那份（事后重算不算数，与空跑台账同口径）；
     ///   · 命中 / 结算 = 取所有副本里「任一份判过」的结果（`AnyHit`），
     ///     避免结算只落在某一份副本上时把命中丢掉；
+    ///   · **撤注 = 末份**，但**已冻结的注以台账为准**（2026-11-13 第五轮）：
+    ///     台账是「照榜单买会怎样」的凭证，结算即终态——结算之后再来一轮把同一注标成撤注，
+    ///     不该让这一注从战绩里消失（隔离库已复现：报表说撤注、台账说已下注，两边对不上）。
     ///   · 只认「属于某个成功发布轮」的行 + 升级前 `RunId IS NULL` 的历史行，
     ///     失败轮/采集不完整轮写进去的孤儿行不参与统计。
     ///
     /// 升级前已经在库里的已开赛、已结算、已撤注、已冻结记录全部满足 `RunId IS NULL`，
     /// 所以它们一定被包含在内——这是「切换轮次不许让历史消失」的地方。
     /// </summary>
-    private const string BoardedOneCte =
-        @"WITH base AS (
+    private static string BoardedOneCte(bool withPaper)
+    {
+        const string P = "PARTITION BY p.PickDate, p.MatchId, p.PlayType, p.OptionCode";
+
+        // 台账联表只在表存在时拼进去：空库（还没跑过 paper-freeze）不能因此把战绩页打挂。
+        var join = withPaper
+            ? @"LEFT JOIN dbo.FbPaperTrade t
+                       ON t.TradeDate = p.PickDate AND t.MatchId = p.MatchId
+                      AND t.PlayType = p.PlayType AND t.OptionCode = p.OptionCode"
+            : string.Empty;
+
+        var anyHit = withPaper
+            ? $"COALESCE(MAX(CAST(t.Hit AS int)) OVER ({P}), MAX(CAST(p.Hit AS int)) OVER ({P}))"
+            : $"MAX(CAST(p.Hit AS int)) OVER ({P})";
+
+        var anySettled = withPaper
+            ? $"MAX(CASE WHEN p.SettledAt IS NOT NULL OR t.SettledAt IS NOT NULL THEN 1 ELSE 0 END) OVER ({P})"
+            : $"MAX(CASE WHEN p.SettledAt IS NOT NULL THEN 1 ELSE 0 END) OVER ({P})";
+
+        var finalVoided = withPaper
+            ? $"COALESCE(MAX(CAST(t.Voided AS int)) OVER ({P}), FIRST_VALUE(CAST(p.Voided AS int)) OVER ({P} ORDER BY p.PickId DESC))"
+            : $"FIRST_VALUE(CAST(p.Voided AS int)) OVER ({P} ORDER BY p.PickId DESC)";
+
+        return
+            $@"WITH base AS (
               SELECT p.PlayType, p.OptionCode, p.Odds, p.ModelProbability, p.Ev, p.PickDate, p.MatchId, p.PickId,
                      CASE WHEN p.RunId IS NULL THEN 1 ELSE 0 END AS IsLegacy,
-                     MAX(CAST(p.Hit AS int)) OVER (
-                         PARTITION BY p.PickDate, p.MatchId, p.PlayType, p.OptionCode) AS AnyHit,
-                     MAX(CASE WHEN p.SettledAt IS NOT NULL THEN 1 ELSE 0 END) OVER (
-                         PARTITION BY p.PickDate, p.MatchId, p.PlayType, p.OptionCode) AS AnySettled,
-                     ROW_NUMBER() OVER (
-                         PARTITION BY p.PickDate, p.MatchId, p.PlayType, p.OptionCode
-                         ORDER BY p.PickId) AS rn
+                     {anyHit} AS AnyHit,
+                     {anySettled} AS AnySettled,
+                     {finalVoided} AS FinalVoided,
+                     ROW_NUMBER() OVER ({P} ORDER BY p.PickId) AS rn
               FROM dbo.FbMilkPick p
+              {join}
               WHERE p.PickDate >= @from AND " + PublishedRowSql + @"
           ),
           one AS (SELECT * FROM base WHERE rn = 1)
           ";
+    }
+
+    /// <summary>战绩口径的 CTE；台账表还没建时自动降级成不联表版本（空库不能把战绩页打挂）。</summary>
+    private static async Task<string> CteAsync(System.Data.Common.DbConnection conn, CancellationToken ct)
+    {
+        var hasPaper = await conn.ExecuteScalarAsync<int?>(new CommandDefinition(
+            "SELECT CASE WHEN OBJECT_ID(N'dbo.FbPaperTrade', N'U') IS NULL THEN 0 ELSE 1 END",
+            cancellationToken: ct)) == 1;
+        return BoardedOneCte(hasPaper);
+    }
 
     /// <summary>
     /// 写一条作业级日志到 <c>dbo.SyncLog</c>（2026-11-13 加）。
@@ -1071,6 +1105,7 @@ WHERE t.TradeDate=@d
         var from = DateTime.Today.AddDays(-(span - 1));
         await using var conn = await _factory.OpenAsync(ct);
         await EnsureRunSchemaAsync(conn, ct);
+        var cte = await CteAsync(conn, ct);
 
         var head = await conn.QuerySingleAsync<MilkLedgerAuditHead>(new CommandDefinition(
             @"SELECT COUNT(*) AS AllRows,
@@ -1096,7 +1131,7 @@ WHERE t.TradeDate=@d
 
         // 新口径：上过榜的一注（与 GetReportAsync 同一段 CTE）
         var newRows = (await conn.QueryAsync<MilkLedgerAuditRow>(new CommandDefinition(
-            BoardedOneCte +
+            cte +
             @"SELECT PlayType, COUNT(*) AS NewTotal,
                      SUM(CASE WHEN AnyHit = 1 THEN 1 ELSE 0 END) AS NewHit,
                      SUM(CASE WHEN IsLegacy = 1 THEN 1 ELSE 0 END) AS NewLegacyTotal,
@@ -1163,11 +1198,16 @@ WHERE t.TradeDate=@d
         var from = DateTime.Today.AddDays(-(span - 1));
         await using var conn = await _factory.OpenAsync(ct);
         await EnsureRunSchemaAsync(conn, ct);
+        var cte = await CteAsync(conn, ct);
 
         // 2026-11-13 第四轮：战绩口径从「最新成功轮」改成「上过榜的一注」。
         // 上一版照抄了榜面的 `@run` 过滤，后果是**历史战绩会随今天重算而消失**：
         // 昨天那注（RunId 属于昨天那个轮次）在今天重算后仍在库里，却因为不在「今天的最新轮」而被排除。
         // 现在的判据见 BoardedOneCte：按业务键去重 + 只要那一轮真的发布过就算数。
+        //
+        // ★ 2026-11-13 第五轮：**撤注不进分母**（`FinalVoided = 0`），与空跑台账同一口径。
+        // 隔离库验证复现过：撤注注被算进命中率分母，回报却是 0（本来就没下注），
+        // 分子分母都对不上。撤注注单独计数，用来评价撤注判据（`VoidedSettled`）。
         var groupSql =
             @"SELECT PlayType,
                      COUNT(*) AS Total,
@@ -1178,40 +1218,71 @@ WHERE t.TradeDate=@d
                      CAST(ISNULL(AVG(ModelProbability), 0) AS DECIMAL(6,2)) AS AvgProbability,
                      CAST(ISNULL(AVG(Ev), 0) AS DECIMAL(8,3)) AS AvgEv
               FROM one
-              WHERE AnyHit IS NOT NULL";
+              WHERE AnyHit IS NOT NULL AND FinalVoided = 0";
 
         var plays = (await conn.QueryAsync<MilkPlayStat>(new CommandDefinition(
-            BoardedOneCte + groupSql + " GROUP BY PlayType ORDER BY PlayType",
+            cte + groupSql + " GROUP BY PlayType ORDER BY PlayType",
             new { from }, cancellationToken: ct))).ToList();
 
         var overall = await conn.QuerySingleOrDefaultAsync<MilkPlayStat>(new CommandDefinition(
-            BoardedOneCte + groupSql.Replace("SELECT PlayType,", "SELECT 'ALL' AS PlayType,"),
+            cte + groupSql.Replace("SELECT PlayType,", "SELECT 'ALL' AS PlayType,"),
             new { from }, cancellationToken: ct));
+
+        // 撤注对照组：已撤注 = 没下这笔，不进分子分母，但赛果照记，用来评价撤注判据。
+        const string voidSql =
+            @"SELECT COUNT(*) AS Total,
+                     SUM(CASE WHEN AnyHit = 1 THEN 1 ELSE 0 END) AS Hit
+              FROM one
+              WHERE AnyHit IS NOT NULL AND FinalVoided = 1";
+
+        var voidedByPlay = (await conn.QueryAsync<(string PlayType, int Total, int Hit)>(new CommandDefinition(
+            cte + @"SELECT PlayType, COUNT(*) AS Total,
+                     SUM(CASE WHEN AnyHit = 1 THEN 1 ELSE 0 END) AS Hit
+              FROM one
+              WHERE AnyHit IS NOT NULL AND FinalVoided = 1
+              GROUP BY PlayType",
+            new { from }, cancellationToken: ct))).ToList();
+
+        var voidedTotal = await conn.QuerySingleAsync<(int Total, int Hit)>(new CommandDefinition(
+            cte + voidSql, new { from }, cancellationToken: ct));
 
         // 取消场次写了 SettledAt 终态（Hit 仍 NULL、ActualScore='取消'），不算 pending。
         // 判据用 AnySettled 而不是首行的 SettledAt：取消标记可能只落在某一副本上。
         var pending = await conn.QuerySingleAsync<int>(new CommandDefinition(
-            BoardedOneCte + "SELECT COUNT(*) FROM one WHERE AnyHit IS NULL AND AnySettled = 0",
+            cte + "SELECT COUNT(*) FROM one WHERE AnyHit IS NULL AND AnySettled = 0",
             new { from }, cancellationToken: ct));
 
         var top = (await conn.QueryAsync<MilkOptionStat>(new CommandDefinition(
-            BoardedOneCte +
+            cte +
             @"SELECT TOP 12 PlayType, OptionCode,
                      COUNT(*) AS Total,
                      SUM(CASE WHEN AnyHit = 1 THEN 1 ELSE 0 END) AS Hit,
                      CAST(ISNULL(AVG(Odds), 0) AS DECIMAL(8,2)) AS AvgOdds
               FROM one
-              WHERE AnyHit IS NOT NULL
+              WHERE AnyHit IS NOT NULL AND FinalVoided = 0
               GROUP BY PlayType, OptionCode
               HAVING COUNT(*) >= 3
               ORDER BY COUNT(*) DESC, SUM(CASE WHEN AnyHit = 1 THEN 1 ELSE 0 END) DESC",
             new { from }, cancellationToken: ct))).ToList();
 
+        // 撤注对照：总体与分玩法各填一次。撤注注不进上面的分子分母，只报「撤掉的注后来中没中」。
+        var voidedPlays = voidedByPlay.ToDictionary(x => x.PlayType, x => (x.Total, x.Hit), StringComparer.Ordinal);
+        foreach (var p in plays)
+            if (voidedPlays.TryGetValue(p.PlayType, out var v))
+            {
+                p.Voided = v.Total;
+                p.VoidedHit = v.Hit;
+            }
+
+        var overallRow = overall ?? new MilkPlayStat { PlayType = "ALL" };
+        overallRow.Voided = voidedTotal.Total;
+        overallRow.VoidedHit = voidedTotal.Hit;
+
         return new MilkStatsReport
         {
             Days = span,
             From = from,
-            Overall = overall ?? new MilkPlayStat { PlayType = "ALL" },
+            Overall = overallRow,
             Plays = plays,
             Pending = pending,
             TopOptions = top
@@ -2007,9 +2078,15 @@ public sealed class MilkVoidedRow
 public sealed class MilkPlayStat
 {
     public string PlayType { get; set; } = "";
-    /// <summary>已结算注数（Hit 非空）。</summary>
+    /// <summary>已结算**且未撤注**注数（Hit 非空）。撤注 = 没下这笔，不进分母。</summary>
     public int Total { get; set; }
     public int Hit { get; set; }
+
+    /// <summary>已撤注的注数（已结算、有赛果，但没下注）。单独计数，用于评价撤注判据。</summary>
+    public int Voided { get; set; }
+
+    /// <summary>撤注注里命中的条数。与 <see cref="Voided"/> 配对看，别混进命中率。</summary>
+    public int VoidedHit { get; set; }
     public decimal TotalOdds { get; set; }
     public decimal HitOdds { get; set; }
     public decimal AvgOdds { get; set; }

@@ -112,22 +112,34 @@ END";
                         WHERE rd.RunId = p.RunId AND rd.SalesDate = p.PickDate AND r.Status = 'success'))"
             : string.Empty;
 
-        // ★ 2026-11-13 第四轮：按业务键**取最早那一份**。
+        // ★ 2026-11-13 第五轮：**价格取首份，撤注取末份**。
         //
-        // 保留历史之后，同一注在每一轮里各有一份副本。台账「只增不改、以首次上榜价为准」，
-        // 所以这里必须按 (场次, 玩法, 档位) 去重取最早的那一行——
-        // 否则取决于查询返回顺序，可能冻进去的是第三轮重算后的价，而用户当时买的是第一轮的价。
-        // 去重后同一键只处理一次，`NOT EXISTS` 插入与撤注同步都跟着变干净。
+        // 第四轮改成「按业务键取 MIN(PickId)」之后，隔离库验证打出一个真回归：
+        // 撤注标记永远读不到——同一注在 RA 未撤注、RC 撤注，而 MIN(PickId) 恒指向 RA 那一份，
+        // 于是 `Voided` 一直是 0，台账把「撤掉的注」当成了「下过的注」照常算钱。
+        // 两条语义本来就不同：
+        //   · 赔率 / 概率 = 当时能买到的价，**首次上榜**为准（事后重算不算数）；
+        //   · 撤注 / 告警   = 临场判断的**最终结论**，末份为准（撤了就是撤了）。
+        // 所以价格用 `rn = 1`（按 PickId 升序），撤注三列用 `ORDER BY PickId DESC` 的首值。
         var rows = (await conn.QueryAsync<PaperTradeRow>(new CommandDefinition(
             @"SELECT @d AS TradeDate, x.MatchId, x.MatchNo, x.LeagueName, x.HomeTeam, x.AwayTeam, x.MatchTime,
                      x.PlayType, x.OptionCode, x.OptionName, x.Odds,
                      x.ModelProbability, x.BaselineProbability, x.BaselineEv,
                      x.Ev AS ModelEv, x.CounterHigh, x.ModelOverconfident, x.ModelLowConfidence,
-                     x.Voided, x.AlertSeverity, x.AlertReason
+                     x.LastVoided AS Voided, x.LastSeverity AS AlertSeverity, x.LastReason AS AlertReason
               FROM (
                   SELECT p.*, ROW_NUMBER() OVER (
                              PARTITION BY p.MatchId, p.PlayType, p.OptionCode
-                             ORDER BY p.PickId) AS rn
+                             ORDER BY p.PickId) AS rn,
+                         FIRST_VALUE(p.Voided) OVER (
+                             PARTITION BY p.MatchId, p.PlayType, p.OptionCode
+                             ORDER BY p.PickId DESC) AS LastVoided,
+                         FIRST_VALUE(p.AlertSeverity) OVER (
+                             PARTITION BY p.MatchId, p.PlayType, p.OptionCode
+                             ORDER BY p.PickId DESC) AS LastSeverity,
+                         FIRST_VALUE(p.AlertReason) OVER (
+                             PARTITION BY p.MatchId, p.PlayType, p.OptionCode
+                             ORDER BY p.PickId DESC) AS LastReason
                   FROM dbo.FbMilkPick p
                   WHERE p.PickDate = @d" + publishedGate + @"
               ) x
@@ -143,10 +155,17 @@ END";
         foreach (var r in rows)
         {
             // 先试同步：只动撤注与告警，赔率/概率一律不覆盖。
+            //
+            // ★ 2026-11-13 第五轮：已结算的行不再同步撤注（`SettledAt IS NULL`）。
+            // 隔离库验证的「撤注 → 结算 → 又出现」场景：结算时按撤注算过 Pnl=NULL，
+            // 之后再出现的榜把 Voided 翻回 0，就会出现「未撤注、已结算、但收益 NULL」的行——
+            // 命中率把它算进分母、回报却为 0，两边都不对，而且再也不会被修正。
+            // 结算即终态，与 <c>SettleAsync</c> 里那条同步（同样带 `SettledAt IS NULL`）保持同一口径。
             var upd = await conn.ExecuteAsync(new CommandDefinition(
                 @"UPDATE dbo.FbPaperTrade
                   SET Voided = @voided, AlertSeverity = @sev, AlertReason = @reason
                   WHERE TradeDate = @d AND MatchId = @mid AND PlayType = @play AND OptionCode = @code
+                    AND SettledAt IS NULL
                     AND (Voided <> @voided
                          OR ISNULL(AlertSeverity,'') <> ISNULL(@sev,'')
                          OR ISNULL(AlertReason,'')  <> ISNULL(@reason,''))",
