@@ -504,13 +504,17 @@ public sealed class BettingRepository
     /// 「模型当时怎么想」这个问题就永远答不出来（2026-11-05 实测：按全量重训去回测 11-04 的朗斯，
     /// 模型竟然给出「客胜」，因为它已经知道科莫打了 9 个球）。
     ///
-    /// <paramref name="asOf"/> 是**拟合时刻**：只取这一刻之前开赛的比赛（2026-11-13 加）。
+    /// <paramref name="asOf"/> 是**拟合时刻**：只取这一刻之前**已经踢完**的比赛（2026-11-13 加）。
     /// 不传时 SQL 自己用 GETDATE() 兜底，所以「未来才开赛却已有比分」的场次永远进不了训练集，
     /// 不依赖调用方守规矩。为什么必须在这层挡（而不是只在 Fit 里挡）：
     /// 库里有 2 场「开赛在未来、Status=3、比分齐全」的脏数据（威冠联 11-14 22:00、萨尔超 11-15 10:00，
     /// 都不在任何盘口、没有竞彩赔率），它们把拟合窗口推到两天之后——
     /// 只要有人拿全量样本跑 A/B，那就是「模型提前知道答案」的入口。
     /// **有比分、没有赔率，不构成可以进训练集的理由**：能不能用只看开赛时间在不在拟合时刻之前。
+    /// ★ 2026-11-13 二次收紧（用户令）：判据从「开赛早于 asOf」改成「开赛 + 150 分钟 ≤ asOf」。
+    /// 差别只在历史回测：截止 10-14 23:00 拟合时，10-14 22:30 开赛的那场**当时还没踢完**，
+    /// 却因为「今天库里有比分」被算进训练集——这是用未来结果训练过去的模型。
+    /// 150 分钟与完场判据（`Status==3 || MatchTime<=now-150min`）同源；线上 asOf=now，代价是刚完场的几场。
     ///
     /// <c>ORDER BY f.MatchTime, f.MatchId</c> 不是装饰（2026-11-13 加）：<c>ScorelineModel.FitRho</c>
     /// 是按**下标等距**子采样的（17.8 万场取 2500 个，步长 71）。取样顺序一变，被抽中的样本就换了，
@@ -536,8 +540,8 @@ public sealed class BettingRepository
                 AND f.HomeScore IS NOT NULL AND f.AwayScore IS NOT NULL
                 AND f.MatchTime >= DATEADD(month, -18, GETDATE())
                 AND (@before IS NULL OR f.MatchTime < @before)
-                AND (@asOf IS NULL OR f.MatchTime <= @asOf)
-                AND f.MatchTime <= GETDATE()
+                AND (@asOf IS NULL OR f.MatchTime <= DATEADD(minute, -150, @asOf))
+                AND f.MatchTime <= DATEADD(minute, -150, GETDATE())
               ORDER BY f.MatchTime, f.MatchId",
             new { before, asOf }, cancellationToken: ct));
         return rows.ToList();

@@ -145,6 +145,13 @@ public static class Program
             return await FitProbe.RunAsync(connStr, days);
         }
 
+        // ρ 前向对比台（2026-11-13 加）。只读。
+        // 起因：取样加 ORDER BY 后 ρ 从「+0.010/0.000/−0.010 随机跳」稳定到 −0.060，
+        // 而 ρ 直接改低比分格概率（λh·λa≈1.54 时 0:0 相对 +11%）。
+        // 「可复现」与「落在常见区间」都不是上线依据，必须在前向测试集上比。
+        if (args.Any(a => a.Equals("rho-study", StringComparison.OrdinalIgnoreCase)))
+            return await RhoStudy.RunAsync(connStr);
+
         // 审计表端到端自检（2026-11-12 加）。会写库，但只写 2090-01-01 这个远离真实数据的日期，
         // 跑完自动清理。存在的理由：两套手写 INSERT 一旦列数不齐，线上会被 try/catch 静默吞掉。
         if (args.Any(a => a.Equals("audit-check", StringComparison.OrdinalIgnoreCase)))

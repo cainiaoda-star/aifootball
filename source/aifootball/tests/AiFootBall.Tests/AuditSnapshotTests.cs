@@ -61,18 +61,40 @@ public class AuditSnapshotTests
     }
 
     [Fact]
-    public void Fit_KeepsSampleExactlyAtAsOf()
+    public void Fit_RequiresSampleFinishedBeforeAsOf()
     {
-        // 边界口径：asOf 是「含」的（比赛在截止时刻开赛仍算已知）。
-        // SQL 侧 asOf 用 `<=`、回测的 before 用 `<`，两处语义不同（一个是拟合时刻、一个是「当天 0 点之前」），
-        // 所以这里把 Fit 的边界钉住，免得哪天有人把 `<=` 改成 `<` 之后，当晚开赛的场次凭空消失。
+        // 2026-11-13 二次收紧（用户令）：asOf 是「拟合时刻」，样本必须**在该时刻已经踢完**。
+        // 判据 = 开赛 + MatchDurationMinutes(150) ≤ asOf，不再只判「开赛 ≤ asOf」。
+        // 旧口径在历史回测里是泄漏：截止 10-14 23:00 拟合时，10-14 22:30 开赛的那场当时才踢半小时，
+        // 却因为「今天库里有比分」被算成已知样本。
         var cutoff = new DateTime(2026, 6, 1, 12, 0, 0);
-        var samples = MakeSamples("甲队", "乙队", cutoff.AddDays(-3 * 39), 40);
+        var lastKickoff = cutoff.AddMinutes(-ScorelineModel.MatchDurationMinutes);
+        var samples = MakeSamples("甲队", "乙队", lastKickoff.AddDays(-3 * 39), 40);
 
         var model = ScorelineModel.Fit(samples, asOf: cutoff);
 
         Assert.Equal(40, model.FitGames);
-        Assert.Equal(cutoff, model.FitTo);
+        Assert.Equal(lastKickoff, model.FitTo);
+
+        // 再塞一场「开赛早于 cutoff、但还没有踢完」的：必须被剔掉，且概率不受影响。
+        var stillPlaying = samples.Append(new ScoreSample
+        {
+            LeagueName = "测试联赛",
+            HomeTeam = "甲队",
+            AwayTeam = "乙队",
+            HomeScore = 9,
+            AwayScore = 0,
+            MatchTime = cutoff.AddMinutes(-30)
+        }).ToList();
+
+        var m2 = ScorelineModel.Fit(stillPlaying, asOf: cutoff);
+
+        Assert.Equal(40, m2.FitGames);
+        Assert.Equal(lastKickoff, m2.FitTo);
+        var a = model.Distribution("测试联赛", "甲队", "乙队", null);
+        var b = m2.Distribution("测试联赛", "甲队", "乙队", null);
+        for (var i = 0; i < a.Count; i++)
+            Assert.Equal(a[i].P, b[i].P, 12);
     }
 
     [Fact]

@@ -63,6 +63,17 @@ public sealed class ScorelineModel
     private const double PriorGames = 8;
     private const int MaxGoals = 6;
 
+    /// <summary>
+    /// 从开赛到「可以认定这场已经结束」的分钟数（2026-11-13 加）。
+    ///
+    /// 训练集原来只按「开赛时间 ≤ 截止时刻」过滤，这在历史回测里是泄漏：截止到 10-14 23:00 拟合，
+    /// 一场 10-14 22:30 开赛的比赛当时还在踢，却被当成已知样本（因为**今天**库里已经有比分）。
+    /// 线上因为 fitMoment = now 且 Status=3，几乎碰不到；回测天天碰。
+    /// 判据只认「开赛时间 + 150 分钟 ≤ 截止时刻」，不认「现在有比分」——有比分不代表当时有。
+    /// 150 分钟与完场判据（`Status==3 || MatchTime<=now-150min`）同源。
+    /// </summary>
+    public const int MatchDurationMinutes = 150;
+
     /// <summary>本联赛样本达到这个数就不跨联赛取（与出注门槛 MinTeamGames 一致）。</summary>
     private const int MinOwnGames = 5;
 
@@ -472,10 +483,18 @@ public sealed class ScorelineModel
         //
         // 没有 MatchTime 的样本在给了 asOf 时一律排除：无法证明它在截止日之前，
         // 「不知道」不能当「安全」处理。线上不传 asOf，所以这条分支对线上零影响。
+        //
+        // ★ 2026-11-13 二次收紧：截止时刻之前**还必须已经踢完**。
+        // 只判 `t <= cut` 时，回测到 10-14 23:00 会把 10-14 22:30 开赛（当时才踢了半小时）的场次算进训练集，
+        // 依据是「今天库里有比分」——那是用未来的结果训练过去的模型。现在要求 `t + 150min <= cut`。
+        // 线上 fitMoment = now 时只会剔掉刚完场的几场（本来 Status=3 也未必已写入），代价可忽略。
         if (asOf is DateTime cut)
+        {
+            var usableCut = cut.AddMinutes(-MatchDurationMinutes);
             usable = usable
-                .Where(s => s.MatchTime is DateTime t && t <= cut)
+                .Where(s => s.MatchTime is DateTime t && t <= usableCut)
                 .ToList();
+        }
         if (usable.Count < 30) return Empty;
 
         // 拟合窗口快照（审计用）：过滤之后真实的起止与场次，不是调用方传进来的范围。
@@ -750,6 +769,47 @@ public sealed class ScorelineModel
         for (var a = 0; a <= MaxGoals; a++)
             cells.Add((h, a, Tau(h, a, lh, la) * Poisson(h, lh) * Poisson(a, la)));
         return cells;
+    }
+
+    /// <summary>
+    /// 只换 ρ、其余参数完全不变的副本（2026-11-13 加）。
+    ///
+    /// 存在的理由：ρ 是 11-13 唯一一个「同一份代码、同一份数据能算出不同值」的参数——
+    /// <see cref="FitRho"/> 按 count/2500 步长抽子样本，取样顺序不定时实测跑出过 +0.010 / 0.000 / −0.010。
+    /// 回测要回答「ρ=a 与 ρ=b 哪个预测更准」，必须固定 λ、只动 ρ 各跑一遍；
+    /// 否则两次 Fit 抽中的子样本不同，比的是抽样噪声，不是 ρ。
+    /// </summary>
+    public ScorelineModel WithRho(double rho)
+        => Ready
+            ? new ScorelineModel(true, _globalHome, _globalAway, _leagues, _teams, _teamTotals,
+                _namesByLeague, rho, _crossLeague, _leagueStrength, FitFrom, FitTo, FitGames)
+            : Empty;
+
+    /// <summary>
+    /// 这批样本在本 ρ 下的平均逐场对数似然（2026-11-13 加，供 ρ 的全量似然重估）。
+    ///
+    /// 与 <see cref="FitRho"/> 的区别只有一条：**不抽子样本**。FitRho 为了上线速度按 count/2500
+    /// 步进抽样（17.8 万场只算 2500 点），ρ 因此弱识别；这里全量遍历，只给回测台算一次。
+    /// 返回的 Games 是真正参与计算的场次，不是传入数——调用方要能看出剔掉了多少。
+    /// </summary>
+    public (double MeanLogLikelihood, int Games) Score(IReadOnlyList<ScoreSample> samples)
+    {
+        if (!Ready || samples.Count == 0) return (double.NegativeInfinity, 0);
+        double sum = 0;
+        var n = 0;
+        foreach (var s in samples)
+        {
+            if (string.IsNullOrWhiteSpace(s.HomeTeam) || string.IsNullOrWhiteSpace(s.AwayTeam)) continue;
+            if (s.HomeScore < 0 || s.AwayScore < 0 || s.HomeScore > 12 || s.AwayScore > 12) continue;
+            var (lh, la) = Lambdas(s.LeagueName, s.HomeTeam, s.AwayTeam, null);
+            var tau = Tau(s.HomeScore, s.AwayScore, lh, la);
+            if (tau <= 1e-6) continue;
+            var p = tau * Poisson(Math.Min(s.HomeScore, MaxGoals), lh) * Poisson(Math.Min(s.AwayScore, MaxGoals), la);
+            if (p <= 1e-12) p = 1e-12;
+            sum += Math.Log(p);
+            n++;
+        }
+        return n == 0 ? (double.NegativeInfinity, 0) : (sum / n, n);
     }
 
     private static List<(int Home, int Away, double P)> PreferCover(
