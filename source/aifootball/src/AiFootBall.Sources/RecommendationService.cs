@@ -1097,15 +1097,43 @@ public sealed class RecommendationService
                 }
                 else
                 {
-                    var dates = plan.Writes
-                        .Select(w => new MilkRunDateCount { SalesDate = w.SalesDate, PickCount = w.Picks.Count })
-                        .ToList();
-                    await _milkPicks.PublishRunAsync(run.RunId, dates,
-                        build.Inputs.Count, snapRows, gateRows, pickRows, plan.Reason, ct);
-                    await _milkPicks.LogAsync("milk:run", "SUCCESS", pickRows,
-                        $"[{run.RunId}] 已发布：{plan.Reason}；受注日 "
-                        + string.Join(",", dates.Select(x => $"{x.SalesDate:MM-dd}({x.PickCount}注)"))
-                        + $"；{steps.Summary}", CancellationToken.None);
+                    // ★ 2026-11-13 第四轮：发布前**逐场逐玩法逐档位**核对（用户明确要求）。
+                    //
+                    // 上一版的判据是「四步都 ok + input>0 ⇒ snapshot>0」，那只是两个总数：
+                    // 少写了一半档位、或者同一档写了两行，总数照样可能「看起来正常」。
+                    // 而榜面读的就是重写后的行——少的那几档当场从榜上消失，多的那几行让同一注出现两次。
+                    // 所以判据改成「预期账本 vs 库里读回的实际账本」逐键比对，任何缺失/重复/多写都判 failed。
+                    MilkLedgerReport? ledger = null;
+                    string? ledgerError = null;
+                    try { ledger = await VerifyRunLedgerAsync(run.RunId, plan, build, ct); }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex) { ledgerError = $"{ex.GetType().Name}: {ex.Message}"; }
+
+                    if (ledger is null || !ledger.Ok)
+                    {
+                        var why = ledger is null
+                            ? $"逐档核对无法执行（{ledgerError}）"
+                            : $"逐档核对不通过（缺失 {ledger.Missing}、重复 {ledger.Duplicated}、多写 {ledger.Unexpected}）：{ledger.Detail}";
+                        await _milkPicks.CloseRunAsync(run.RunId, MilkRunStatus.Failed,
+                            $"落库核对失败：{why}",
+                            build.Inputs.Count, snapRows, gateRows, pickRows, CancellationToken.None);
+                        await _milkPicks.LogAsync("milk:verify", "FAIL", pickRows,
+                            $"[{run.RunId}] {why}；{steps.Summary}；本轮不发布，榜面保持上一轮",
+                            CancellationToken.None);
+                    }
+                    else
+                    {
+                        var dates = plan.Writes
+                            .Select(w => new MilkRunDateCount { SalesDate = w.SalesDate, PickCount = w.Picks.Count })
+                            .ToList();
+                        await _milkPicks.PublishRunAsync(run.RunId, dates,
+                            build.Inputs.Count, snapRows, gateRows, pickRows, plan.Reason, ct);
+                        await _milkPicks.LogAsync("milk:run", "SUCCESS", pickRows,
+                            $"[{run.RunId}] 已发布：{plan.Reason}；受注日 "
+                            + string.Join(",", dates.Select(x => $"{x.SalesDate:MM-dd}({x.PickCount}注)"))
+                            + $"；{steps.Summary}；逐档核对 {ledger.Summary}",
+                            CancellationToken.None);
+                    }
                 }
             }
             catch (OperationCanceledException) { throw; }
@@ -1134,6 +1162,45 @@ public sealed class RecommendationService
         var draft = MilkPickEngine.BuildTicket(todayPicks, today);
         if (draft is null) return;
         await _tickets.UpsertAsync(draft, ct);
+    }
+
+    /// <summary>
+    /// 发布前的逐档核对（2026-11-13 第四轮）。
+    ///
+    /// 预期账本从**本轮引擎输出**构建，不从库里反推：
+    ///   pick     = plan.Writes 里每一期的每一注（键含受注日）
+    ///   gate     = build.Gates（一场一行）
+    ///   snapshot = build.ProbSnapshots（一场每档一行）
+    ///   input    = build.Inputs（一场一行，与 SaveInputsAsync 的去重口径一致）
+    /// 实际账本按 `RunId` 从四张表读回，逐键比对。读的是**本轮的行**，
+    /// 所以上一轮的历史不会让核对结果看起来「多出来」。
+    ///
+    /// 核对失败一律判 failed（不发布）：这几张表的行数完全由本轮输入决定，
+    /// 「少写一半」与「写坏了」在榜面上的表现一模一样——都是榜上少了几注。
+    /// </summary>
+    private async Task<MilkLedgerReport> VerifyRunLedgerAsync(
+        string runId, MilkBoardPlan plan, MilkBuildResult build, CancellationToken ct)
+    {
+        var actual = await _milkPicks!.ReadRunLedgerAsync(runId, ct);
+
+        List<MilkLedgerRow> Act(string table) => actual
+            .Where(a => a.Table == table)
+            .Select(a => new MilkLedgerRow { Key = a.Key, Count = a.Count })
+            .ToList();
+
+        var picks = plan.Writes
+            .SelectMany(w => MilkRunLedger.FromPicks(w.SalesDate, w.Picks))
+            .ToList();
+
+        return MilkRunLedger.Verify(
+            new[]
+            {
+                new MilkLedgerPair { Table = "pick", Expected = picks, Actual = Act("pick") },
+                new MilkLedgerPair { Table = "gate", Expected = MilkRunLedger.FromGates(build.Gates), Actual = Act("gate") },
+                new MilkLedgerPair { Table = "snapshot", Expected = MilkRunLedger.FromSnapshots(build.ProbSnapshots), Actual = Act("snapshot") },
+                new MilkLedgerPair { Table = "input", Expected = MilkRunLedger.FromInputs(build.Inputs), Actual = Act("input") }
+            },
+            MilkRunLedger.UnlandablePicks(plan.Writes.SelectMany(w => w.Picks)));
     }
 
     /// <summary>

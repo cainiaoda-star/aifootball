@@ -160,7 +160,19 @@ public static class Program
             // 给个 1500 就能看到「一次出榜的存档要写多久」，用来判断它会不会把作业拖过 10 分钟上限。
             var ai = Array.FindIndex(args, a => a.Equals("audit-check", StringComparison.OrdinalIgnoreCase));
             var bulk = ai >= 0 && ai + 1 < args.Length && int.TryParse(args[ai + 1], out var bn) ? bn : 0;
-            return await AuditCheck.RunAsync(connStr, bulk);
+            // 2026-11-13 第四轮：默认只允许在隔离库（库名含 audit/test/sandbox/tmp/probe）执行。
+            // 它会建表、加列、写探针行，属于结构变更——用户已明确要求「后续自检移到隔离测试库」。
+            var allowProd = args.Any(a => a.Equals("--allow-prod-unsafe", StringComparison.OrdinalIgnoreCase));
+            return await AuditCheck.RunAsync(connStr, bulk, allowProd);
+        }
+
+        // 历史战绩口径核对（2026-11-13 第四轮）。**只读**，可在生产库跑。
+        // 回答「榜面改成按最新轮读取之后，升级前已开赛/已结算/已撤注的记录会不会消失」。
+        if (args.Any(a => a.Equals("milk-ledger-report", StringComparison.OrdinalIgnoreCase)))
+        {
+            var li = Array.FindIndex(args, a => a.Equals("milk-ledger-report", StringComparison.OrdinalIgnoreCase));
+            var days = li >= 0 && li + 1 < args.Length && int.TryParse(args[li + 1], out var dv) ? dv : 30;
+            return await MilkLedgerAuditStudy.RunAsync(connStr, days);
         }
 
         // 比分（BF）只读评估（2026-11-12 加）：模型 Hit@1 / Hit@3 vs 历史频率 vs 市场。

@@ -112,14 +112,26 @@ END";
                         WHERE rd.RunId = p.RunId AND rd.SalesDate = p.PickDate AND r.Status = 'success'))"
             : string.Empty;
 
+        // ★ 2026-11-13 第四轮：按业务键**取最早那一份**。
+        //
+        // 保留历史之后，同一注在每一轮里各有一份副本。台账「只增不改、以首次上榜价为准」，
+        // 所以这里必须按 (场次, 玩法, 档位) 去重取最早的那一行——
+        // 否则取决于查询返回顺序，可能冻进去的是第三轮重算后的价，而用户当时买的是第一轮的价。
+        // 去重后同一键只处理一次，`NOT EXISTS` 插入与撤注同步都跟着变干净。
         var rows = (await conn.QueryAsync<PaperTradeRow>(new CommandDefinition(
-            @"SELECT @d AS TradeDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
-                     PlayType, OptionCode, OptionName, Odds,
-                     ModelProbability, BaselineProbability, BaselineEv,
-                     Ev AS ModelEv, CounterHigh, ModelOverconfident, ModelLowConfidence,
-                     Voided, AlertSeverity, AlertReason
-              FROM dbo.FbMilkPick p
-              WHERE p.PickDate = @d" + publishedGate,
+            @"SELECT @d AS TradeDate, x.MatchId, x.MatchNo, x.LeagueName, x.HomeTeam, x.AwayTeam, x.MatchTime,
+                     x.PlayType, x.OptionCode, x.OptionName, x.Odds,
+                     x.ModelProbability, x.BaselineProbability, x.BaselineEv,
+                     x.Ev AS ModelEv, x.CounterHigh, x.ModelOverconfident, x.ModelLowConfidence,
+                     x.Voided, x.AlertSeverity, x.AlertReason
+              FROM (
+                  SELECT p.*, ROW_NUMBER() OVER (
+                             PARTITION BY p.MatchId, p.PlayType, p.OptionCode
+                             ORDER BY p.PickId) AS rn
+                  FROM dbo.FbMilkPick p
+                  WHERE p.PickDate = @d" + publishedGate + @"
+              ) x
+              WHERE x.rn = 1",
             new { d }, cancellationToken: ct))).ToList();
 
         if (rows.Count == 0) return (0, 0);

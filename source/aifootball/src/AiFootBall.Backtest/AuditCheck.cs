@@ -26,8 +26,34 @@ namespace AiFootBall.Backtest;
 /// </summary>
 public static class AuditCheck
 {
-    public static async Task<int> RunAsync(string connStr, int bulkRows = 0)
+    /// <summary>
+    /// 允许在其中写探针行的库名关键字（2026-11-13 第四轮）。
+    ///
+    /// 用户当天明确要求：「后续自检移到隔离测试库，清理放进 finally，停止边验收边改生产结构」。
+    /// 这道守卫就是那句话的落地——默认拒绝在生产库上建表/加列/写探针行，
+    /// 必须显式传 `--allow-prod-unsafe` 才放行（且会在输出里标红）。
+    /// </summary>
+    private static readonly string[] IsolatedMarkers = { "audit", "test", "sandbox", "tmp", "probe" };
+
+    public static async Task<int> RunAsync(string connStr, int bulkRows = 0, bool allowProd = false)
     {
+        var database = TryGetDatabase(connStr);
+        if (!allowProd && !IsIsolatedDatabase(database))
+        {
+            Console.WriteLine("# 拒绝执行：审计自检会建表、加列、写探针行（2090-01-01），不能在非隔离库上跑。");
+            Console.WriteLine();
+            Console.WriteLine($"当前库：`{database ?? "(未识别)"}`");
+            Console.WriteLine($"允许的库名需包含：{string.Join(" / ", IsolatedMarkers)}");
+            Console.WriteLine();
+            Console.WriteLine("改用隔离库，例如：");
+            Console.WriteLine("  dotnet run --project src/AiFootBall.Backtest -c Release -- audit-check \"Server=...;Database=AiFootBall_Audit;...\"");
+            Console.WriteLine("确认要在当前库执行（不建议）：追加 --allow-prod-unsafe");
+            return 2;
+        }
+
+        if (allowProd)
+            Console.WriteLine($"> 已使用 --allow-prod-unsafe 覆盖隔离库守卫，目标库：`{database}`。");
+
         var probeDate = new DateTime(2090, 1, 1);
         const long probeMatchId = 999_999_991L;
         // 两轮探针（2026-11-13 第二轮）：A 是主轮，B 用来验证「写新一轮不会抹掉前一轮」。
@@ -38,6 +64,14 @@ public static class AuditCheck
         var failures = new List<string>();
 
         await using var conn = await factory.OpenAsync();
+
+        // 2026-11-13 第四轮：探针改成「try 内检查、finally 内清理」。
+        // 原来清理写在方法末尾，19:02 那次闸表唯一键冲突直接抛出去，清理段一行没跑，
+        // 生产库里留下 2090-01-01 的残料，只能人工再清一次（已登记 OPS-DATA-CHANGES.md）。
+        // 现在无论正常结束还是中途异常，finally 都会把探针行删掉，并断言残留为 0。
+        var left = new Leftover();
+        try
+        {
 
         // ---------- 1) FbMilkPick 多列 INSERT（含新加的 ModelVersion） ----------
         var pick = new MilkPick
@@ -371,28 +405,6 @@ public static class AuditCheck
         else if (runsFinal.Count(r => r.Status == MilkRunStatus.Success) != 2)
             failures.Add($"成功轮应 2 个（A/B），实有 {runsFinal.Count(r => r.Status == MilkRunStatus.Success)}");
 
-        // ---------- 清理 ----------
-        await conn.ExecuteAsync("DELETE FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate=@d", new { d = probeDate });
-        await conn.ExecuteAsync("DELETE FROM dbo.FbMilkPick WHERE PickDate=@d", new { d = probeDate });
-        await conn.ExecuteAsync("DELETE FROM dbo.FbMilkInput WHERE InputDate=@d", new { d = probeDate });
-        await conn.ExecuteAsync("DELETE FROM dbo.FbMilkRunDate WHERE SalesDate=@d", new { d = probeDate });
-        await conn.ExecuteAsync("DELETE FROM dbo.FbMilkRun WHERE RunDate=@d", new { d = probeDate });
-        await conn.ExecuteAsync("DELETE FROM dbo.FbMilkGate WHERE GateDate=@d", new { d = probeDate });
-        var leftPick = await conn.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate=@d", new { d = probeDate });
-        var leftSnap = await conn.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate=@d", new { d = probeDate });
-        var leftInput = await conn.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM dbo.FbMilkInput WHERE InputDate=@d", new { d = probeDate });
-        var leftRun = await conn.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM dbo.FbMilkRun WHERE RunDate=@d", new { d = probeDate });
-        var leftGate = await conn.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM dbo.FbMilkGate WHERE GateDate=@d", new { d = probeDate });
-        var leftRunDate = await conn.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM dbo.FbMilkRunDate WHERE SalesDate=@d", new { d = probeDate });
-        if (leftPick != 0 || leftSnap != 0 || leftInput != 0 || leftRun != 0 || leftGate != 0 || leftRunDate != 0)
-            failures.Add($"清理不干净：pick={leftPick} snapshot={leftSnap} input={leftInput} run={leftRun} gate={leftGate} runDate={leftRunDate}");
-
         Console.WriteLine($"# 审计表自检  {DateTime.Now:yyyy-MM-dd HH:mm}");
         Console.WriteLine();
         Console.WriteLine($"| 检查项 | 结果 |");
@@ -417,17 +429,101 @@ public static class AuditCheck
             Console.WriteLine($"| 批量写入 {bulkExpected} 行 | {bulkWritten} 行 / {bulkMs} ms（≈{perSec} 行/秒） |");
             Console.WriteLine($"| 出榜作业预算 | 10 分钟硬上限，存档占 {bulkMs / 600.0:0.0}% |");
         }
-        Console.WriteLine($"| 清理后残留 | pick={leftPick} snapshot={leftSnap} input={leftInput} run={leftRun} gate={leftGate} runDate={leftRunDate} |");
+        }
+        catch (Exception ex)
+        {
+            // 中断也要留下可定位的一行；清理在 finally 里照跑。
+            failures.Add($"自检异常中断：{ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            left = await CleanupAsync(conn, probeDate);
+            if (left.Any)
+                failures.Add($"清理不干净：pick={left.Pick} snapshot={left.Snap} input={left.Input}"
+                             + $" run={left.Run} gate={left.Gate} runDate={left.RunDate}");
+        }
+
+        Console.WriteLine($"| 清理后残留 | pick={left.Pick} snapshot={left.Snap} input={left.Input} "
+                          + $"run={left.Run} gate={left.Gate} runDate={left.RunDate} |");
         Console.WriteLine();
+
         if (failures.Count == 0)
         {
             Console.WriteLine("**全部通过。** 两套 INSERT 的列与值数量一致，新列能落库也能读回；"
-                              + "榜面只切到最近一个状态为 success 的轮次，失败轮与不完整轮都不会顶掉它。");
+                              + "榜面只切到最近一个状态为 success 的轮次，失败轮与不完整轮都不会顶掉它；"
+                              + "探针行无论正常结束还是异常中断都已被 finally 清掉。");
             return 0;
         }
 
         Console.WriteLine("**失败项：**");
         foreach (var f in failures) Console.WriteLine($"- {f}");
         return 1;
+    }
+
+    /// <summary>探针行残留计数。</summary>
+    private sealed class Leftover
+    {
+        public int Pick, Snap, Input, Run, Gate, RunDate;
+        public bool Any => Pick + Snap + Input + Run + Gate + RunDate > 0;
+    }
+
+    /// <summary>
+    /// 清掉 2090-01-01 的全部探针行并返回残留计数（2026-11-13 第四轮）。
+    ///
+    /// 刻意吞掉单项异常：某张表清理失败不该让其余五张也放弃清理。
+    /// 残留数会回到调用方、由统一的断言报出来——「清不干净」必须是可见的结论，
+    /// 不能像 19:03 那次一样靠人事后手工清点。
+    /// </summary>
+    private static async Task<Leftover> CleanupAsync(System.Data.Common.DbConnection conn, DateTime probeDate)
+    {
+        var left = new Leftover();
+        string[] deletes =
+        {
+            "DELETE FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate=@d",
+            "DELETE FROM dbo.FbMilkPick WHERE PickDate=@d",
+            "DELETE FROM dbo.FbMilkInput WHERE InputDate=@d",
+            "DELETE FROM dbo.FbMilkRunDate WHERE SalesDate=@d",
+            "DELETE FROM dbo.FbMilkRun WHERE RunDate=@d",
+            "DELETE FROM dbo.FbMilkGate WHERE GateDate=@d"
+        };
+        foreach (var sql in deletes)
+        {
+            try { await conn.ExecuteAsync(new CommandDefinition(sql, new { d = probeDate })); }
+            catch { /* 删不掉就靠下面的残留计数报出来，不在这里吞掉结论 */ }
+        }
+
+        async Task<int> CountAsync(string sql)
+        {
+            try { return await conn.ExecuteScalarAsync<int>(new CommandDefinition(sql, new { d = probeDate })); }
+            catch { return -1; }
+        }
+
+        left.Snap = await CountAsync("SELECT COUNT(*) FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate=@d");
+        left.Pick = await CountAsync("SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate=@d");
+        left.Input = await CountAsync("SELECT COUNT(*) FROM dbo.FbMilkInput WHERE InputDate=@d");
+        left.RunDate = await CountAsync("SELECT COUNT(*) FROM dbo.FbMilkRunDate WHERE SalesDate=@d");
+        left.Run = await CountAsync("SELECT COUNT(*) FROM dbo.FbMilkRun WHERE RunDate=@d");
+        left.Gate = await CountAsync("SELECT COUNT(*) FROM dbo.FbMilkGate WHERE GateDate=@d");
+        return left;
+    }
+
+    /// <summary>隔离库判定：库名里带 audit / test / sandbox / tmp / probe 才算。</summary>
+    private static bool IsIsolatedDatabase(string? database)
+        => !string.IsNullOrWhiteSpace(database)
+           && IsolatedMarkers.Any(m => database.Contains(m, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>从连接串取 Database / Initial Catalog（取不到返回 null，按「非隔离」处理）。</summary>
+    private static string? TryGetDatabase(string connStr)
+    {
+        foreach (var part in connStr.Split(';'))
+        {
+            var kv = part.Split('=', 2);
+            if (kv.Length != 2) continue;
+            var key = kv[0].Trim();
+            if (key.Equals("Database", StringComparison.OrdinalIgnoreCase)
+                || key.Equals("Initial Catalog", StringComparison.OrdinalIgnoreCase))
+                return kv[1].Trim();
+        }
+        return null;
     }
 }

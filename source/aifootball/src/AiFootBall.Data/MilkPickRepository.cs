@@ -718,6 +718,54 @@ public sealed class MilkPickRepository
         return rows;
     }
 
+    /// <summary>
+    /// 读回本轮四类落库的**实际账本**（2026-11-13 第四轮）：按业务键分组计数。
+    ///
+    /// 键的格式与 <c>MilkRunLedger.Keys</c> 逐字对齐（`yyyy-MM-dd|MatchId|Play|Option`），
+    /// 两边各写一份格式是本项目反复踩的坑，所以这里把 SQL 的拼法写在注释里对照：
+    ///   pick     CONVERT(varchar(10), PickDate, 23) + '|' + MatchId + '|' + PlayType + '|' + OptionCode
+    ///   gate     MatchId
+    ///   snapshot MatchId + '|' + PlayType + '|' + OptionCode
+    ///   input    MatchId
+    ///
+    /// 返回的是**实际行数**，不是「该有多少」——这正是一次「只写进去一半」能被发现的前提：
+    /// 旧口径只比总数（input&gt;0 且 snapshot&gt;0），少几档、多几行都看不出来。
+    /// </summary>
+    public async Task<List<(string Table, string Key, int Count)>> ReadRunLedgerAsync(
+        string runId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(runId)) return new List<(string, string, int)>();
+        await using var conn = await _factory.OpenAsync(ct);
+        await EnsureRunSchemaAsync(conn, ct);
+        var rows = (await conn.QueryAsync<(string Table, string Key, int Count)>(new CommandDefinition(
+            @"SELECT 'pick' AS [Table],
+                     CONVERT(varchar(10), p.PickDate, 23) + '|' + CAST(p.MatchId AS varchar(20))
+                     + '|' + p.PlayType + '|' + p.OptionCode AS [Key],
+                     COUNT(*) AS [Count]
+              FROM dbo.FbMilkPick p
+              WHERE p.RunId=@run
+              GROUP BY p.PickDate, p.MatchId, p.PlayType, p.OptionCode
+              UNION ALL
+              SELECT 'gate' AS [Table], CAST(g.MatchId AS varchar(20)) AS [Key], COUNT(*) AS [Count]
+              FROM dbo.FbMilkGate g
+              WHERE g.RunId=@run
+              GROUP BY g.MatchId
+              UNION ALL
+              SELECT 'snapshot' AS [Table],
+                     CAST(s.MatchId AS varchar(20)) + '|' + s.PlayType + '|' + s.OptionCode AS [Key],
+                     COUNT(*) AS [Count]
+              FROM dbo.FbMilkProbSnapshot s
+              WHERE s.RunId=@run
+              GROUP BY s.MatchId, s.PlayType, s.OptionCode
+              UNION ALL
+              SELECT 'input' AS [Table], CAST(i.MatchId AS varchar(20)) AS [Key], COUNT(*) AS [Count]
+              FROM dbo.FbMilkInput i
+              WHERE i.RunId=@run
+              GROUP BY i.MatchId",
+            new { run = runId }, cancellationToken: ct))).ToList();
+        return rows;
+    }
+
     private static string? Trim300(string? s)
         => string.IsNullOrWhiteSpace(s) ? null : (s.Length > 280 ? s[..280] : s);
 
@@ -742,6 +790,43 @@ public sealed class MilkPickRepository
               SELECT 1 FROM dbo.FbMilkRunDate rd
               JOIN dbo.FbMilkRun r ON r.RunId = rd.RunId
               WHERE rd.RunId = p.RunId AND rd.SalesDate = p.PickDate AND r.Status = 'success'))";
+
+    /// <summary>
+    /// 「上过榜的一注」= 按业务键去重后的一行（2026-11-13 第四轮）。
+    ///
+    /// 为什么战绩不能照抄榜面的「最新成功轮」口径（用户 11-13 明确要求）：
+    ///   · 榜面回答「现在买什么」，只能有最新一版；
+    ///   · 战绩回答「我们推荐过什么、结果如何」，**推荐过就是推荐过**——
+    ///     后面那轮把它换掉，不该让这一注从中奖记录里消失。
+    /// 为什么也不能直接把所有轮的行都算进去：保留历史之后，同一注在 3~5 轮里各有一份副本，
+    /// 直接统计等于把同一注算 3~5 次，命中率会被复制放大。
+    ///
+    /// 所以口径是「按 (受注日, 场次, 玩法, 档位) 去重，取最早那一份」：
+    ///   · 赔率 / 概率 = **首次上榜**那份（事后重算不算数，与空跑台账同口径）；
+    ///   · 命中 / 结算 = 取所有副本里「任一份判过」的结果（`AnyHit`），
+    ///     避免结算只落在某一份副本上时把命中丢掉；
+    ///   · 只认「属于某个成功发布轮」的行 + 升级前 `RunId IS NULL` 的历史行，
+    ///     失败轮/采集不完整轮写进去的孤儿行不参与统计。
+    ///
+    /// 升级前已经在库里的已开赛、已结算、已撤注、已冻结记录全部满足 `RunId IS NULL`，
+    /// 所以它们一定被包含在内——这是「切换轮次不许让历史消失」的地方。
+    /// </summary>
+    private const string BoardedOneCte =
+        @"WITH base AS (
+              SELECT p.PlayType, p.OptionCode, p.Odds, p.ModelProbability, p.Ev, p.PickDate, p.MatchId, p.PickId,
+                     CASE WHEN p.RunId IS NULL THEN 1 ELSE 0 END AS IsLegacy,
+                     MAX(CAST(p.Hit AS int)) OVER (
+                         PARTITION BY p.PickDate, p.MatchId, p.PlayType, p.OptionCode) AS AnyHit,
+                     MAX(CASE WHEN p.SettledAt IS NOT NULL THEN 1 ELSE 0 END) OVER (
+                         PARTITION BY p.PickDate, p.MatchId, p.PlayType, p.OptionCode) AS AnySettled,
+                     ROW_NUMBER() OVER (
+                         PARTITION BY p.PickDate, p.MatchId, p.PlayType, p.OptionCode
+                         ORDER BY p.PickId) AS rn
+              FROM dbo.FbMilkPick p
+              WHERE p.PickDate >= @from AND " + PublishedRowSql + @"
+          ),
+          one AS (SELECT * FROM base WHERE rn = 1)
+          ";
 
     /// <summary>
     /// 写一条作业级日志到 <c>dbo.SyncLog</c>（2026-11-13 加）。
@@ -905,14 +990,28 @@ public sealed class MilkPickRepository
             "SELECT CASE WHEN OBJECT_ID(N'dbo.FbPaperTrade', N'U') IS NULL THEN 0 ELSE 1 END",
             cancellationToken: ct)) == 1;
 
-        // 2026-11-13 第三轮：撤榜区也只认「该受注日最新成功轮」。
-        // 否则保留历史之后，上一轮被换掉的注会永远挂在撤榜区（它在库里一直存在）。
+        // 2026-11-13 第三轮：撤榜区也钉住轮次。
+        //
+        // 2026-11-13 第四轮修正（用户要求「撤注记录不能因切换轮次而消失」）：
+        // **撤注分支不再只认最新轮**。它原来写的是 `@run`，于是一旦下一次重算产出了新一轮，
+        // 昨天那注被撤的记录就从撤榜区消失了——而撤注是风控决定，必须在切轮之后仍然可见。
+        // 现在的判据是「属于任何一个成功发布的轮次 + 按业务键去重」：
+        // 撤了就是撤了，不会因为榜面换代而被抹掉。`replaced` 分支仍按最新轮判，
+        // 因为它的语义是「当前榜面没有了」，本来就该跟着榜面走。
         var sql = PublishedRunSql + @"
-SELECT N'voided' AS Kind, p.MatchId, p.MatchNo, p.LeagueName, p.HomeTeam, p.AwayTeam, p.MatchTime,
-       p.PlayType, p.OptionCode, p.OptionName, p.Odds, p.AlertSeverity, p.AlertReason,
-       p.VoidedAt, CAST(NULL AS datetime2) AS FrozenAt, p.ActualScore, p.Hit, p.SettledAt
-FROM dbo.FbMilkPick p
-WHERE p.PickDate=@d AND p.Voided=1 AND (@run IS NULL OR p.RunId=@run)";
+WITH v AS (
+    SELECT p.MatchId, p.MatchNo, p.LeagueName, p.HomeTeam, p.AwayTeam, p.MatchTime,
+           p.PlayType, p.OptionCode, p.OptionName, p.Odds, p.AlertSeverity, p.AlertReason,
+           p.VoidedAt, p.ActualScore, p.Hit, p.SettledAt,
+           ROW_NUMBER() OVER (PARTITION BY p.PickDate, p.MatchId, p.PlayType, p.OptionCode
+                              ORDER BY p.PickId) AS rn
+    FROM dbo.FbMilkPick p
+    WHERE p.PickDate=@d AND p.Voided=1 AND " + PublishedRowSql + @"
+)
+SELECT N'voided' AS Kind, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
+       PlayType, OptionCode, OptionName, Odds, AlertSeverity, AlertReason,
+       VoidedAt, CAST(NULL AS datetime2) AS FrozenAt, ActualScore, Hit, SettledAt
+FROM v WHERE rn=1";
 
         if (hasPaper)
             sql += @"
@@ -953,6 +1052,108 @@ WHERE t.TradeDate=@d
     }
 
     /// <summary>
+    /// 历史口径核对（2026-11-13 第四轮，**只读**）。
+    ///
+    /// 回答用户点名的那件事：「升级前已经开赛、结算、撤注或冻结的记录，
+    /// 会不会因为榜面改成按最新轮读取而消失」。
+    /// 做法是把两种口径并排算出来，让差异可见，而不是靠推理保证：
+    ///   old    逐行统计（升级前的老口径：不去重、不看轮次）
+    ///   new    上过榜的一注（本次口径：按业务键去重 + 只认成功发布轮 / 升级前 NULL 行）
+    ///   legacy 升级前 `RunId IS NULL` 且已结算的行数，以及它在新口径里的存活数
+    /// `old - new` 应当恰好等于「多副本重复数」——多出来的不是历史丢失，而是同一注被记了几次。
+    /// 若 `legacy` 与 `legacyInNew` 不等，说明历史真的被吞了，核对要报错。
+    ///
+    /// 不写库，可在生产库直接跑。
+    /// </summary>
+    public async Task<MilkLedgerAudit> GetLedgerAuditAsync(int days, CancellationToken ct = default)
+    {
+        var span = Math.Max(1, days);
+        var from = DateTime.Today.AddDays(-(span - 1));
+        await using var conn = await _factory.OpenAsync(ct);
+        await EnsureRunSchemaAsync(conn, ct);
+
+        var head = await conn.QuerySingleAsync<MilkLedgerAuditHead>(new CommandDefinition(
+            @"SELECT COUNT(*) AS AllRows,
+                     COUNT(DISTINCT CONVERT(varchar(10), PickDate, 23) + '|' + CAST(MatchId AS varchar(20))
+                                    + '|' + PlayType + '|' + OptionCode) AS DistinctBets,
+                     SUM(CASE WHEN RunId IS NULL THEN 1 ELSE 0 END) AS LegacyRows,
+                     SUM(CASE WHEN RunId IS NOT NULL THEN 1 ELSE 0 END) AS RunRows,
+                     SUM(CASE WHEN Hit IS NOT NULL THEN 1 ELSE 0 END) AS SettledRows,
+                     SUM(CASE WHEN ISNULL(Voided,0)=1 THEN 1 ELSE 0 END) AS VoidedRows,
+                     SUM(CASE WHEN RunId IS NULL AND Hit IS NOT NULL THEN 1 ELSE 0 END) AS LegacySettled
+              FROM dbo.FbMilkPick
+              WHERE PickDate >= @from",
+            new { from }, cancellationToken: ct));
+
+        // 旧口径：逐行、不看轮次（= 升级前的战绩算法）
+        var oldRows = (await conn.QueryAsync<MilkLedgerAuditRow>(new CommandDefinition(
+            @"SELECT PlayType, COUNT(*) AS OldTotal,
+                     SUM(CASE WHEN Hit = 1 THEN 1 ELSE 0 END) AS OldHit
+              FROM dbo.FbMilkPick
+              WHERE PickDate >= @from AND Hit IS NOT NULL
+              GROUP BY PlayType",
+            new { from }, cancellationToken: ct))).ToList();
+
+        // 新口径：上过榜的一注（与 GetReportAsync 同一段 CTE）
+        var newRows = (await conn.QueryAsync<MilkLedgerAuditRow>(new CommandDefinition(
+            BoardedOneCte +
+            @"SELECT PlayType, COUNT(*) AS NewTotal,
+                     SUM(CASE WHEN AnyHit = 1 THEN 1 ELSE 0 END) AS NewHit,
+                     SUM(CASE WHEN IsLegacy = 1 THEN 1 ELSE 0 END) AS NewLegacyTotal,
+                     SUM(CASE WHEN IsLegacy = 1 AND AnyHit IS NOT NULL THEN 1 ELSE 0 END) AS NewLegacySettled
+              FROM one
+              WHERE AnyHit IS NOT NULL
+              GROUP BY PlayType",
+            new { from }, cancellationToken: ct))).ToList();
+
+        var rows = oldRows
+            .Select(o =>
+            {
+                var n = newRows.FirstOrDefault(x => x.PlayType == o.PlayType);
+                return new MilkLedgerAuditRow
+                {
+                    PlayType = o.PlayType,
+                    OldTotal = o.OldTotal, OldHit = o.OldHit,
+                    NewTotal = n?.NewTotal ?? 0, NewHit = n?.NewHit ?? 0,
+                    NewLegacyTotal = n?.NewLegacyTotal ?? 0,
+                    NewLegacySettled = n?.NewLegacySettled ?? 0
+                };
+            })
+            .OrderBy(r => r.PlayType, StringComparer.Ordinal)
+            .ToList();
+
+        return new MilkLedgerAudit
+        {
+            Days = span,
+            From = from,
+            AllRows = head.AllRows,
+            DistinctBets = head.DistinctBets,
+            LegacyRows = head.LegacyRows,
+            RunRows = head.RunRows,
+            SettledRows = head.SettledRows,
+            VoidedRows = head.VoidedRows,
+            LegacySettled = head.LegacySettled,
+            LegacySettledInNew = rows.Sum(r => r.NewLegacySettled),
+            OldSettled = rows.Sum(r => r.OldTotal),
+            OldHit = rows.Sum(r => r.OldHit),
+            NewSettled = rows.Sum(r => r.NewTotal),
+            NewHit = rows.Sum(r => r.NewHit),
+            Plays = rows
+        };
+    }
+
+    private sealed class MilkLedgerAuditHead
+    {
+        public int AllRows { get; set; }
+        public int DistinctBets { get; set; }
+        public int LegacyRows { get; set; }
+        public int RunRows { get; set; }
+        public int SettledRows { get; set; }
+        public int VoidedRows { get; set; }
+        public int LegacySettled { get; set; }
+    }
+
+    /// <summary>
     /// 近 N 天大奶战绩报表：按玩法分组 + 整体 + 未结算数 + 热门选项。
     /// 只统计已结算（Hit 非空）的行；未结算的单独报数，免得「刚发的榜」把命中率稀释成 0。
     /// </summary>
@@ -963,42 +1164,47 @@ WHERE t.TradeDate=@d
         await using var conn = await _factory.OpenAsync(ct);
         await EnsureRunSchemaAsync(conn, ct);
 
-        // 2026-11-13 第三轮：战绩只统计**上过榜**的注（属于各自受注日的最新成功轮）。
-        // 保留历史之后，同一天库里有多轮的注；不筛就会把失败轮、被替换掉的票算进命中率。
+        // 2026-11-13 第四轮：战绩口径从「最新成功轮」改成「上过榜的一注」。
+        // 上一版照抄了榜面的 `@run` 过滤，后果是**历史战绩会随今天重算而消失**：
+        // 昨天那注（RunId 属于昨天那个轮次）在今天重算后仍在库里，却因为不在「今天的最新轮」而被排除。
+        // 现在的判据见 BoardedOneCte：按业务键去重 + 只要那一轮真的发布过就算数。
         var groupSql =
             @"SELECT PlayType,
                      COUNT(*) AS Total,
-                     SUM(CASE WHEN Hit = 1 THEN 1 ELSE 0 END) AS Hit,
+                     SUM(CASE WHEN AnyHit = 1 THEN 1 ELSE 0 END) AS Hit,
                      ISNULL(SUM(Odds), 0) AS TotalOdds,
-                     ISNULL(SUM(CASE WHEN Hit = 1 THEN Odds ELSE 0 END), 0) AS HitOdds,
+                     ISNULL(SUM(CASE WHEN AnyHit = 1 THEN Odds ELSE 0 END), 0) AS HitOdds,
                      CAST(ISNULL(AVG(Odds), 0) AS DECIMAL(8,2)) AS AvgOdds,
                      CAST(ISNULL(AVG(ModelProbability), 0) AS DECIMAL(6,2)) AS AvgProbability,
                      CAST(ISNULL(AVG(Ev), 0) AS DECIMAL(8,3)) AS AvgEv
-              FROM dbo.FbMilkPick p
-              WHERE PickDate >= @from AND Hit IS NOT NULL AND " + PublishedRowSql;
+              FROM one
+              WHERE AnyHit IS NOT NULL";
 
         var plays = (await conn.QueryAsync<MilkPlayStat>(new CommandDefinition(
-            groupSql + " GROUP BY PlayType ORDER BY PlayType", new { from }, cancellationToken: ct))).ToList();
+            BoardedOneCte + groupSql + " GROUP BY PlayType ORDER BY PlayType",
+            new { from }, cancellationToken: ct))).ToList();
 
         var overall = await conn.QuerySingleOrDefaultAsync<MilkPlayStat>(new CommandDefinition(
-            groupSql.Replace("SELECT PlayType,", "SELECT 'ALL' AS PlayType,"), new { from }, cancellationToken: ct));
+            BoardedOneCte + groupSql.Replace("SELECT PlayType,", "SELECT 'ALL' AS PlayType,"),
+            new { from }, cancellationToken: ct));
 
+        // 取消场次写了 SettledAt 终态（Hit 仍 NULL、ActualScore='取消'），不算 pending。
+        // 判据用 AnySettled 而不是首行的 SettledAt：取消标记可能只落在某一副本上。
         var pending = await conn.QuerySingleAsync<int>(new CommandDefinition(
-            // 取消场次写了 SettledAt 终态（Hit 仍 NULL、ActualScore='取消'），不算 pending
-            "SELECT COUNT(*) FROM dbo.FbMilkPick p WHERE PickDate >= @from AND Hit IS NULL AND SettledAt IS NULL AND "
-            + PublishedRowSql,
+            BoardedOneCte + "SELECT COUNT(*) FROM one WHERE AnyHit IS NULL AND AnySettled = 0",
             new { from }, cancellationToken: ct));
 
         var top = (await conn.QueryAsync<MilkOptionStat>(new CommandDefinition(
+            BoardedOneCte +
             @"SELECT TOP 12 PlayType, OptionCode,
                      COUNT(*) AS Total,
-                     SUM(CASE WHEN Hit = 1 THEN 1 ELSE 0 END) AS Hit,
+                     SUM(CASE WHEN AnyHit = 1 THEN 1 ELSE 0 END) AS Hit,
                      CAST(ISNULL(AVG(Odds), 0) AS DECIMAL(8,2)) AS AvgOdds
-              FROM dbo.FbMilkPick p
-              WHERE PickDate >= @from AND Hit IS NOT NULL AND " + PublishedRowSql + @"
+              FROM one
+              WHERE AnyHit IS NOT NULL
               GROUP BY PlayType, OptionCode
               HAVING COUNT(*) >= 3
-              ORDER BY COUNT(*) DESC, SUM(CASE WHEN Hit = 1 THEN 1 ELSE 0 END) DESC",
+              ORDER BY COUNT(*) DESC, SUM(CASE WHEN AnyHit = 1 THEN 1 ELSE 0 END) DESC",
             new { from }, cancellationToken: ct))).ToList();
 
         return new MilkStatsReport
@@ -1352,17 +1558,29 @@ WHERE t.TradeDate=@d
             // 保留历史之后，失败轮与已被替换的注也躺在库里；不筛就会
             // ①对根本没上过榜的注发告警、②对已被替换的旧票撤注（撤了也看不见）。
             // 跨午夜仍不按日期过滤（11-07 的口径），所以判据是「该行所属轮次对它自己那天是成功的」。
-            @"SELECT p.PickId, p.PickDate, p.MatchId, p.MatchNo, p.LeagueName, p.HomeTeam, p.AwayTeam,
-                     p.MatchTime, p.PlayType, p.OptionCode, p.OptionName, p.Odds, p.ModelProbability, p.Ev,
-                     p.BaselineProbability, p.BaselineEv, p.ModelVsMarketRatio, p.ModelPctPure,
-                     p.AlertSeverity, p.Voided,
-                     p.ActualScore, p.ActualHalfScore, p.ActualGoals, p.Hit, p.SettledAt
-              FROM dbo.FbMilkPick p
-              JOIN dbo.FbMatch m ON m.MatchId = p.MatchId
-              WHERE p.Hit IS NULL AND p.SettledAt IS NULL
-                AND m.Status <> 3 AND m.MatchTime > SYSDATETIME()
-                AND " + PublishedRowSql + @"
-              ORDER BY m.MatchTime, p.MatchNo",
+            //
+            // ★ 2026-11-13 第四轮：在此基础上**按业务键去重**。
+            // 保留历史之后同一注会有多份副本（每轮一份），不去重就会：
+            //   ①同一注在告警表里被反复写（去重键虽然挡住了重复行，但 PickId 关联的是某一份副本）；
+            //   ②撤注 UPDATE 命中多份副本，其中一份早已被替换、页面上根本看不到。
+            // 取最早那份（首次上榜），与战绩/台账口径一致。
+            @"WITH b AS (
+                  SELECT p.PickId, p.PickDate, p.MatchId, p.MatchNo, p.LeagueName, p.HomeTeam, p.AwayTeam,
+                         p.MatchTime, p.PlayType, p.OptionCode, p.OptionName, p.Odds, p.ModelProbability, p.Ev,
+                         p.BaselineProbability, p.BaselineEv, p.ModelVsMarketRatio, p.ModelPctPure,
+                         p.AlertSeverity, p.Voided,
+                         p.ActualScore, p.ActualHalfScore, p.ActualGoals, p.Hit, p.SettledAt,
+                         ROW_NUMBER() OVER (
+                             PARTITION BY p.PickDate, p.MatchId, p.PlayType, p.OptionCode
+                             ORDER BY p.PickId) AS rn
+                  FROM dbo.FbMilkPick p
+                  JOIN dbo.FbMatch m ON m.MatchId = p.MatchId
+                  WHERE p.Hit IS NULL AND p.SettledAt IS NULL
+                    AND m.Status <> 3 AND m.MatchTime > SYSDATETIME()
+                    AND " + PublishedRowSql + @"
+              )
+              SELECT * FROM b WHERE rn = 1
+              ORDER BY MatchTime, MatchNo",
             cancellationToken: ct))).ToList();
     }
 

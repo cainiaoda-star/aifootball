@@ -9,6 +9,16 @@
 | 2026-11-13 17:27:02 | `DELETE` | `FbMilkPick` `PickId=10646` —— 11-13 / 周五001 / 新加坡 vs 巴拉圭 / JQ 3 球 / `Odds=4.10` / `CreatedAt=11:40:20` / `ModelVersion=dc1\|?..?\|n=178179\|rho=0.010\|1.0.0.0+4456b82d\|...` | 「国际赛」于当日 16:10:52 的构建并入 `NoPickLeagues`，这注按新规则不再产生；但当时线上代码「重算结果为空就不重写榜面」，旧票一直挂在推荐页 | 11-13 榜面归 0（删除前 1 行，删除后 0 行）；全表仍 28 行，均为其它日期。空跑台账 `FbPaperTrade` **未动**（2026-11-13 11:40:22 已冻结该注，`Voided=0`，复盘口径不受影响）；`FbTurnAlert` 无该 `PickId` 引用。**不可恢复**：删除前无备份 | **否** —— 超出「只读核查 + 待批准部署」范围，用户 11-13 当日指出；已停手，此后不再手工删数据 |
 | 2026-11-13 18:20 与 19:04（两次 `audit-check`） | **结构变更**（幂等 DDL，由自检触发） | `FbMilkPick` `+RunId`；`FbMilkGate` `+RunId`；`FbMilkProbSnapshot` `+RunId`；`FbMilkInput` `+RunId`；新建 `FbMilkRun`、`FbMilkInput`、`FbMilkRunDate`；`FbMilkRun` `+Status/+PublishedAt/+FailReason`；`FbMilkPick` 唯一键 `UX_FbMilkPick(Date,MatchId,PlayType,OptionCode)` → `UX_FbMilkPick_Run(+RunId)`；`FbMilkGate` 唯一键 `UX_FbMilkGate(Date,MatchId)` → `UX_FbMilkGate_Run(+RunId)` | 19:04 那次是自检在真库上打出的两条：① 第二轮写同一注撞旧唯一键（2601），② 闸表同场同日只能留一行。不换键就做不到「四表保留历史」 | **未动任何真实数据行**（注单 28 / 闸门 70 / 存档 0 / 输入 0，均为原样）；探针只在 `2090-01-01`。旧接续兼容：仍写 `RunId=NULL` 的旧构建照常可写（唯一键含 NULL 时按 (Date,NULL,Match) 仍唯一）。**未在下表「部署前必须过审批」清单外另行申请** | **否** —— 用户 11-13 指出「这属于数据库结构变更，不能称完全未改库」；此后结构变更一律先登记再执行 |
 | 2026-11-13 19:03 | `DELETE`（自检中断残留） | `2090-01-01` 的 `FbMilkPick 3` / `FbMilkProbSnapshot 3` / `FbMilkInput 1` / `FbMilkGate 3` / `FbMilkRun 3` 行 | 19:02 那次自检在闸表唯一键处抛异常退出，清理段没跑到 | 只删探针日期，真实数据 0 影响；删后该日期残留全 0 | **否（自检探针自身的残留）** —— 属程序探针清理，登记备查 |
+| 2026-11-13 19:30（第四轮返工） | **无数据变更、无结构变更** | — | 发布前逐档核对 / 历史战绩去重口径 / 自检加隔离库守卫 + `finally` 清理 | 只在真库跑了**只读**核对 `milk-ledger-report 30`：近 30 天 28 行全部是升级前 `RunId IS NULL`，旧口径 28/9、新口径 28/9（历史保留 28→28，多副本 0），五条读路径均正常。本次**未执行** `audit-check`——新增守卫会拒绝在生产库（`AiFootBall`）运行，实测输出「拒绝执行」 | — |
+
+## 自检执行规则（2026-11-13 19:30 起）
+
+1. `audit-check` 会建表 / 加列 / 重建唯一键 / 写 `2090-01-01` 探针行，属于**结构变更**，不得在生产库执行。
+2. 默认守卫：连接串里的库名必须含 `audit` / `test` / `sandbox` / `tmp` / `probe`，否则直接拒绝（退出码 2），不做任何连接动作。
+3. 想要强行在生产库跑必须显式加 `--allow-prod-unsafe`，且仍需事先登记审批。
+4. 清理已移入 `finally`：无论正常结束还是中途抛异常，`2090-01-01` 的六张表探针行都会被删除，并在报表最后一行打印残留计数；残留非 0 判 FAIL。
+5. 待办：隔离库尚未创建（属实例级变更，未获批准）。建好后 `audit-check` + `milk-ledger-report` 都应在隔离库跑；多副本切轮场景只有在部署后产生第二轮数据才能实测。
+
 
 ## 结构变更清单（部署前必须过审批）
 
