@@ -81,6 +81,20 @@ public sealed class MilkPickRepository
 
     private static bool _columnsReady;
 
+    /// <summary>
+    /// 闸表补 `RunId` 列（2026-11-13 第二轮）。
+    ///
+    /// 写和读都要调：闸表不是我们建的（历史迁移），列不存在时
+    /// <see cref="GetGateAsync"/> 里那句 `MAX(RunId)` 会直接报「列名无效」，
+    /// 而页面恰好是先读后写——只挂一条 500 比没有这个功能更糟。
+    /// </summary>
+    private static Task EnsureGateRunColumnAsync(System.Data.Common.DbConnection conn, CancellationToken ct)
+        => conn.ExecuteAsync(new CommandDefinition(
+            @"IF OBJECT_ID(N'dbo.FbMilkGate', N'U') IS NOT NULL
+                  AND COL_LENGTH('dbo.FbMilkGate','RunId') IS NULL
+                  ALTER TABLE dbo.FbMilkGate ADD RunId nvarchar(40) NULL;",
+            cancellationToken: ct));
+
     /// <summary>重写当日未结算的大奶推荐；已结算的行（含取消终态）不动（重算不冲掉赛果）。</summary>
     public Task<int> SaveDayAsync(DateTime pickDate, IReadOnlyList<MilkPick> picks, CancellationToken ct = default)
         => SaveDayAsync(pickDate, picks, null, ct);
@@ -228,11 +242,7 @@ public sealed class MilkPickRepository
 
         // 轮次列自愈（2026-11-13 第二轮）。闸表由历史迁移建，CREATE 不在这里，
         // 所以只做「表在但列不在」时的补列；表都不在说明环境不对，交给 INSERT 直接报错。
-        await conn.ExecuteAsync(new CommandDefinition(
-            @"IF OBJECT_ID(N'dbo.FbMilkGate', N'U') IS NOT NULL
-                  AND COL_LENGTH('dbo.FbMilkGate','RunId') IS NULL
-                  ALTER TABLE dbo.FbMilkGate ADD RunId nvarchar(40) NULL;",
-            cancellationToken: ct));
+        await EnsureGateRunColumnAsync(conn, ct);
 
         await using var tx = await conn.BeginTransactionAsync(ct);
 
@@ -604,6 +614,7 @@ public sealed class MilkPickRepository
     {
         var d = gateDate.Date;
         await using var conn = await _factory.OpenAsync(ct);
+        await EnsureGateRunColumnAsync(conn, ct);
         return (await conn.QueryAsync<MilkDirectionDiagnosis>(new CommandDefinition(
             @"DECLARE @run nvarchar(40) =
                   (SELECT MAX(RunId) FROM dbo.FbMilkGate WHERE GateDate=@d AND RunId IS NOT NULL);

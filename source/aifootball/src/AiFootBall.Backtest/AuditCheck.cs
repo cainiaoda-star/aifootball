@@ -235,11 +235,54 @@ public static class AuditCheck
             if (r.Mode != "rewrite") failures.Add($"轮次头 BoardMode 不对：{r.Mode}");
         }
 
+        // ---------- 6) 闸门表按轮写 + 读路径钉最新一轮（2026-11-13 第二轮） ----------
+        //
+        // 这一段是被真机打醒之后补的：闸表不是我们建的，`RunId` 靠 SaveGateAsync 里的
+        // 「表在但列不在就补」自愈。但页面是**先读后写**——`GetGateAsync` 里那句 MAX(RunId)
+        // 会在列还没补上的那一刻直接报「列名无效」，整页 500。
+        // 所以读路径也得跑一次自愈，并且必须由自检钉住，不能靠下次有人打开页面才发现。
+        var gateA = new[]
+        {
+            new MilkDirectionDiagnosis
+            {
+                MatchId = probeMatchId, MatchNo = "自检000", LeagueName = "自检联赛",
+                HomeTeam = "自检主队", AwayTeam = "自检客队", MatchTime = probeDate.AddHours(12),
+                ModelDirection = '3', ModelHomePct = 50m, ModelDrawPct = 30m, ModelAwayPct = 20m,
+                PickDirection = '3', MarketDirection = '3', MarketSource = "spf",
+                Verdict = MilkGateVerdicts.Pass
+            },
+            new MilkDirectionDiagnosis
+            {
+                MatchId = probeMatchId + 1, MatchNo = "自检001", LeagueName = "自检联赛",
+                HomeTeam = "自检主队", AwayTeam = "自检客队2", MatchTime = probeDate.AddHours(14),
+                ModelDirection = '3', ModelHomePct = 45m, ModelDrawPct = 30m, ModelAwayPct = 25m,
+                PickDirection = '3', MarketDirection = '0', MarketSource = "spf",
+                Verdict = MilkGateVerdicts.Diverge
+            }
+        };
+        var gateWritten = await repo.SaveGateAsync(probeDate, gateA, probeRunA, default);
+        var gateReadA = await repo.GetGateAsync(probeDate, default);          // 读路径也要能自愈建列
+        if (gateWritten != 2) failures.Add($"闸门写入 {gateWritten} 行，期望 2");
+        if (gateReadA.Count != 2) failures.Add($"闸门读回 {gateReadA.Count} 行，期望 2（最新一轮）");
+
+        await repo.SaveGateAsync(
+            probeDate,
+            new[] { new MilkDirectionDiagnosis { MatchId = probeMatchId + 2, MatchNo = "自检002", Verdict = MilkGateVerdicts.Pass } },
+            probeRunB, default);
+        var gateReadLatest = await repo.GetGateAsync(probeDate, default);
+        var gateRunAStored = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM dbo.FbMilkGate WHERE GateDate=@d AND RunId=@run",
+            new { d = probeDate, run = probeRunA });
+        if (gateReadLatest.Count != 1)
+            failures.Add($"闸门读的是最新一轮吗：期望 1 行（B 轮），实读 {gateReadLatest.Count}");
+        if (gateRunAStored != 2) failures.Add($"闸门 A 轮被改写：应留 2 行，实存 {gateRunAStored}");
+
         // ---------- 清理 ----------
         await conn.ExecuteAsync("DELETE FROM dbo.FbMilkProbSnapshot WHERE SnapshotDate=@d", new { d = probeDate });
         await conn.ExecuteAsync("DELETE FROM dbo.FbMilkPick WHERE PickDate=@d", new { d = probeDate });
         await conn.ExecuteAsync("DELETE FROM dbo.FbMilkInput WHERE InputDate=@d", new { d = probeDate });
         await conn.ExecuteAsync("DELETE FROM dbo.FbMilkRun WHERE RunDate=@d", new { d = probeDate });
+        await conn.ExecuteAsync("DELETE FROM dbo.FbMilkGate WHERE GateDate=@d", new { d = probeDate });
         var leftPick = await conn.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM dbo.FbMilkPick WHERE PickDate=@d", new { d = probeDate });
         var leftSnap = await conn.ExecuteScalarAsync<int>(
@@ -248,8 +291,10 @@ public static class AuditCheck
             "SELECT COUNT(*) FROM dbo.FbMilkInput WHERE InputDate=@d", new { d = probeDate });
         var leftRun = await conn.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM dbo.FbMilkRun WHERE RunDate=@d", new { d = probeDate });
-        if (leftPick != 0 || leftSnap != 0 || leftInput != 0 || leftRun != 0)
-            failures.Add($"清理不干净：pick={leftPick} snapshot={leftSnap} input={leftInput} run={leftRun}");
+        var leftGate = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM dbo.FbMilkGate WHERE GateDate=@d", new { d = probeDate });
+        if (leftPick != 0 || leftSnap != 0 || leftInput != 0 || leftRun != 0 || leftGate != 0)
+            failures.Add($"清理不干净：pick={leftPick} snapshot={leftSnap} input={leftInput} run={leftRun} gate={leftGate}");
 
         Console.WriteLine($"# 审计表自检  {DateTime.Now:yyyy-MM-dd HH:mm}");
         Console.WriteLine();
@@ -263,13 +308,14 @@ public static class AuditCheck
         Console.WriteLine($"| 写新一轮后总行数 / 旧轮保留 | {afterSecondRun} / {runARows}（期望 {snapshotRows.Count + 1} / {snapshotRows.Count}） |");
         Console.WriteLine($"| 输入凭证 写入 / 读回 / 空集后 | {inputWritten} / {inputStored} / {inputAfterEmpty}（别的轮剩 {otherRunLeft}） |");
         Console.WriteLine($"| 轮次头幂等 / 计数回写 | {(runStored.Count == 1 ? "1 行" : runStored.Count + " 行")} |");
+        Console.WriteLine($"| 闸门 写入 / 读旧轮 / 读最新轮 | {gateWritten} / {gateReadA.Count} / {gateReadLatest.Count}（A 轮保留 {gateRunAStored}） |");
         if (bulkExpected > 0)
         {
             var perSec = bulkMs > 0 ? bulkExpected * 1000 / bulkMs : bulkExpected;
             Console.WriteLine($"| 批量写入 {bulkExpected} 行 | {bulkWritten} 行 / {bulkMs} ms（≈{perSec} 行/秒） |");
             Console.WriteLine($"| 出榜作业预算 | 10 分钟硬上限，存档占 {bulkMs / 600.0:0.0}% |");
         }
-        Console.WriteLine($"| 清理后残留 | pick={leftPick} snapshot={leftSnap} input={leftInput} run={leftRun} |");
+        Console.WriteLine($"| 清理后残留 | pick={leftPick} snapshot={leftSnap} input={leftInput} run={leftRun} gate={leftGate} |");
         Console.WriteLine();
         if (failures.Count == 0)
         {
