@@ -18,7 +18,7 @@
 - **`HalfHomeScore IS NOT NULL` = 有真半场**。串：BQ/JQ 2串 .636→3串 .507。
 - 主胜<1.35+必发≥70% 反向（限主胜+欧战）；**负平 .740 永不买**。
 - ★★ 不推名单 `NoPickLeagues`（欧国联/友谊赛/球会/U17+）：Top-1 14.3% vs 市场 42.9%、13 注 0 中；上限 15→8 即 8 注 3 中，保守非定论。
-- ★★★ **`国际赛`＝竞彩对 `友谊赛` 的叫法**（3/3 映射 FbMatch）：名单只认「友谊赛」→**整类漏网**；`LeagueCategory` 也判 LEAGUE 而非 FRIENDLY。11-13 唯一 1 注即来自此。
+- ★★★ **`国际赛`＝竞彩对 `国家队热身赛` 的叫法**（3/3 映射 FbMatch 友谊赛）。11-13 唯一 1 注即来自此。已修（`90a8fa0`）：`LeagueCategory` 迁到 Core，`NoPickLeagues` 与引擎**共用一份判定**；正式赛事（世界杯/欧洲杯/欧国联/世预…）**优先判定**，不会被当热身赛砍；「国际赛」**故意不进 `Names`**——子串匹配会连「国际赛-世界杯预选赛」一起砍掉。**两处各写一份判据必然分叉，这是第 N 次。**
 
 ## 三 概率与权重（11-11 定稿）
 - ★★★ **w 冻结：先验定值，未从 216 注 ROI 选出**。SPF/NSPF **0.7**、BQ **0.5**、JQ **0.8**、BF **0.3**；唯一入口 `MarketWeightFor`。
@@ -32,8 +32,11 @@
 - 去重键 `(AlertDate,MatchId,PlayType,OptionCode)`；`high`→撤注不删行；读取点都要 `ClearedAt IS NULL`。
 - ★★ 撤注判据**禁 EV 绝对值**：只管「市场明确反对」，门槛与出票闸同源。回写禁按 `PickDate=@d` 过滤。
 
-## 五 自检与审计（11-13 修完，待部署）
+## 五 自检与审计（`90a8fa0` 于 11-13 22:05 部署）
 - `tools\milk-check.ps1`：十列/接口键/半场同分率/作业健康/**4i 存档空·窗口`?..?`·同档重复=FAIL**；RCSI=0 致 `odds-sample` 整点 TIMEOUT。`/api/health` 报 `build`(MVID 前 8)+`uptimeSeconds`。
+- ★★★ **训练集只认开赛时刻**：`GetScoreSamplesAsync(asOf)` 里 `<=@asOf` + `<=GETDATE()` 双闸；线上 `HitProbabilityService` 取样与 `Fit` 传**同一个 fitMoment**。**有比分、无赔率都不是进训练集的理由**。库内 2 场脏数据（威冠联 11-14、萨尔超 11-15）曾把窗口推到未来。`fit-probe` 容差（进盘口才 FAIL / >20 场才 FAIL）**已删**：进训练集即 FAIL。
+- ★★★ `Fit` 会剔「队名空 / 比分>12」的样本（实测 113 场）→ **`FitGames = 取样 − 不可用`**，别把差额当泄漏。
+- ★★ **取样顺序必须稳定**：`FitRho` 按 `count/2500` 步长（≈71）抽 2500 个点子采样，网格 0.01；无 `ORDER BY` 时同数据能跑出 0.010/0.000/−0.010 → 同代码同数据出两张榜。已加 `ORDER BY MatchTime, MatchId`，现值 **−0.060**，`fit-probe` 二b 段两次戳比对钉死。**rho 弱识别，不当判据。**
 - ★★ 每注落 `ModelVersion`＝`dc1|窗口|n|rho|MVID|w|bf`；`FbMilkProbSnapshot` 存全档三列，覆盖**进入计算的每场（含被闸整场撤的）**、五玩法齐；NSPF 调整净胜＝(主−客)+让球数。快照按自然日、注单按期号，join 用 MatchId。
 - ★★★ **`Fit(asOf)` 真过滤样本**（原只当衰减原点，未来场次按 w=1 混入）；`GoalBands` 是总进球唯一算式。
 - ★★★ 版本戳窗口 `?..?`＝取样 SQL 漏 `f.MatchTime`（11-13 修）：连带衰减 anchor 失效、`Fit(asOf)` 剔光样本；`-- fit-probe` 可发现。
@@ -52,4 +55,4 @@
 3. SyncLog 含 **IDLE**（零场次），判失败须排除。
 4. **英锦赛/英联杯无联赛半全场基线**，且「英锦赛 vs 英锦标赛」未收别名。
 5. 作业语「漏斗 jc 0」不分「没场次/方向挡/名单挡」；`SaveMilkAsync` 应回 `BuildResult`。
-6. `国际赛` 未进 `NoPickLeagues`（用户要求先报告再改）；EV<1 不许称正期望。
+6. **`FitRho` 用全量似然或固定值**（2500 点子样本弱识别，实测同数据 ±0.03）；现在只是「可复现」，不是「估得准」。EV<1 不许称正期望。
