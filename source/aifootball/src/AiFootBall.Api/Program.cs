@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json.Serialization;
 using AiFootBall.Api;
 using AiFootBall.Core.Models;
@@ -881,7 +882,14 @@ app.MapGet("/api/health", (JobScheduler scheduler) =>
         status = stalled ? "stalled" : "ok",
         time = DateTime.Now,
         schedulerTickSecondsAgo = seconds,
-        stalled
+        stalled,
+        // 运行构建标识（2026-11-13 加）：值 = 版本戳里的第 5 段（`1.0.0.0+<MVID前8位>`）。
+        // 用途只有一个：回答「现在跑的进程是不是刚部署的那个 dll」。
+        // 比对文件哈希只能证明「文件拷过去了」，证明不了「进程加载的是它」——
+        // 11-12 那次重启靠的是进程启动时间反推，这次让接口自己报出来。
+        build = BuildInfo.Version,
+        // 进程已运行秒数：重启后归零。看它就知道有没有真的重启过（而不是只换了文件）。
+        uptimeSeconds = Math.Round((DateTime.Now - Process.GetCurrentProcess().StartTime).TotalSeconds, 0)
     };
     return stalled
         ? Results.Json(body, statusCode: 503)
