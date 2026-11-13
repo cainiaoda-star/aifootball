@@ -8,7 +8,9 @@
 3. `jobs.json`：jc-odds 2min / water 10min / turn-guard·paper-freeze `*/10` / inplay `*/3`；采赛中须 `inplayOnly`；500.com 只认真浏览器。
 4. 成对改 `new RecommendationService(...)` 两处；闸门槛统一 `Payout`；写当日榜走 `_recommendLane`。
 5. 完场不信 `Status`：`比分全 && (Status==3 || MatchTime<=now-150min)`；受注日≠开赛日；ABORTED≠FAILED。
-6. 部署必须留痕：`deploy-package\logs\deploy-history.log`（head/旧新 hash/PID/备份目录/触发者/build），核对 `/api/health` 的 `build`(MVID 前 8)+`uptimeSeconds`。来源不明的部署要记录在案。
+6. 部署必须留痕：`deploy-package\logs\deploy-history.log`（head/旧新 hash/PID/备份目录/触发者/build），核对 `/api/health` 的 `build`(MVID 前 8)+`uptimeSeconds`。
+7. ★★★ **禁止对「部署类」自动化做 `automation_update`**：create/update 后 1–2 分钟内必触发一次执行；once 任务还会在计划时刻**之前**反复触发——11-13 `90a1a054` 计划 22:05，实际触发 **7 次**（14:33/14:42/15:34/15:44/15:49/15:57/16:00）、**部署 4 次**（14:34/14:42/15:44/16:02）。「来源不明的部署」= 它自己。部署类自动化全部 PAUSED，部署只手工跑一次。
+   ★ `git` 不在本机 PATH，`head=unknown` 与触发者无关，不能当溯源线索（曾据此误判）。
 
 ## 二 口径
 - 返奖率=天花板：SPF/NSPF .878 / BQ/JQ .797 / BF .710。赔率 1.00 是占位：回测须 `CapturedAt<MatchTime AND Odds>1.01`。`FbJcOddsHistory` ≠ `FbOdds(CompanyId=0)`。
@@ -32,15 +34,18 @@
 - ★ 150 分钟只是**完赛代理**，不是证据：`UpdatedAt` 是最后写入（重采刷晚，回测口径 162737 场 **100%** 被刷），只能证「此刻已知」。可观测首写延迟仅 **1.9% ≤150min**、**84% >360min**；`football` 抓取每小时一次。→ 残余泄漏**未消除**，任何结论不许写「已消除」；严格口径要「首次入库时间」留痕。
 - `Fit` 剔队名空/比分>12（实测 113 场）→ `FitGames = 取样 − 不可用`。
 - `ModelVersion`＝`dc1|窗口|n|rho|MVID|w|bf`；`FbMilkProbSnapshot` 全档三列、五玩法齐、含被闸整场撤的场次；NSPF 调整净胜=(主−客)+让球数。
-- `milk-check.ps1`：十列/接口键/半场同分率/作业健康/4i（存档空·窗口`?..?`·同档重复=FAIL）；RCSI=0 致 `odds-sample` 整点 TIMEOUT（已知，非回归）。
+- `milk-check.ps1`：十列/接口键/半场同分率/作业健康/4i（存档空·窗口`?..?`·同档重复=FAIL）。
+- ★★ **`odds-sample` 整点 TIMEOUT 是独立的运行问题，不是「老问题可忽略」**（RCSI=0 锁等待）。后果是**价格滞后**：11-13 榜面 22 场欧赔，最新采样距 16:40 为 **33–85 分钟**（荷乙 6 场全部 85 分钟，15:15 后未再更新）；`FbJcOddsHistory` 因 jc-odds 2min 一轮不受影响（今日最大间隔 240s）。
+  守卫阈值 `MarketTtlHours = StaleResampleHours(6)×4/3 = **8 小时**` → 85 分钟全被当「新鲜」放行；`MilkScanService.WatchPoolAsync` 调 `GetClosingEuAsync/GetExchangeRatioAsync` **不传 freshHours**（该路径零守卫）。必发对荷乙/日乙基本无覆盖（NULL）。
 
 ## 六 台账与产品线
 - `FbPaperTrade` 上过榜即记账、首价为准；分母=已结算未撤注。稳胆每日 1 注 91.4%/1.108。注单页 `FbDailyFollow`，前端不调 `/api/milk/picks`。
 
 ## 七 待办
-1. ρ=0 / 全量似然：用**新时段**独立验（旧测试集已看过）。
-2. 回测截止口径：补「首次入库时间」或用抓取网格重建。
-3. 撤注判据回测 0 注；`PlayOrder`、`GetEuOddsDelta` 未修。
-4. P1-7 按 salesDate 冻结模型 + 快照日期键同改。
-5. 漏斗日志不分原因（`SaveMilkAsync` 应回 `BuildResult`）；EV<1 不许称正期望。
-6. 英锦赛/英联杯无半全场基线；「英锦赛 vs 英锦标赛」未收别名。
+1. **★ 优先（用户 11-13 定）**：结果**首次入库时间**留痕（`FbMatch.FirstSeenAt` 或采样落库日志），否则历史回测泄漏消不掉，回测成绩只能作参考。
+2. ρ=0 / 全量似然：用**新时段**独立验（旧测试集已看过）。
+3. `odds-sample` TIMEOUT 根治：`READ_COMMITTED_SNAPSHOT ON`（须挑凌晨无受注窗口）；顺带决定 `MarketTtlHours` 是否收紧、`MilkScanService` 是否补 freshHours。
+4. 撤注判据回测 0 注；`PlayOrder`、`GetEuOddsDelta` 未修。
+5. P1-7 按 salesDate 冻结模型 + 快照日期键同改。
+6. 漏斗日志不分原因（`SaveMilkAsync` 应回 `BuildResult`）；EV<1 不许称正期望。
+7. 英锦赛/英联杯无半全场基线；「英锦赛 vs 英锦标赛」未收别名。
