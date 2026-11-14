@@ -78,10 +78,16 @@ public sealed class BettingRepository
     /// 口径与 `JcOddsRepository.GetLatestAsync` **逐字一致**（每键取最新、`Odds > 1`），
     /// 否则「源侧有 31 档、引擎拿到 30 档」会被当成两次不同的采样而误报。
     ///
+    /// ★ `asOf` 是本轮 `FbMilkRun.StartedAt`（2026-11-14 第八轮，用户要求）：
+    /// 两张表都只取 `CapturedAt &lt;= asOf` 的行。没有这个条件时，事后（或下一轮）追加的采样会
+    /// 悄无声息地补进上一轮的「应有场次」，于是那轮到底该有几场永远无法复现——
+    /// 11-14 事后回查能看到 11 场、10:58 的赔率，正是这个原因，它证明不了 08:40 那一轮。
+    /// 只有 running 头 + 最新采样时刻是不够的：那两者都不参与过滤。
+    ///
     /// 只读，不判断受注规则——「这一期能不能买」是纯逻辑，由调用方用
     /// `RecommendationSelection.JcSaleHours` 判，Data 层不引用 Sources 的口径。
     /// </summary>
-    public async Task<List<MilkSourceMatch>> GetJcSourceSnapshotAsync(CancellationToken ct = default)
+    public async Task<List<MilkSourceMatch>> GetJcSourceSnapshotAsync(DateTime asOf, CancellationToken ct = default)
     {
         await using var conn = await _factory.OpenAsync(ct);
 
@@ -91,9 +97,10 @@ public sealed class BettingRepository
               FROM dbo.BettingCard c
               LEFT JOIN dbo.FbMatch f ON f.MatchId = c.MatchId
               WHERE c.Board='jc'
-                AND c.CapturedAt = (SELECT MAX(CapturedAt) FROM dbo.BettingCard WHERE Board='jc')
+                AND c.CapturedAt = (SELECT MAX(CapturedAt) FROM dbo.BettingCard
+                                    WHERE Board='jc' AND CapturedAt <= @asOf)
                 AND c.MatchId IS NOT NULL",
-            cancellationToken: ct))).ToList();
+            new { asOf }, cancellationToken: ct))).ToList();
         if (cards.Count == 0) return new List<MilkSourceMatch>();
 
         var ids = cards.Select(c => c.MatchId!.Value).Distinct().ToArray();
@@ -101,9 +108,9 @@ public sealed class BettingRepository
             new CommandDefinition(
                 @"SELECT MatchId, PlayType, OptionCode, MAX(CapturedAt) AS At
                   FROM dbo.FbJcOddsHistory
-                  WHERE MatchId IN @ids AND Odds > 1
+                  WHERE MatchId IN @ids AND Odds > 1 AND CapturedAt <= @asOf
                   GROUP BY MatchId, PlayType, OptionCode",
-                new { ids }, cancellationToken: ct))).ToList();
+                new { ids, asOf }, cancellationToken: ct))).ToList();
 
         var byMatch = points
             .GroupBy(p => p.MatchId)

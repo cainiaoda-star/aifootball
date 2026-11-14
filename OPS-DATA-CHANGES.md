@@ -11,12 +11,16 @@
 | 2026-11-13 19:03 | `DELETE`（自检中断残留） | `2090-01-01` 的 `FbMilkPick 3` / `FbMilkProbSnapshot 3` / `FbMilkInput 1` / `FbMilkGate 3` / `FbMilkRun 3` 行 | 19:02 那次自检在闸表唯一键处抛异常退出，清理段没跑到 | 只删探针日期，真实数据 0 影响；删后该日期残留全 0 | **否（自检探针自身的残留）** —— 属程序探针清理，登记备查 |
 | 2026-11-13 19:30（第四轮返工） | **无数据变更、无结构变更** | — | 发布前逐档核对 / 历史战绩去重口径 / 自检加隔离库守卫 + `finally` 清理 | 只在真库跑了**只读**核对 `milk-ledger-report 30`：近 30 天 28 行全部是升级前 `RunId IS NULL`，旧口径 28/9、新口径 28/9（历史保留 28→28，多副本 0），五条读路径均正常。本次**未执行** `audit-check`——新增守卫会拒绝在生产库（`AiFootBall`）运行，实测输出「拒绝执行」 | — |
 | 2026-11-14 11:05（第七轮） | **无数据变更、无结构变更**（代码待部署） | — | 修 1419319 输入覆盖、BF 概率单位；新增源侧账本 | 只读查询：`FbMilkRun` / `FbMilkProbSnapshot` / `FbJcOddsHistory` / `BettingCard` / `FbMatch`；隔离库 `AiFootBall_AuditTest` 重建并跑 21 项断言（全部通过）。**生产的 620 行 BF 存档未标记、未回填**（见 `复盘/2026-11-14_BF概率单位缺陷.md`），任何标记需另行报批 | — |
+| 2026-11-14 13:00（第八轮） | **无数据变更、无结构变更**（代码待审查，未部署） | — | 补 `source-option-gap`（按玩法域核对源侧档位）、源快照 `CapturedAt <= StartedAt` 边界、队名核心名兜底的梯队身份闸 | 只读：`BettingCard` / `FbJcOddsHistory` / `sys.columns` 查档位分布与脏代码；一次性只读探针（临时目录、不进仓库、不写库）复跑 297 组队名解析；隔离库 `AiFootBall_AuditTest` 重建（新增克隆 `BettingCard`）并跑 **26 项断言全部通过**。**生产一行未改**；`FbMilkSourceMatch` 仍未建，620 行 BF 存档仍未标记 | — |
 
 ## 待批准的结构变更（部署时才发生，未执行）
 
 | 对象 | 变更 | 触发点 | 说明 |
 |---|---|---|---|
-| `FbMilkSourceMatch` | **新建表**（`RunId, SalesDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime, LastSampleAt, OptionCount, Plays, Outcome, Reason, Evidence, Accepted, CreatedAt`；`UX_FbMilkSource_Run (RunId, MatchId)`） | `MilkPickRepository.EnsureRunSchemaAsync`（幂等 DDL，与 `FbMilkRun` 建表同一处） | 一行 = 本轮源侧的一场：`computed`（有输入凭证）或 `rejected`（有原因+证据）。唯一键含 `RunId`——与 `FbMilkPick/FbMilkGate` 同一教训。**部署前需批准** |
+| `FbMilkSourceMatch` | **新建表**（`RunId, SalesDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime, LastSampleAt, OptionCount, Plays, Outcome, Reason, Evidence, Accepted, CreatedAt`；`UX_FbMilkSource_Run (RunId, MatchId)`） | `MilkPickRepository.EnsureRunSchemaAsync`（幂等 DDL，与 `FbMilkRun` 建表同一处） | 一行 = 本轮源侧的一场：`computed`（有输入凭证）或 `rejected`（有原因+证据）。唯一键含 `RunId`——与 `FbMilkPick/FbMilkGate` 同一教训。**部署前需批准**。第八轮未新增任何 DDL，仍是这一张表 |
+
+> **回滚口径（2026-11-14 第八轮更正）**：若将来获批部署后需要回滚，**只回退二进制并保留新表**，
+> 不执行 `DROP TABLE`（回滚不是清库，清表会丢审计数据）。
 
 **为什么必须新建这张表**：11-14 的 1419319（大宫松鼠RB vs 山形山神）在库里 `FbMilkInput/ProbSnapshot/Gate` 全 0 行，
 日志也没有任何记录——它是被引擎在**写凭证之前**按「模型不认识这支队」跳过的。

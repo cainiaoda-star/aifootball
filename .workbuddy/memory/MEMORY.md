@@ -41,6 +41,10 @@
 - ★ **场次覆盖的基准在源侧**（`MilkSourceSlate`，11-14）：源＝`BettingCard` 当前批 × `JcSaleHours.Sellable`（与 `ScoreAsync` 同一份实现）＋`FbJcOddsHistory` 每档最新采样。每场必须「输入凭证 或 带证据的拒绝记录」；`name-unresolved` 须独立库检（`FbMatch` 近 18 月按 `TeamNames.CoreKey`）证明是真新队，否则 `stale-name` 不发布；`no-odds` 与源侧档数矛盾即 `contradicted-rejection`；算过的场次过「采样 ≤30min」+「源侧每一档都进了计算」。落库 `FbMilkSourceMatch`（**新建表，待批准**）。
 - ★ **概率三列一律百分数**：`bfPure` 内部是 0~1 比例，只在落库前 ×100；`MilkProbScale` 按 (场次,玩法) 要求三列合计≈100 且同尺，否则不发布。11-14 那 620 行 BF 存档（ModelPctPure≈1.0）**禁用**，不得算 Hit@1 或调权重。
 - ★ 队名解析只允许「查询名比库内名短」→ 竞彩加冠名后缀（大宫松鼠RB）会整场丢失。`Resolve` 已加核心名兜底；**库里出现新队名先查 `team-check`**，别先怀疑样本。
+- ★★ **档位域必须是代码清单，不是档数**（`JcPlayDomain`，11-14 第八轮）：BQ 有 3 场脏码（`平/胜` 等）让「10 档」看起来齐整。`source-option-gap` 对**所有**源场次逐玩法逐代码比对；域外脏码不阻断、`missing-option` 只看域内。**不给「未启售」豁免**——库里没有逐玩法启售字段，「没采到赔率」一律按缺档阻断（要开口子先加字段报批）。
+- ★★ **源快照必须按 `StartedAt` 截止**（`GetJcSourceSnapshotAsync(asOf)`，两张表都带 `CapturedAt <= @asOf`）：running 头与「最新采样时刻」都不参与过滤，事后补采会改写上一轮的应有场次。
+- ★★ **核心名兜底必须带梯队身份闸**：`ReserveMark(查询)==ReserveMark(候选)` + `AsciiMarks(候选) ⊆ AsciiMarks(查询)`。方向关键：查询多 `RB` 允许，候选多 `U21` 拒绝。**「样本不足会 thin-sample 拒发」不是防误配保障**（梯队≥5 场就出票）。
+- ★ 回滚只回退二进制并**保留新表**，不 `DROP TABLE`（11-14 用户更正）。
 
 ## 六 赔率新鲜度（按链路分开）
 - 竞彩 `FbJcOddsHistory`（出票价）：2min 一轮、最大间隔 4min → 数据没坏；`GetLatestAsync` **零 age 守卫**。

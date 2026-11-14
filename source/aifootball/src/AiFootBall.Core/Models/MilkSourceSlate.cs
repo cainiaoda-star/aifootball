@@ -267,7 +267,14 @@ public sealed class MilkSourceReport
 ///      （由调用方用独立查询判定，不看引擎结论）；
 ///   ④ 算过的场次，其最新赔率采样不得超龄（默认 30 分钟）；超龄即「历史赔率不等于本轮有效」；
 ///   ⑤ 算过的场次，源侧每一个档位都必须出现在输入凭证的档位清单里——
-///      少一档同样是「引擎少算」，不能靠「预期=输入」自动通过。
+///      少一档同样是「引擎少算」，不能靠「预期=输入」自动通过；
+///   ⑥ **源侧自己少了档**也要发现（2026-11-14 第八轮）：每个已启售玩法必须是
+///      <see cref="JcPlayDomain"/> 的完整档位域，少一档即 `source-option-gap`。
+///
+/// 为什么 ⑥ 不能省：⑤ 只查「源有档 → 引擎没算」，源侧自己少采一档时预期和输入一起少，
+/// 两边同时为「对」——与 1419319 同一种病因（预期取自被检验的一方）。
+/// 也正因为如此，「采集里没有某玩法的赔率」**不得**被当成「该玩法未启售」：
+/// 未启售需要源侧落库的启售清单才能证明，本轮没有这个字段，所以一律按缺档阻断。
 /// </summary>
 public static class MilkSourceSlate
 {
@@ -401,6 +408,51 @@ public static class MilkSourceSlate
             });
         }
 
+        // ── 源侧档位域：每个已启售玩法必须是完整域（2026-11-14 第八轮） ──
+        //
+        // 判据逐玩法、逐档位代码比对，**不硬套 54**：
+        //   · 少一个 `BF|1:0` 与少一个 `BQ|3-3` 是两件事，报出来的玩法与缺档都不同；
+        //   · 域外的脏代码（生产中 BQ 出现过 `平/胜`/`平/负`/`平/平`）不算「有档」，
+        //     也不因为「多出来」而判失败——多档是数据卫生问题，缺档才是不覆盖。
+        //
+        // 对**所有**源场次都查，不只查算过的：一场被 no-odds 拒绝、源侧却只采到三个玩法时，
+        // 若只查算过的场次，这个拒绝就永远无从反驳——正是「历史有记录 ≠ 本轮有效」的反面。
+        foreach (var m in src)
+        {
+            foreach (var play in JcPlayDomain.Plays)
+            {
+                var domain = JcPlayDomain.Of(play);
+                if (domain is null || domain.Count == 0) continue;
+
+                var have = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var k in m.OptionKeys)
+                {
+                    var bar = k.IndexOf('|');
+                    if (bar <= 0) continue;
+                    if (!string.Equals(k[..bar], play, StringComparison.Ordinal)) continue;
+                    have.Add(k[(bar + 1)..]);
+                }
+
+                var missingTotal = 0;
+                var sample = new List<string>(4);
+                foreach (var code in domain)
+                {
+                    if (have.Contains(code)) continue;
+                    missingTotal++;
+                    if (sample.Count < 4) sample.Add(code);
+                }
+                if (missingTotal == 0) continue;
+
+                issues.Add(new MilkLedgerIssue
+                {
+                    Table = "source", Kind = "source-option-gap",
+                    Key = $"{m.MatchId}|{m.MatchNo}|{play}|缺 {missingTotal}/{domain.Count}"
+                          + $"|{string.Join(",", sample)}{(missingTotal > sample.Count ? ",…" : "")}",
+                    Expected = domain.Count, Actual = domain.Count - missingTotal
+                });
+            }
+        }
+
         // ── 算过的场次：采样新鲜度 + 档位覆盖 ──
         var age = maxSampleAge ?? TimeSpan.FromMinutes(MaxSampleAgeMinutes);
         var srcById = src.ToDictionary(m => m.MatchId);
@@ -427,10 +479,14 @@ public static class MilkSourceSlate
 
             // 源侧有档、输入凭证里没有 = 引擎在档位层面少算。之前这一层没人查：
             // 预期是从输入推出的，输入少一档，预期也跟着少一档，两边同时「对」。
+            //
+            // 只查**域内**档位（2026-11-14 第八轮）：源侧混进来的脏代码（生产中 BQ 出现过
+            // `平/胜`）引擎本来就不该算，把它报成「引擎少算」会让一条脏数据卡住整轮发布，
+            // 而它其实只是数据卫生问题。
             var have = new HashSet<string>(
                 (m.Options ?? Array.Empty<MilkInputOption>())
                     .Select(o => $"{o.PlayType}|{o.OptionCode}"), StringComparer.Ordinal);
-            foreach (var k in s.OptionKeys.Where(k => !have.Contains(k)))
+            foreach (var k in s.OptionKeys.Where(k => InDomain(k) && !have.Contains(k)))
                 issues.Add(new MilkLedgerIssue
                 {
                     Table = "source", Kind = "missing-option",
@@ -441,6 +497,9 @@ public static class MilkSourceSlate
         // 引擎说「这场没有赔率」，源侧却记着有档 —— 两个源同时为真是不可能的。
         // 这正是「历史赔率有记录不等于本轮仍有效」的反向：**源侧有价**时，
         // 引擎拿不到价只可能是它自己取了空集（如查询参数错、快照未刷新），不能算合法拒绝。
+        //
+        // 被推翻的豁免要把 `Accepted` 也改回 false：否则落库的拒绝记录会带着「合法」标记，
+        // 事后分不清「真没价」和「没取到价」——账面上两者长得一样，正是要避免的那种含糊。
         foreach (var r in final.Where(x => x.Accepted
                                           && string.Equals(x.Reason, MilkInputRejection.ReasonNoOdds, StringComparison.Ordinal)))
         {
@@ -451,6 +510,7 @@ public static class MilkSourceSlate
                 Key = $"{r.MatchId}|no-odds|source={s.OptionCount}档|sample={s.LastSampleAt:MM-dd HH:mm}",
                 Expected = 0, Actual = s.OptionCount
             });
+            r.Accepted = false;
         }
 
         return new MilkSourceReport
@@ -461,5 +521,18 @@ public static class MilkSourceSlate
             ComputedCount = ins.Count(m => srcIds.Contains(m.MatchId)),
             RejectedCount = final.Count(r => r.Accepted)
         };
+    }
+
+    /// <summary>该键是否属于玩法域（`BF|1:0` 属域；`BQ|平/胜` 不属域）。</summary>
+    private static bool InDomain(string key)
+    {
+        var bar = key.IndexOf('|');
+        if (bar <= 0) return false;
+        var domain = JcPlayDomain.Of(key[..bar]);
+        if (domain is null) return false;
+        var code = key[(bar + 1)..];
+        foreach (var c in domain)
+            if (string.Equals(c, code, StringComparison.Ordinal)) return true;
+        return false;
     }
 }

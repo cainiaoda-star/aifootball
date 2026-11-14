@@ -28,6 +28,8 @@ public static class MilkIsolatedCheck
     public const string AuditDbName = "AiFootBall_AuditTest";
 
     private const long M1 = 900000001, M2 = 900000002, M3 = 900000003, M4 = 900000004, M5 = 900000005;
+    /// <summary>源快照时间边界用例专用场次（不与上面几场共用，避免影响榜面/报表断言）。</summary>
+    private const long M6 = 900000006, M7 = 900000007, M8 = 900000008;
 
     private sealed record Seed(long MatchId, string Play, string Code, decimal Odds)
     {
@@ -192,10 +194,30 @@ public static class MilkIsolatedCheck
         var d3 = DateTime.Today.AddDays(-400);
         var runAt = d3.AddHours(12);
 
+        // 完整档位域（五玩法 54 档）。源侧账本要求「已启售玩法必须是完整域」，
+        // 所以这里不能再拿三档 SPF 当源侧样本——那不是简化，而是另一种形态的缺档。
+        static List<string> FullKeys() => JcPlayDomain.Plays
+            .SelectMany(p => JcPlayDomain.Of(p)!.Select(c => $"{p}|{c}")).ToList();
+        static MilkSourceMatch SrcOf(long mid, string no, DateTime day, DateTime at, IEnumerable<string> keys) => new()
+        {
+            MatchId = mid, MatchNo = no, LeagueName = "审计联赛", HomeTeam = "主队", AwayTeam = "客队",
+            MatchTime = day.AddHours(20), SalesDate = day, LastSampleAt = at,
+            OptionKeys = keys.ToList()
+        };
+
         MilkInputMatch Input(long mid, string no, params string[] codes) => new()
         {
             MatchId = mid, MatchNo = no, MatchTime = d3.AddHours(20), VersionTag = "dc1|audit",
             Options = codes.Select(c => new MilkInputOption { PlayType = JcPlayTypes.Spf, OptionCode = c }).ToList()
+        };
+        // 与源侧同域的全量凭证：只用于「场次/档位对齐」的判据，不落库（落库的那份仍按 SPF 三档构造）。
+        MilkInputMatch InputFull(long mid, string no, IEnumerable<string> keys) => new()
+        {
+            MatchId = mid, MatchNo = no, MatchTime = d3.AddHours(20), VersionTag = "dc1|audit",
+            Options = keys.Select(k => new MilkInputOption
+            {
+                PlayType = k[..k.IndexOf('|')], OptionCode = k[(k.IndexOf('|') + 1)..]
+            }).ToList()
         };
         static MilkProbSnapshot Snap(DateTime d, long mid, string code, decimal pure) => new()
         {
@@ -203,14 +225,13 @@ public static class MilkIsolatedCheck
             Odds = 100m / pure, MarketPct = pure, ModelPctPure = pure, BlendedPct = pure,
             MarketPriced = true, ModelVersion = "dc1|audit"
         };
-        MilkSourceMatch Src(long mid, string no) => new()
-        {
-            MatchId = mid, MatchNo = no, LeagueName = "审计联赛", HomeTeam = "主队", AwayTeam = "客队",
-            MatchTime = d3.AddHours(20), SalesDate = d3, LastSampleAt = runAt.AddMinutes(-2),
-            OptionKeys = new[] { "SPF|3", "SPF|1", "SPF|0" }
-        };
+        MilkSourceMatch Src(long mid, string no) => SrcOf(mid, no, d3, runAt.AddMinutes(-2), FullKeys());
 
         var inputsD = new List<MilkInputMatch> { Input(M1, "周日001", "3", "1", "0"), Input(M2, "周日002", "3", "1", "0") };
+        var inputsFullD = new List<MilkInputMatch>
+        {
+            InputFull(M1, "周日001", FullKeys()), InputFull(M2, "周日002", FullKeys())
+        };
         var sourcesD = new List<MilkSourceMatch> { Src(M1, "周日001"), Src(M2, "周日002") };
         var snapsD = new List<MilkProbSnapshot>
         {
@@ -266,13 +287,13 @@ public static class MilkIsolatedCheck
             $"榜面 {boardC.Count} 注，MatchId={string.Join(",", boardC.Select(x => x.MatchId))}"));
 
         // ── 发布闸：三类缺陷必须判不通过（判据用真实读回的库内行） ──
-        var vSource = MilkSourceSlate.Verify(sourcesD, inputsD, Array.Empty<MilkInputRejection>(), runAt);
+        var vSource = MilkSourceSlate.Verify(sourcesD, inputsFullD, Array.Empty<MilkInputRejection>(), runAt);
         checks.Add(("④-4 源 2 场输入 2 场：源侧账本通过",
             vSource.Ok && vSource.ComputedCount == 2,
             $"{vSource.Summary}；{vSource.Detail}"));
 
         var vMissMatch = MilkSourceSlate.Verify(
-            sourcesD, inputsD.Take(1).ToList(), Array.Empty<MilkInputRejection>(), runAt);
+            sourcesD, inputsFullD.Take(1).ToList(), Array.Empty<MilkInputRejection>(), runAt);
         checks.Add(("④-5 缺一场输入（无拒绝记录）→ 不通过",
             !vMissMatch.Ok && vMissMatch.Issues.Any(i => i.Kind == "missing-input"),
             vMissMatch.Detail));
@@ -345,6 +366,99 @@ public static class MilkIsolatedCheck
             boardD.Count == 0 && dateRow == 0 && inputRowsD == 2 && snapRowsD == 6 && srcRowsD == 2 && sourceRowsD == 2,
             $"榜面 {boardD.Count} 注／RunDate.PickCount={dateRow}；输入 {inputRowsD} 行、存档 {snapRowsD} 档、"
             + $"源侧账本 {sourceRowsD} 行（写入 {srcRowsD} 行）"));
+
+        // ── 源侧档位域（2026-11-14 第八轮）：缺档必须阻断，且不能一律硬套 54 ──
+        var gapKeys = FullKeys();
+        gapKeys.Remove("BF|1:0");
+        var vGap = MilkSourceSlate.Verify(
+            new[] { SrcOf(M1, "周日001", d3, runAt.AddMinutes(-2), gapKeys) },
+            new[] { InputFull(M1, "周日001", gapKeys) },
+            Array.Empty<MilkInputRejection>(), runAt);
+        checks.Add(("④-10 源侧少一档（BF|1:0）→ 不通过",
+            !vGap.Ok
+            && vGap.Issues.Any(i => i.Kind == "source-option-gap" && i.Key.Contains("1:0"))
+            && !vGap.Issues.Any(i => i.Kind == "missing-option"),
+            vGap.Detail));
+
+        // 整块缺一个玩法 + 引擎据此报 no-odds：缺档与被推翻的豁免两条同时拦。
+        var noSpf = FullKeys().Where(k => !k.StartsWith("SPF|", StringComparison.Ordinal)).ToList();
+        var vWhole = MilkSourceSlate.Verify(
+            new[] { SrcOf(M1, "周日001", d3, runAt.AddMinutes(-2), noSpf) },
+            Array.Empty<MilkInputMatch>(),
+            new[]
+            {
+                new MilkInputRejection
+                {
+                    MatchId = M1, MatchNo = "周日001", HomeTeam = "主队", AwayTeam = "客队",
+                    Reason = MilkInputRejection.ReasonNoOdds, Evidence = "options=0;source=0"
+                }
+            },
+            runAt);
+        checks.Add(("④-11 整块缺 SPF 且报 no-odds → 缺档 + 豁免被推翻",
+            !vWhole.Ok
+            && vWhole.Issues.Any(i => i.Kind == "source-option-gap" && i.Key.Contains("SPF"))
+            && vWhole.Issues.Any(i => i.Kind == "contradicted-rejection")
+            && !vWhole.Rejections.Any(x => x.Accepted),
+            vWhole.Detail));
+
+        // 总数仍是 54（BF 少一档、BQ 多一条脏码）：只看档数会判「齐」，逐档位才看得出来。
+        var swapped = FullKeys();
+        swapped.Remove("BF|2:1");
+        swapped.Add("BQ|平/胜");
+        var vSwap = MilkSourceSlate.Verify(
+            new[] { SrcOf(M1, "周日001", d3, runAt.AddMinutes(-2), swapped) },
+            new[] { InputFull(M1, "周日001", swapped) },
+            Array.Empty<MilkInputRejection>(), runAt);
+        checks.Add(("④-12 总数 54 但 BF 少一档、BQ 多脏码 → 只报 BF",
+            !vSwap.Ok
+            && vSwap.Issues.Count(i => i.Kind == "source-option-gap") == 1
+            && vSwap.Issues.Any(i => i.Kind == "source-option-gap" && i.Key.Contains("2:1")),
+            vSwap.Detail));
+
+        // ── ④-13 源快照按 StartedAt 截止（2026-11-14 第八轮） ──
+        //
+        // 造两批受注卡：asOf-6min 两场、asOf+20min 三场（模拟下一轮/事后补采）；
+        // M6 有两条采样：asOf-3min 的 SPF 三档、asOf+15min 的 BF 三十一档。
+        // 用 asOf 查必须只看到两场、M6 只有三档、采样停在 asOf-3min——
+        // 这就是「事后回查看到 10:58 的 11 场」不能用来证明 08:40 那一轮的原因。
+        // `SELECT INTO` 会把 IDENTITY 一起带过来，所以 CardId 不显式给（给了会报 544）。
+        await c.ExecuteAsync(new CommandDefinition(
+            @"INSERT INTO dbo.BettingCard
+                (Board, Expect, MatchNo, MatchId, LeagueName, HomeTeam, AwayTeam, MatchTime, IsSingle, CapturedAt)
+              VALUES ('jc', N'审计', N'周日101', @m6, N'审计联赛', N'甲', N'乙', @mt, 0, @a1),
+                     ('jc', N'审计', N'周日102', @m7, N'审计联赛', N'丙', N'丁', @mt, 0, @a1),
+                     ('jc', N'审计', N'周日101', @m6, N'审计联赛', N'甲', N'乙', @mt, 0, @a2),
+                     ('jc', N'审计', N'周日102', @m7, N'审计联赛', N'丙', N'丁', @mt, 0, @a2),
+                     ('jc', N'审计', N'周日103', @m8, N'审计联赛', N'戊', N'己', @mt, 0, @a2)",
+            new
+            {
+                m6 = M6, m7 = M7, m8 = M8, mt = d3.AddHours(20),
+                a1 = runAt.AddMinutes(-6), a2 = runAt.AddMinutes(20)
+            }, cancellationToken: ct));
+
+        await c.ExecuteAsync(new CommandDefinition(
+            @"INSERT INTO dbo.FbJcOddsHistory (MatchId, MatchNo, PlayType, OptionCode, OptionName, Odds, CapturedAt)
+              VALUES (@m6, N'周日101', 'SPF', '3', N'胜', 2.10, @early),
+                     (@m6, N'周日101', 'SPF', '1', N'平', 3.30, @early),
+                     (@m6, N'周日101', 'SPF', '0', N'负', 3.40, @early)",
+            new { m6 = M6, early = runAt.AddMinutes(-3) }, cancellationToken: ct));
+
+        var lateRows = JcPlayDomain.Bf
+            .Select((code, i) => new { m = M6, code, odds = 7m + i, at = runAt.AddMinutes(15) })
+            .ToList();
+        await c.ExecuteAsync(new CommandDefinition(
+            @"INSERT INTO dbo.FbJcOddsHistory (MatchId, MatchNo, PlayType, OptionCode, OptionName, Odds, CapturedAt)
+              VALUES (@m, N'周日101', 'BF', @code, @code, @odds, @at)",
+            lateRows, cancellationToken: ct));
+
+        var bets = new BettingRepository(new SqlConnectionFactory(auditStr));
+        var srcSnap = await bets.GetJcSourceSnapshotAsync(runAt, ct);
+        var snapM6 = srcSnap.FirstOrDefault(x => x.MatchId == M6);
+        checks.Add(("④-13 源快照按 StartedAt 截止：晚于 asOf 的采样不进本轮",
+            srcSnap.Count == 2 && snapM6 is not null && snapM6.OptionKeys.Count == 3
+            && snapM6.LastSampleAt is DateTime at6 && at6 <= runAt,
+            $"源 {srcSnap.Count} 场（应 2）；M6 档位 {(snapM6?.OptionKeys.Count ?? -1)}（应 3）；"
+            + $"最新采样 {snapM6?.LastSampleAt:HH:mm}（应 ≤ {runAt:HH:mm}）"));
 
         // ── 总裁定：报表必须与空跑台账逐项相等 ──
         var milkRep = await milk.GetReportAsync(30, ct);
@@ -449,6 +563,8 @@ public static class MilkIsolatedCheck
             "FbMilkRun", "FbMilkRunDate", "FbPaperTrade", "FbMatch",
             // 榜面读取会联它取「当前固定奖金」（GetDayAsync），不克隆就整页报「对象名无效」。
             "FbJcOddsHistory",
+            // 源侧快照的时间边界用例要造受注卡批次（④-13）。
+            "BettingCard",
             // 补列自愈逻辑会读写它（撤注/告警回写）。不克隆，第一次 Settle 就报「对象不存在」。
             "FbTurnAlert"
         };
@@ -482,7 +598,7 @@ SELECT @sql = @sql + N'ALTER TABLE dbo.' + QUOTENAME(t.name)
 FROM [{prodDb}].sys.default_constraints dc
 JOIN [{prodDb}].sys.tables t ON t.object_id = dc.parent_object_id
 JOIN [{prodDb}].sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
-WHERE t.name IN (N'FbMilkPick',N'FbMilkGate',N'FbMilkProbSnapshot',N'FbMilkInput',N'FbMilkRun',N'FbMilkRunDate',N'FbPaperTrade',N'FbMatch',N'FbTurnAlert');
+WHERE t.name IN (N'FbMilkPick',N'FbMilkGate',N'FbMilkProbSnapshot',N'FbMilkInput',N'FbMilkRun',N'FbMilkRunDate',N'FbPaperTrade',N'FbMatch',N'FbTurnAlert',N'BettingCard');
 IF @sql <> N'' EXEC sp_executesql @sql;");
 
         var auditStr = new SqlConnectionStringBuilder(prod.ConnectionString) { InitialCatalog = AuditDbName }.ConnectionString;

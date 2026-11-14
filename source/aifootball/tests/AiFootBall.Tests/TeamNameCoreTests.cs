@@ -73,6 +73,45 @@ public class TeamNameCoreTests
     }
 
     [Fact]
+    public void ReserveTeamIsNeverMatchedForSeniorQuery()
+    {
+        // 2026-11-14 实测的两条误配：库内一线队没样本时，唯一核心名是梯队，
+        // 「全库唯一」就把一线队配成了梯队。唯一性只保证不猜，不保证是同一支队。
+        //   不来梅 → JFV不来梅U19
+        //   谢周三 → 谢周三U21
+        var model = Model(("JFV不来梅U19", "奥格斯堡青年队"), ("谢周三U21", "女王公园巡游者U21"));
+        Assert.Null(model.Resolve("德甲", "不来梅"));
+        Assert.Null(model.Resolve("英锦标赛", "谢周三"));
+    }
+
+    [Fact]
+    public void ExplicitYouthQuery_StillResolvesYouthTeam()
+    {
+        // 反向不能误伤：查询名自己带梯队标记时，队内精确命中照旧——
+        // 修的是「一线队被配成梯队」，不是「不许用梯队」。
+        var model = Model(("JFV不来梅U19", "奥格斯堡青年队"), ("谢周三U21", "女王公园巡游者U21"));
+        Assert.Equal("谢周三U21", model.Resolve("英锦标赛", "谢周三U21"));
+        Assert.Equal("JFV不来梅U19", model.Resolve("德甲", "JFV不来梅U19"));
+    }
+
+    [Fact]
+    public void DifferentYouthLevels_DoNotMerge()
+    {
+        // U19 与 U21 是两支不同的队：核心名相同，但标记不同，不能互配。
+        var model = Model(("谢周三U21", "女王公园巡游者U21"), ("谢周三U19", "女王公园巡游者U19"));
+        Assert.Null(model.Resolve("英锦标赛", "谢周三U23"));
+    }
+
+    [Fact]
+    public void CoreKey_StripsReserveMarks_WhichIsWhyIdentityGateExists()
+    {
+        // 核心名会把 U21 一起抹掉——所以「核心名相等」本身不能作为身份判据，
+        // 必须另加梯队标记与 ASCII 记号两道闸（见 ScorelineModel.Resolve）。
+        Assert.Equal(TeamNames.CoreKey("谢周三"), TeamNames.CoreKey("谢周三U21"));
+        Assert.Equal(TeamNames.CoreKey("大宫松鼠"), TeamNames.CoreKey("大宫松鼠RB"));
+    }
+
+    [Fact]
     public void CoreKey_StripsOnlyAsciiMarkers()
     {
         Assert.Equal("大宫松鼠", TeamNames.CoreKey("大宫松鼠RB"));

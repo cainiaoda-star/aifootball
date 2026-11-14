@@ -408,9 +408,25 @@ public sealed class ScorelineModel
         // 2026-11-14 在它之前插一步「核心名」比对（1419319 大宫松鼠RB 事件）：
         // 子序列只允许**查询名比库内名短**（`cand.Length <= shortName.Length` 直接跳过），
         // 竞彩给队名加赞助商后缀时查询名反而更长，前面几步全不命中 → 整场丢失。
-        // 核心名只做一件事：去掉 ASCII 标记后一字不差才算同一支队，且必须先在全库唯一。
-        // 有歧义（如同一核心名对应一线队与青年队）一律返回 null —— 宁可丢场，不猜错队。
-        if (_globalCore.TryGetValue(TeamNames.CoreKey(n), out var coreName) && coreName.Length > 0)
+        // 核心名只做一件事：去掉 ASCII 标记后一字不差，且必须先在全库唯一。
+        //
+        // **全库唯一 ≠ 身份正确**（2026-11-14 第八轮，用户点名）：库里「不来梅」一线队没有样本时，
+        // 唯一核心名是两个梯队「JFV不来梅U19」，于是「不来梅」被配成 U19；
+        // 「谢周三」同样被配成「谢周三U21」。唯一性只保证不猜，不保证是同一支队。
+        // 所以这里再加两道身份闸（都只在核心名这一步判，不影响上面的既有链路）：
+        //   ① 梯队身份必须**相等**：查询名不带青年/后备/女足标记时绝不接受梯队候选；
+        //      查询名自己带标记时也只认同一个标记（谢周三U21 ≠ 谢周三U19）。
+        //      实测能正确匹配到青年队靠的是上面的精确/别名步，不靠这条兜底。
+        //   ② 候选多出来的 ASCII 记号视为身份标记（U21 / II / B / JFV），查询名里没有就不认。
+        //      必须用**原始名**比：核心名把 ASCII 全去掉了，正好盖住这一层信息。
+        //      方向很关键——查询名多 RB（大宫松鼠RB）是允许的赞助商后缀；
+        //      候选名多 U21（谢周三 → 谢周三U21）是另一支队，必须拒绝。
+        var qCore = TeamNames.CoreKey(n);
+        if (qCore.Length > 0
+            && _globalCore.TryGetValue(qCore, out var coreName)
+            && coreName.Length > 0
+            && string.Equals(ReserveMark(n), ReserveMark(coreName), StringComparison.Ordinal)
+            && AsciiMarks(coreName).IsSubsetOf(AsciiMarks(n)))
             return coreName;
 
         if (!_globalAlias.TryGetValue(n, out var cached))
@@ -463,11 +479,36 @@ public sealed class ScorelineModel
     }
 
     /// <summary>青年队 / 后备队 / B 队 / 女足这类附属队。它们和一线队是两套数据，不能混。</summary>
-    private static bool IsReserveOrYouth(string name)
+    private static bool IsReserveOrYouth(string name) => ReserveMark(name).Length > 0;
+
+    /// <summary>
+    /// 命中的梯队标记（没命中返回空串）。返回具体标记而不只是 true/false，
+    /// 是因为「谢周三U21」和「谢周三U19」是两支不同的队——只判「都是梯队」会把它们混起来。
+    /// </summary>
+    private static string ReserveMark(string name)
     {
         foreach (var mark in ReserveMarks)
-            if (name.Contains(mark, StringComparison.Ordinal)) return true;
-        return false;
+            if (name.Contains(mark, StringComparison.Ordinal)) return mark;
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// 队名里的 ASCII 记号集合（小写），如 `大宫松鼠RB` → {rb}、`谢周三U21` → {u21}。
+    /// 用于核心名兜底前的身份闸：候选多出来的记号（U21/II/B/JFV）不能凭空带进来。
+    /// </summary>
+    private static HashSet<string> AsciiMarks(string name)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        var sb = new System.Text.StringBuilder(4);
+        foreach (var ch in name)
+        {
+            if (ch >= 'A' && ch <= 'Z') { sb.Append((char)(ch + 32)); continue; }
+            if (ch >= 'a' && ch <= 'z') { sb.Append(ch); continue; }
+            if (ch >= '0' && ch <= '9') { sb.Append(ch); continue; }
+            if (sb.Length > 0) { set.Add(sb.ToString()); sb.Clear(); }
+        }
+        if (sb.Length > 0) set.Add(sb.ToString());
+        return set;
     }
 
     private static readonly string[] ReserveMarks =

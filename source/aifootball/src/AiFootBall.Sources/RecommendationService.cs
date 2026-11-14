@@ -958,7 +958,10 @@ public sealed class RecommendationService
         try
         {
             var beijing = RecommendationSelection.JcSaleHours.Now();
-            source = (await _repo.GetJcSourceSnapshotAsync(ct))
+            // `runAt` 就是下面写进 `FbMilkRun.StartedAt` 的那个时刻，源快照按它截止
+            // （2026-11-14 第八轮）：不加这个边界，下一轮或事后补采的赔率会补进上一轮的「应有场次」，
+            // 于是「那一轮到底该有几场」永远无法复现。
+            source = (await _repo.GetJcSourceSnapshotAsync(runAt, ct))
                 .Where(m => RecommendationSelection.JcSaleHours.Sellable(m.MatchNo, m.MatchTime, beijing))
                 .Select(m =>
                 {

@@ -619,18 +619,13 @@ public static class MilkPickEngine
     /// 竞彩每个玩法的档数是固定的（比分 31 / 半全场 9 / 总进球 8 / 胜平负 3）。
     /// 快照抓到的档数不足，说明生成推荐时盘口还没开全：这时拿「全档的水位」去水会把
     /// 仅有的几档隐含概率放大（分母是全档，分子只有几档的 1/赔率），必须退回纯模型概率。
+    ///
+    /// 档数一律取 <see cref="JcPlayDomain"/>（2026-11-14 第八轮）：这个数原来在引擎里写一份、
+    /// 发布核对要用的档位域又要写一份，两处各写一份就是下一次「口径不一致」的种子。
     /// </summary>
     public static bool SnapshotComplete(IEnumerable<JcOddsHistoryPoint> points, string playType)
     {
-        var expected = playType switch
-        {
-            JcPlayTypes.Bf => 31,
-            JcPlayTypes.Bq => 9,
-            JcPlayTypes.Jq => 8,
-            JcPlayTypes.Spf => 3,
-            JcPlayTypes.Nspf => 3,
-            _ => 0
-        };
+        var expected = JcPlayDomain.Size(playType);
         if (expected == 0) return false;
         return DistinctOptionCount(points, playType) >= expected;
     }
