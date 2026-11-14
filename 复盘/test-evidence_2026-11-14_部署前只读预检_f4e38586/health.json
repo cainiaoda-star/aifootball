@@ -1,0 +1,8 @@
+{
+    "status":  "ok",
+    "time":  "2026-11-14T20:52:43.1977036+08:00",
+    "schedulerTickSecondsAgo":  11.2,
+    "stalled":  false,
+    "build":  "1.0.0.0+010b1ad0",
+    "uptimeSeconds":  7755
+}
