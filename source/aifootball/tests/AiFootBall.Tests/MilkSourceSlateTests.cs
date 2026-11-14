@@ -52,10 +52,11 @@ public class MilkSourceSlateTests
             }).ToList()
         };
 
-    private static MilkInputRejection Rej(long id, string no, string reason, string evidence)
+    private static MilkInputRejection Rej(long id, string no, string reason, string evidence,
+        string home = "大宫松鼠RB", string away = "山形山神")
         => new()
         {
-            MatchId = id, MatchNo = no, HomeTeam = "大宫松鼠RB", AwayTeam = "山形山神",
+            MatchId = id, MatchNo = no, HomeTeam = home, AwayTeam = away,
             Reason = reason, Evidence = evidence
         };
 
@@ -100,13 +101,79 @@ public class MilkSourceSlateTests
             Rej(1, "周六002", MilkInputRejection.ReasonNameUnresolved, "team=首次出现FC;league=日职乙;games=0;min=5")
         };
 
-        var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt, _ => 0);
+        // 两条独立否定都成立：0 场 + 变体探查也没查到相近写法。
+        var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt,
+            _ => 0, nameVariants: _ => Array.Empty<string>());
 
         Assert.True(r.Ok, r.Detail);
         var one = Assert.Single(r.Rejections);
         Assert.Equal(MilkInputRejection.ReasonNewTeam, one.Reason);
         Assert.True(one.Accepted);
         Assert.Contains("dbGames=0", one.Evidence);
+        Assert.Contains("variants=0", one.Evidence);
+    }
+
+    [Fact]
+    public void SelfDeclaredNewTeam_IsNotTrusted()
+    {
+        // 上一版 `new-team` 在规则表里是 Accepted=true —— 调用方自己写一句就能跳过两道库检，
+        // 与 `engine-skipped` 同一种病（自报即自证）。现在自报按 name-unresolved 重走判定：
+        // 库里有 39 场就不是新队，哪怕它自己写的是 new-team。
+        var source = new[] { Src(1, "周六002", "大宫松鼠RB", "山形山神") };
+        var rejects = new[]
+        {
+            Rej(1, "周六002", MilkInputRejection.ReasonNewTeam, "team=大宫松鼠RB;games=0;min=5")
+        };
+
+        var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt,
+            _ => 39, nameVariants: _ => Array.Empty<string>());
+
+        Assert.False(r.Ok);
+        Assert.Contains(r.Issues, i => i.Kind == "rejected-rejection" && i.Key.Contains("39"));
+        Assert.DoesNotContain(r.Rejections, x => x.Accepted);
+    }
+
+    [Fact]
+    public void NameUnresolved_ZeroGames_WithoutVariantProbe_IsRejected()
+    {
+        // ★ 这一轮的核心判据（2026-11-14 第十一轮）：**零计数不能证明是真新队**。
+        // 「谢周三」按本名查是 0 场，「谢菲尔德星期三」是 74 场——同一个零把两件事判成一件事。
+        // 所以只报 games=0、不做变体探查时，一律按「无法证明」阻断，不许放行。
+        var source = new[] { Src(1, "周六002", "某新队", "山形山神") };
+        var rejects = new[]
+        {
+            Rej(1, "周六002", MilkInputRejection.ReasonNameUnresolved, "team=某新队;league=日职乙;games=0;min=5",
+                home: "某新队", away: "山形山神")
+        };
+
+        var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt, _ => 0);
+
+        Assert.False(r.Ok);
+        Assert.Contains(r.Issues, i => i.Kind == "rejected-rejection" && i.Key.Contains("未做队名变体探查"));
+        Assert.DoesNotContain(r.Rejections, x => x.Accepted);
+    }
+
+    [Fact]
+    public void NameUnresolved_ZeroGames_ButVariantExists_IsRejected()
+    {
+        // 同一个真实形态：队名写法不同 → 按本名查 0 场，库内却有同一身份的另一种写法。
+        // 零计数在这里是**名字缺陷的影子**，不是「新队」的证据。
+        var source = new[] { Src(1, "周六002", "不来梅", "奥格斯堡") };
+        var rejects = new[]
+        {
+            Rej(1, "周六002", MilkInputRejection.ReasonNameUnresolved, "team=不来梅;league=德甲;games=0;min=5",
+                home: "不来梅", away: "奥格斯堡")
+        };
+
+        var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt,
+            _ => 0,
+            nameVariants: n => n == "不来梅" ? new[] { "云达不莱梅" } : Array.Empty<string>());
+
+        Assert.False(r.Ok);
+        var issue = Assert.Single(r.Issues, i => i.Kind == "rejected-rejection");
+        Assert.Contains("相近写法", issue.Key);
+        Assert.Contains("云达不莱梅", issue.Key);
+        Assert.DoesNotContain(r.Rejections, x => x.Accepted);
     }
 
     [Fact]

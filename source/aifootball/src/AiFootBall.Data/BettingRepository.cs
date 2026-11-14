@@ -76,6 +76,63 @@ public sealed class BettingRepository
     }
 
     /// <summary>
+    /// 第二条独立事实（2026-11-14 第十一轮）：这些写法在库内有没有**同一身份的相近写法**。
+    ///
+    /// 为什么场次计数不够（用户点名的判据）：「0 场」只说明用**这个名字**查不到，
+    /// 而 `name-unresolved` 的成因本来就是「同一个队换了个写法」——
+    /// `谢周三` 按本名查 0 场、`谢菲尔德星期三` 74 场，同一个零把两件事判成一件。
+    /// 所以放行「真新队」之前还要证明：库里不存在「包含这个名字」的另一支队（同身份）。
+    ///
+    /// 能抓的：前缀/冠名/全称包裹简称（`云达不莱梅` ⊃ `不来梅`、`大宫松鼠` ⊂ `大宫松鼠RB`）。
+    /// 抓不到的：改字（`不来梅`/`不莱梅`）与纯缩写（`谢周三`/`谢菲尔德星期三`）——
+    /// 字符串包含关系表达不了，只能靠 <see cref="TeamAliases"/> 人工登记。
+    /// 所以这是**必要证据，不是充分证据**；它缺失时一律按「无法证明」阻断。
+    ///
+    /// 身份闸与解析同一个函数：`谢周三U21`/`云达不莱梅女足` 不会被算成「同一支队换了写法」。
+    /// </summary>
+    public async Task<Dictionary<string, IReadOnlyList<string>>> GetTeamNameVariantsAsync(
+        IEnumerable<string> names, int months = MilkThresholds.TeamHistoryMonths, CancellationToken ct = default)
+    {
+        var result = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        var queries = (names ?? Array.Empty<string>())
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Select(n => n!.Trim())
+            .Where(n => TeamNames.CoreKey(n).Length >= 2)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (queries.Count == 0) return result;
+
+        await using var conn = await _factory.OpenAsync(ct);
+        foreach (var q in queries)
+        {
+            // 先按规范名去找：别名登记过的写法（`不来梅` → `云达不莱梅`）在这里就命中。
+            var core = TeamNames.CoreKey(q);
+            var pat = TeamNames.ContainsPattern(core);
+            var rows = (await conn.QueryAsync<string>(new CommandDefinition(
+                @"SELECT DISTINCT name FROM (
+                      SELECT HomeTeamName AS name FROM dbo.FbMatch
+                       WHERE MatchTime >= DATEADD(month, -@months, SYSDATETIME())
+                         AND HomeTeamName LIKE @pat
+                      UNION ALL
+                      SELECT AwayTeamName AS name FROM dbo.FbMatch
+                       WHERE MatchTime >= DATEADD(month, -@months, SYSDATETIME())
+                         AND AwayTeamName LIKE @pat
+                  ) t
+                  WHERE name IS NOT NULL AND name <> @q",
+                new { months, pat, q }, cancellationToken: ct))).ToList();
+
+            // 同理用同一个身份闸：核心名相等不等于同一支队（梯队是另一支队）。
+            result[q] = rows
+                .Where(r => TeamNames.SameIdentity(q, r))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(r => r, StringComparer.Ordinal)
+                .ToList();
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// 源侧快照（2026-11-14 第七轮加）：本轮开始时**在售卡里有哪些场、各自的赔率采到哪一刻、有哪些档**。
     ///
     /// 存在的理由（用户 11-14 明确要求）：发布前的「预期场次」不能取自引擎自己写的输入凭证

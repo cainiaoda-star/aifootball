@@ -509,6 +509,52 @@ public static class MilkIsolatedCheck
             + $"归一 {beforeNorm:0.000000}→{afterNorm:0.000000}；完整 {beforeComplete}→{afterComplete}；"
             + $"不加边界看到 SPF|3 = {spf3Any?.Odds}（应 1.55）"));
 
+        // ── ④-15 别名补齐后：库检命中一线队、不混梯队（2026-11-14 第十一轮） ──
+        //
+        // 用户点名「零计数不能证明是真新队」。这条判据的前半段（场次）走的是**真实 SQL 链路**：
+        // 竞彩简称 → 别名表 → 核心名 → `LIKE` 检索 → 身份闸。任何一环把梯队并进来，
+        // 「0 场」或「31 场」就会被当成判新队的依据，而这正是「谢周三 0 场 / 谢菲尔德星期三 74 场」
+        // 在同一个零下被混为一谈的原因。
+        //
+        // 造量刻意让梯队更多：谢菲尔德星期三 4 场、谢菲尔德星期三U21 6 场（核心名相同，只能靠身份闸挡）；
+        // 云达不莱梅 3 场、云达不莱梅U19 4 场；不莱梅港 6 场（另一家俱乐部，连名字都不该命中）。
+        var aliasDay = DateTime.Today.AddDays(-5).AddHours(20);
+        async Task SeedAliasAsync(string team, int count, long firstId)
+            => await c.ExecuteAsync(new CommandDefinition(
+                @"INSERT INTO dbo.FbMatch (MatchId, MatchTime, HomeScore, AwayScore, Status, HomeTeamName, AwayTeamName)
+                  VALUES (@id, @mt, 1, 0, 3, @h, N'审计对手')",
+                Enumerable.Range(0, count).Select(i => new
+                {
+                    id = firstId + i, mt = aliasDay.AddHours(i), h = team
+                }), cancellationToken: ct));
+
+        await SeedAliasAsync("谢菲尔德星期三", 4, 900000301);
+        await SeedAliasAsync("谢菲尔德星期三U21", 6, 900000311);
+        await SeedAliasAsync("谢周三U21", 5, 900000321);
+        await SeedAliasAsync("云达不莱梅", 3, 900000331);
+        await SeedAliasAsync("云达不莱梅U19", 4, 900000341);
+        await SeedAliasAsync("不莱梅港", 6, 900000351);
+
+        var gamesByAlias = await bets.GetRecentTeamGamesAsync(new[] { "谢周三", "不来梅", "谢周三U21" }, ct: ct);
+        var variantsByAlias = await bets.GetTeamNameVariantsAsync(
+            new[] { "谢周三", "不来梅", "全新测试FC" }, ct: ct);
+
+        checks.Add(("④-15 别名库检：简称命中一线队场次，梯队与邻居俱乐部不并入",
+            gamesByAlias.GetValueOrDefault("谢周三") == 4
+            && gamesByAlias.GetValueOrDefault("不来梅") == 3
+            && gamesByAlias.GetValueOrDefault("谢周三U21") == 5,
+            $"谢周三={gamesByAlias.GetValueOrDefault("谢周三")}（应 4，梯队 6 场不许并）"
+            + $"；不来梅={gamesByAlias.GetValueOrDefault("不来梅")}（应 3）"
+            + $"；谢周三U21={gamesByAlias.GetValueOrDefault("谢周三U21")}（应 5，反向不误伤）"));
+
+        checks.Add(("④-15b 变体探查：查到相近写法，梯队不算；没查到的返回空而非 null",
+            variantsByAlias.GetValueOrDefault("谢周三") is { Count: 1 } v1 && v1[0] == "谢菲尔德星期三"
+            && variantsByAlias.GetValueOrDefault("不来梅") is { Count: 1 } v2 && v2[0] == "云达不莱梅"
+            && variantsByAlias.GetValueOrDefault("全新测试FC") is { Count: 0 },
+            $"谢周三→[{string.Join(",", variantsByAlias.GetValueOrDefault("谢周三") ?? Array.Empty<string>())}]"
+            + $"；不来梅→[{string.Join(",", variantsByAlias.GetValueOrDefault("不来梅") ?? Array.Empty<string>())}]"
+            + $"；全新测试FC→{variantsByAlias.GetValueOrDefault("全新测试FC")?.Count ?? -1} 条（应 0，不是 null）"));
+
         // ── 总裁定：报表必须与空跑台账逐项相等 ──
         var milkRep = await milk.GetReportAsync(30, ct);
         var paperRep = await paper.GetReportAsync(30, ct);

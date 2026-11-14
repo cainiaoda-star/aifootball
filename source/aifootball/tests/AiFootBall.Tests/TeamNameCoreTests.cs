@@ -79,6 +79,9 @@ public class TeamNameCoreTests
         // 「全库唯一」就把一线队配成了梯队。唯一性只保证不猜，不保证是同一支队。
         //   不来梅 → JFV不来梅U19
         //   谢周三 → 谢周三U21
+        //
+        // 第十一轮加了这两条别名之后结论不变、理由更强：别名指向的**一线队不在库内**时，
+        // 仍然只许返回「认不出」，不许退回去拿梯队顶替（正例见 Alias_ResolvesToSeniorTeam_NotReserveTeam）。
         var model = Model(("JFV不来梅U19", "奥格斯堡青年队"), ("谢周三U21", "女王公园巡游者U21"));
         Assert.Null(model.Resolve("德甲", "不来梅"));
         Assert.Null(model.Resolve("英锦标赛", "谢周三"));
@@ -107,8 +110,63 @@ public class TeamNameCoreTests
     {
         // 核心名会把 U21 一起抹掉——所以「核心名相等」本身不能作为身份判据，
         // 必须另加梯队标记与 ASCII 记号两道闸（见 ScorelineModel.Resolve）。
-        Assert.Equal(TeamNames.CoreKey("谢周三"), TeamNames.CoreKey("谢周三U21"));
+        // 注意别再拿「谢周三/谢周三U21」举例（2026-11-14 第十一轮）：
+        // 「谢周三」现在有别名（→ 谢菲尔德星期三），Key 会先过别名表，两个核心名就不再相等。
+        Assert.Equal(TeamNames.CoreKey("帕丘卡"), TeamNames.CoreKey("帕丘卡III"));
         Assert.Equal(TeamNames.CoreKey("大宫松鼠"), TeamNames.CoreKey("大宫松鼠RB"));
+    }
+
+    // ─────────── 别名补齐（2026-11-14 第十一轮）：解析与计数都要命中一线队 ───────────
+    //
+    // 两条都先做了独立库检（FbMatch 近 18 个月，Status=3）：
+    //   谢菲尔德星期三 74 场 / 库里没有「谢周三」，只有 谢周三U21 31、谢周三U18 1（梯队）
+    //   云达不莱梅 58 场 / 同前缀的 青年队 52、女足 48、U19 34、C队 2、JFV不来梅U19 1、
+    //   不莱梅港 48（另一家俱乐部）
+    // 别名只指向一线队；梯队能不能被挡住，仍然由 SameIdentity 决定。
+
+    [Fact]
+    public void Alias_MapsShortNameToSeniorTeam()
+    {
+        Assert.Equal("谢菲尔德星期三", TeamAliases.Canonical("谢周三"));
+        Assert.Equal("云达不莱梅", TeamAliases.Canonical("不来梅"));
+
+        // 计数用的键必须一起收敛，否则「解析认出来了、计数仍是 0」——正是 name-unresolved 的形态。
+        Assert.Equal(TeamNames.CoreKey("谢菲尔德星期三"), TeamNames.CoreKey("谢周三"));
+        Assert.Equal(TeamNames.CoreKey("云达不莱梅"), TeamNames.CoreKey("不来梅"));
+    }
+
+    [Fact]
+    public void Alias_ResolvesToSeniorTeam_NotReserveTeam()
+    {
+        // 一线队与梯队同时在库：别名必须落在**一线队**上。
+        var model = Model(
+            ("谢菲尔德星期三", "女王公园巡游者"), ("谢菲尔德星期三", "女王公园巡游者"),
+            ("谢周三U21", "女王公园巡游者U21"),
+            ("云达不莱梅", "奥格斯堡"),
+            ("JFV不来梅U19", "奥格斯堡青年队"));
+
+        Assert.Equal("谢菲尔德星期三", model.Resolve("日职乙", "谢周三"));
+        Assert.Equal("云达不莱梅", model.Resolve("日职乙", "不来梅"));
+
+        // 计数也必须命中一线队那一份：6 场（两次 extra）对梯队的 3 场。
+        Assert.Equal(6, model.TeamGames("日职乙", "谢周三"));
+        Assert.Equal(3, model.TeamGames("日职乙", "谢周三U21"));
+        Assert.Equal(3, model.TeamGames("日职乙", "不来梅"));
+    }
+
+    [Fact]
+    public void Alias_DoesNotMergeReserveOrNeighbourClub()
+    {
+        // 别名是把「简称」接到一线队，不是放宽身份：梯队与另一家俱乐部一条都不许并进来。
+        Assert.False(TeamNames.SameIdentity("谢周三", "谢周三U21"));
+        Assert.False(TeamNames.SameIdentity("谢周三", "谢周三U18"));
+        Assert.False(TeamNames.SameIdentity("不来梅", "JFV不来梅U19"));
+        Assert.False(TeamNames.SameIdentity("不来梅", "云达不莱梅U19"));
+        Assert.False(TeamNames.SameIdentity("不来梅", "云达不莱梅女足"));
+        Assert.False(TeamNames.SameIdentity("不来梅", "云达不莱梅青年队"));
+        // 不莱梅港是另一家俱乐部：核心名不同，计数时被 CoreKey 挡掉（同身份判据管不了这一层）。
+        Assert.NotEqual(TeamNames.CoreKey("不来梅"), TeamNames.CoreKey("不莱梅港"));
+        Assert.NotEqual(TeamNames.CoreKey("不来梅"), TeamNames.CoreKey("联合不莱梅"));
     }
 
     [Fact]

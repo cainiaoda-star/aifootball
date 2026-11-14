@@ -1295,20 +1295,32 @@ public sealed class RecommendationService
             .Distinct(StringComparer.Ordinal)
             .ToList();
         Dictionary<string, int> games = new(StringComparer.Ordinal);
+        Dictionary<string, IReadOnlyList<string>> variants = new(StringComparer.Ordinal);
         if (unresolved.Count > 0)
         {
             try { games = await _repo.GetRecentTeamGamesAsync(unresolved, ct: ct); }
             catch (OperationCanceledException) { throw; }
             catch { games = new(StringComparer.Ordinal); }   // 查不到 → 全部按「无法证明」处理
+
+            // 第二条独立事实（2026-11-14 第十一轮）：0 场不能单独证明「真新队」，
+            // 还必须证明库里没有同一身份的相近写法。查不到 → 空字典 → 核对器按「未做探查」阻断。
+            try { variants = await _repo.GetTeamNameVariantsAsync(unresolved, ct: ct); }
+            catch (OperationCanceledException) { throw; }
+            catch { variants = new(StringComparer.Ordinal); }
         }
         var gamesSnapshot = games;
+        var variantsSnapshot = variants;
         var sourceReport = MilkSourceSlate.Verify(
             source, build.Inputs, build.Rejections, runAt,
             name => !string.IsNullOrWhiteSpace(name) && gamesSnapshot.TryGetValue(name!.Trim(), out var n) ? n : -1,
             // 门槛只有一份（2026-11-14 第九轮）：核对器这里的值曾经是 5、引擎出票门槛是 3，
             // 一支 4 场样本的队会被引擎算进来、又被核对器当「真新队」放行。
             // 现在两边都读 `MilkThresholds.MinTeamGames`（= 引擎线上实际生效的 3）。
-            minTeamGames: MilkThresholds.MinTeamGames);
+            minTeamGames: MilkThresholds.MinTeamGames,
+            // 变体探查：null 表示这一项没做成（与「查到 0 条」是两件事），核对器据此判「无法证明」。
+            nameVariants: name => !string.IsNullOrWhiteSpace(name) && variantsSnapshot.TryGetValue(name!.Trim(), out var v)
+                ? v
+                : null);
         pre.AddRange(sourceReport.Issues);
         if (!string.IsNullOrWhiteSpace(sourceError))
             pre.Add(new MilkLedgerIssue

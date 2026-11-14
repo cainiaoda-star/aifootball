@@ -154,13 +154,20 @@ public sealed class MilkInputRejection
             Accepted = false,
             Condition = "无正当条件（引擎自己认不出不等于该队没有样本）",
             RejectNote = "name-unresolved 不接受：须由核对器用独立库检证明该队在近 18 个月确无样本，"
-                         + "否则这是队名归一化缺陷（1419319 即此形态）"
+                         + "且库内不存在同一身份的相近写法，否则这是队名归一化缺陷（1419319 即此形态）"
         },
         new()
         {
             Reason = ReasonNewTeam,
             EvidencePrefix = "team=",
-            Condition = "核对器独立库检确认该队在库内近 18 个月样本 < 出注门槛（真新队/首次出现）"
+            // ★ 只能由核对器升级产生（2026-11-14 第十一轮）：上一版这里是 Accepted=true，
+            // 于是调用方只要自己写 `new-team` 就能跳过两道库检——「自报即自证」，
+            // 与 `engine-skipped` 同一种病。现在自报一律按 name-unresolved 重走判定；
+            // 核对器自己升级出来的那条会带上 dbGames/variants，走的是同一条判定后的结果。
+            Accepted = false,
+            Condition = "由核对器独立库检升级：库内近 18 个月样本 < 出注门槛，且不存在同一身份的相近写法",
+            RejectNote = "new-team 不接受自报：真新队只能由核对器用两次独立查询得出，"
+                         + "调用方自己声明等于用结论证明结论"
         },
         new()
         {
@@ -263,8 +270,9 @@ public sealed class MilkSourceReport
 /// 判据（每条都能机器核验）：
 ///   ① 源里每一场，必须要么有输入凭证、要么有拒绝记录；两者都有或都没有都判失败；
 ///   ② 拒绝记录必须是枚举内的原因 + 证据前缀相符；
-///   ③ `name-unresolved` 只有在该队近 18 个月样本 **低于出注门槛** 时才算真新队
-///      （由调用方用独立查询判定，不看引擎结论）；
+///   ③ `name-unresolved` 只有在该队近 18 个月样本 **低于出注门槛**、
+///      且库里**不存在同一身份的相近写法**时才算真新队
+///      （由调用方用独立查询判定，不看引擎结论；两道都成立才放行，见 <c>Verify</c> 内注释）；
 ///   ④ 算过的场次，其最新赔率采样不得超龄（默认 30 分钟）；超龄即「历史赔率不等于本轮有效」；
 ///   ⑤ 算过的场次，源侧每一个档位都必须出现在输入凭证的档位清单里——
 ///      少一档同样是「引擎少算」，不能靠「预期=输入」自动通过；
@@ -308,6 +316,11 @@ public static class MilkSourceSlate
     /// 独立库检：给定队名，返回该队近 18 个月的完赛场次。空/为 null 时视为**无法证明**，
     /// `name-unresolved` 一律不接受（宁可少发一轮，也不把「认不出」当「新队」）。
     /// </param>
+    /// <param name="nameVariants">
+    /// 第二条独立事实（2026-11-14 第十一轮）：给定队名，返回库内**同一身份、名字相近**的写法
+    /// （按 <see cref="TeamNames.SameIdentity"/> 过滤，梯队不算）。返回 null = 这项探查没做/查不到，
+    /// 与「查到 0 条」是两件事——**没做探查不能当没找到**。
+    /// </param>
     public static MilkSourceReport Verify(
         IReadOnlyList<MilkSourceMatch>? source,
         IReadOnlyList<MilkInputMatch>? inputs,
@@ -315,7 +328,8 @@ public static class MilkSourceSlate
         DateTime runAt,
         Func<string?, int>? teamGames = null,
         int minTeamGames = DefaultMinTeamGames,
-        TimeSpan? maxSampleAge = null)
+        TimeSpan? maxSampleAge = null,
+        Func<string?, IReadOnlyList<string>?>? nameVariants = null)
     {
         var src = (source ?? Array.Empty<MilkSourceMatch>()).Where(m => m.MatchId > 0).ToList();
         var ins = (inputs ?? Array.Empty<MilkInputMatch>()).Where(m => m.MatchId > 0).ToList();
@@ -378,7 +392,6 @@ public static class MilkSourceSlate
         foreach (var r in rej)
         {
             var defect = r.Defect;
-            var games = -1;
 
             // `name-unresolved` 不能靠引擎自证：名称认不出恰恰说明引擎那套名字解析在这个名字上失效了。
             // 唯一独立的问题是「库里到底有没有这支队」，所以这里只认独立库检的场次。
@@ -386,12 +399,13 @@ public static class MilkSourceSlate
             // 注意判据顺序：这条原因本身是 `Accepted=false`（默认不放行），
             // 所以不能先看 `Defect`——那会直接拿到「不接受」的说明，永远走不到库检。
             // 只有**证据格式成立**时才进入独立判定，否则照样按格式缺陷报。
-            if (string.Equals(r.Reason, MilkInputRejection.ReasonNameUnresolved, StringComparison.Ordinal)
+            if ((string.Equals(r.Reason, MilkInputRejection.ReasonNameUnresolved, StringComparison.Ordinal)
+                 || string.Equals(r.Reason, MilkInputRejection.ReasonNewTeam, StringComparison.Ordinal))
                 && r.EvidenceOk)
             {
-                games = teamGames?.Invoke(r.HomeTeam) ?? -1;
+                var homeGames = teamGames?.Invoke(r.HomeTeam) ?? -1;
                 var awayGames = teamGames?.Invoke(r.AwayTeam) ?? -1;
-                var known = Math.Max(games, awayGames);
+                var known = Math.Max(homeGames, awayGames);
                 if (known < 0)
                     defect = "无法证明是真新队（独立库检不可用）";
                 else if (known >= minTeamGames)
@@ -399,16 +413,41 @@ public static class MilkSourceSlate
                              + "属于队名归一化缺陷，不是新队";
                 else
                 {
-                    // 真新队：升级原因为 new-team，并把库检结果写进证据，事后可复核。
-                    final.Add(new MilkInputRejection
+                    // ★ 零计数不能证明是真新队（2026-11-14 第十一轮）：
+                    // `games=0` 只说明「用这个名字查不到」，而 `name-unresolved` 的成因恰恰就是
+                    // 「名字写法不同」——「谢周三」按本名查是 0 场，「谢菲尔德星期三」是 74 场，
+                    // 同一个零把它们判成同一件事。所以还要一条独立事实：库内不存在同一身份的
+                    // 相近写法。两条都成立才升级为 new-team；探查没做/查不到一律按「无法证明」阻断。
+                    var similar = new List<string>();
+                    var probed = nameVariants is not null;
+                    foreach (var (name, gamesOfSide) in new[] { (r.HomeTeam, homeGames), (r.AwayTeam, awayGames) })
                     {
-                        MatchId = r.MatchId, MatchNo = r.MatchNo, LeagueName = r.LeagueName,
-                        HomeTeam = r.HomeTeam, AwayTeam = r.AwayTeam, SalesDate = r.SalesDate,
-                        Reason = MilkInputRejection.ReasonNewTeam,
-                        Evidence = $"{r.Evidence};dbGames={Math.Max(known, 0)};min={minTeamGames}",
-                        Accepted = true
-                    });
-                    continue;
+                        // 这一侧已经被证明不是新队（>= 门槛）就不再纠结名字；-1 已在上面判死。
+                        if (gamesOfSide < 0 || gamesOfSide >= minTeamGames) continue;
+                        var found = nameVariants?.Invoke(name);
+                        if (found is null) { probed = false; continue; }
+                        foreach (var v in found)
+                            if (!string.IsNullOrWhiteSpace(v)) similar.Add($"{name}≈{v}");
+                    }
+
+                    if (!probed)
+                        defect = "无法证明是真新队（未做队名变体探查）";
+                    else if (similar.Count > 0)
+                        defect = $"队名存疑：库内存在同一身份的相近写法（{string.Join("、", similar.Take(3))}），"
+                                 + "属于队名归一化缺陷，不是新队";
+                    else
+                    {
+                        // 真新队：升级原因为 new-team，并把两次独立查询的结果写进证据，事后可复核。
+                        final.Add(new MilkInputRejection
+                        {
+                            MatchId = r.MatchId, MatchNo = r.MatchNo, LeagueName = r.LeagueName,
+                            HomeTeam = r.HomeTeam, AwayTeam = r.AwayTeam, SalesDate = r.SalesDate,
+                            Reason = MilkInputRejection.ReasonNewTeam,
+                            Evidence = $"{r.Evidence};dbGames={Math.Max(known, 0)};variants=0;min={minTeamGames}",
+                            Accepted = true
+                        });
+                        continue;
+                    }
                 }
             }
 
