@@ -180,6 +180,172 @@ public static class MilkIsolatedCheck
             copies.Count() == 3 && copies.Count(x => x.Hit == true) == 1 && copies.First().Hit is null,
             $"副本 {copies.Count()} 行、已判 {(copies.Count(x => x.Hit == true))} 行、首份 Hit={(copies.FirstOrDefault().Hit is null ? "NULL" : copies.First().Hit.ToString())}"));
 
+        // ── 场景 ④：发布状态机与发布闸（2026-11-14 第七轮） ──
+        //
+        // 这一节验的不是统计口径，而是「什么情况下**不许**发布」：
+        //   缺一场输入 / 缺一档存档 / 概率单位异常 → 发布闸不通过；
+        //   failed / partial 轮次 → 榜面仍指上一成功轮；
+        //   零注但有输入 → 照样发布，且输入与存档必须完整。
+        //
+        // 日期刻意放在 400 天前：`GetReportAsync(30)` 是近 30 天口径，
+        // 放到窗口内会把上面几节的对账数一起改掉，届时分不清是哪一段错了。
+        var d3 = DateTime.Today.AddDays(-400);
+        var runAt = d3.AddHours(12);
+
+        MilkInputMatch Input(long mid, string no, params string[] codes) => new()
+        {
+            MatchId = mid, MatchNo = no, MatchTime = d3.AddHours(20), VersionTag = "dc1|audit",
+            Options = codes.Select(c => new MilkInputOption { PlayType = JcPlayTypes.Spf, OptionCode = c }).ToList()
+        };
+        static MilkProbSnapshot Snap(DateTime d, long mid, string code, decimal pure) => new()
+        {
+            SnapshotDate = d, MatchId = mid, PlayType = JcPlayTypes.Spf, OptionCode = code,
+            Odds = 100m / pure, MarketPct = pure, ModelPctPure = pure, BlendedPct = pure,
+            MarketPriced = true, ModelVersion = "dc1|audit"
+        };
+        MilkSourceMatch Src(long mid, string no) => new()
+        {
+            MatchId = mid, MatchNo = no, LeagueName = "审计联赛", HomeTeam = "主队", AwayTeam = "客队",
+            MatchTime = d3.AddHours(20), SalesDate = d3, LastSampleAt = runAt.AddMinutes(-2),
+            OptionKeys = new[] { "SPF|3", "SPF|1", "SPF|0" }
+        };
+
+        var inputsD = new List<MilkInputMatch> { Input(M1, "周日001", "3", "1", "0"), Input(M2, "周日002", "3", "1", "0") };
+        var sourcesD = new List<MilkSourceMatch> { Src(M1, "周日001"), Src(M2, "周日002") };
+        var snapsD = new List<MilkProbSnapshot>
+        {
+            Snap(d3, M1, "3", 45m), Snap(d3, M1, "1", 27m), Snap(d3, M1, "0", 28m),
+            Snap(d3, M2, "3", 40m), Snap(d3, M2, "1", 30m), Snap(d3, M2, "0", 30m)
+        };
+
+        // RA：完整一轮 → 发布。
+        await milk.StartRunAsync(new MilkRun
+        {
+            RunId = "AUDIT-GATE-A", StartedAt = runAt, RawMatches = 2, SalesDates = new[] { d3 }
+        }, d3, "rewrite", "审计：完整轮", ct);
+        await milk.SaveDayAsync(d3, new List<MilkPick>
+        {
+            new() { MatchId = M1, MatchNo = "周日001", PlayType = JcPlayTypes.Spf, OptionCode = "3", Odds = 2.22m }
+        }, "AUDIT-GATE-A", ct);
+        await milk.SaveInputsAsync(d3, inputsD, "AUDIT-GATE-A", ct);
+        await milk.SaveProbSnapshotsAsync(d3, snapsD, "AUDIT-GATE-A", ct);
+        await milk.SaveSourceAsync("AUDIT-GATE-A", d3, sourcesD, Array.Empty<MilkInputRejection>(), ct);
+        await milk.PublishRunAsync("AUDIT-GATE-A",
+            new[] { new MilkRunDateCount { SalesDate = d3, PickCount = 1 } }, 2, 6, 0, 1, "审计", ct);
+
+        var boardA = await milk.GetDayAsync(d3, ct);
+        checks.Add(("④-1 完整轮发布后榜面指本轮",
+            boardA.Count == 1 && boardA.All(x => x.MatchId == M1),
+            $"榜面 {boardA.Count} 注，MatchId={string.Join(",", boardA.Select(x => x.MatchId))}"));
+
+        // RB：注单写进去了，但标成 failed（模拟「只写成功一部分」）→ 不许顶掉 RA。
+        await milk.StartRunAsync(new MilkRun
+        {
+            RunId = "AUDIT-GATE-B", StartedAt = runAt.AddMinutes(5), RawMatches = 2, SalesDates = new[] { d3 }
+        }, d3, "rewrite", "审计：失败轮", ct);
+        await milk.SaveDayAsync(d3, new List<MilkPick>
+        {
+            new() { MatchId = M2, MatchNo = "周日002", PlayType = JcPlayTypes.Spf, OptionCode = "0", Odds = 3.30m }
+        }, "AUDIT-GATE-B", ct);
+        await milk.CloseRunAsync("AUDIT-GATE-B", MilkRunStatus.Failed, "审计：存档缺一档", 2, 5, 0, 1, ct);
+
+        var boardB = await milk.GetDayAsync(d3, ct);
+        checks.Add(("④-2 failed 轮不覆盖上一成功榜面",
+            boardB.Count == 1 && boardB.All(x => x.MatchId == M1),
+            $"榜面 {boardB.Count} 注，MatchId={string.Join(",", boardB.Select(x => x.MatchId))}"));
+
+        // RC：期号确认但采集不完整 → partial，一行不动。
+        await milk.StartRunAsync(new MilkRun
+        {
+            RunId = "AUDIT-GATE-C", StartedAt = runAt.AddMinutes(10), RawMatches = 2, SalesDates = new[] { d3 }
+        }, d3, "partial", "审计：采集不完整", ct);
+        await milk.CloseRunAsync("AUDIT-GATE-C", MilkRunStatus.Partial, "审计：采集不完整", 2, 6, 0, 0, ct);
+        var boardC = await milk.GetDayAsync(d3, ct);
+        checks.Add(("④-3 partial 轮不覆盖上一成功榜面",
+            boardC.Count == 1 && boardC.All(x => x.MatchId == M1),
+            $"榜面 {boardC.Count} 注，MatchId={string.Join(",", boardC.Select(x => x.MatchId))}"));
+
+        // ── 发布闸：三类缺陷必须判不通过（判据用真实读回的库内行） ──
+        var vSource = MilkSourceSlate.Verify(sourcesD, inputsD, Array.Empty<MilkInputRejection>(), runAt);
+        checks.Add(("④-4 源 2 场输入 2 场：源侧账本通过",
+            vSource.Ok && vSource.ComputedCount == 2,
+            $"{vSource.Summary}；{vSource.Detail}"));
+
+        var vMissMatch = MilkSourceSlate.Verify(
+            sourcesD, inputsD.Take(1).ToList(), Array.Empty<MilkInputRejection>(), runAt);
+        checks.Add(("④-5 缺一场输入（无拒绝记录）→ 不通过",
+            !vMissMatch.Ok && vMissMatch.Issues.Any(i => i.Kind == "missing-input"),
+            vMissMatch.Detail));
+
+        var expectedSlate = MilkExpectedSlate.Build(inputsD);
+        var readD = await milk.ReadRunLedgerAsync("AUDIT-GATE-A", ct);
+        List<MilkLedgerRow> ActD(string table) => readD.Where(x => x.Table == table)
+            .Select(x => new MilkLedgerRow { Key = x.Key, Count = x.Count }).ToList();
+        var okLedger = MilkRunLedger.Verify(new[]
+        {
+            new MilkLedgerPair { Table = "snapshot", Expected = expectedSlate.Rows, Actual = ActD("snapshot") },
+            new MilkLedgerPair { Table = "input", Expected = MilkRunLedger.FromInputs(inputsD), Actual = ActD("input") }
+        });
+        checks.Add(("④-6 6 档存档逐键对齐：通过",
+            okLedger.Ok, okLedger.Ok ? okLedger.Summary : okLedger.Detail));
+
+        // 删掉一档（M1 的让球? 这里删 SPF 1）→ 同一个核对必须报 missing。
+        await c.ExecuteAsync(new CommandDefinition(
+            @"DELETE FROM dbo.FbMilkProbSnapshot
+              WHERE RunId='AUDIT-GATE-A' AND MatchId=@m AND PlayType=N'SPF' AND OptionCode=N'1'",
+            new { m = M1 }, cancellationToken: ct));
+        var readD2 = await milk.ReadRunLedgerAsync("AUDIT-GATE-A", ct);
+        List<MilkLedgerRow> ActD2(string table) => readD2.Where(x => x.Table == table)
+            .Select(x => new MilkLedgerRow { Key = x.Key, Count = x.Count }).ToList();
+        var missBand = MilkRunLedger.Verify(new[]
+        {
+            new MilkLedgerPair { Table = "snapshot", Expected = expectedSlate.Rows, Actual = ActD2("snapshot") }
+        });
+        checks.Add(("④-7 缺一档存档 → 不通过",
+            !missBand.Ok && missBand.Issues.Any(i => i.Kind == "missing"),
+            missBand.Detail));
+
+        // 概率单位异常：BF 写成 0~1（11-14 生产上的真实形态）。
+        var unitRows = snapsD.Select(x => new MilkProbSnapshot
+        {
+            MatchId = x.MatchId, PlayType = x.PlayType, OptionCode = x.OptionCode,
+            ModelPctPure = x.ModelPctPure, MarketPct = x.MarketPct, BlendedPct = x.BlendedPct
+        }).ToList();
+        unitRows.Add(new MilkProbSnapshot
+        {
+            MatchId = M1, PlayType = JcPlayTypes.Bf, OptionCode = "1:0",
+            Odds = 7m, MarketPct = 14.2m, ModelPctPure = 0.079m, BlendedPct = 13.0m
+        });
+        var unitIssues = MilkProbScale.Verify(unitRows);
+        checks.Add(("④-8 BF 小数当百分数 → 不通过",
+            unitIssues.Any(i => i.Kind == "prob-not-normalized") && unitIssues.Any(i => i.Kind == "unit-mismatch"),
+            unitIssues.Count == 0 ? "未拦截" : string.Join("；", unitIssues.Take(2))));
+
+        // RD：零注但有输入 → 仍然发布，输入/存档/源侧账本都要完整。
+        await milk.StartRunAsync(new MilkRun
+        {
+            RunId = "AUDIT-GATE-D", StartedAt = runAt.AddMinutes(15), RawMatches = 2, SalesDates = new[] { d3 }
+        }, d3, "rewrite", "审计：零注有输入", ct);
+        await milk.SaveDayAsync(d3, new List<MilkPick>(), "AUDIT-GATE-D", ct);
+        await milk.SaveInputsAsync(d3, inputsD, "AUDIT-GATE-D", ct);
+        await milk.SaveProbSnapshotsAsync(d3, snapsD, "AUDIT-GATE-D", ct);
+        var srcRowsD = await milk.SaveSourceAsync("AUDIT-GATE-D", d3, sourcesD, Array.Empty<MilkInputRejection>(), ct);
+        await milk.PublishRunAsync("AUDIT-GATE-D",
+            new[] { new MilkRunDateCount { SalesDate = d3, PickCount = 0 } }, 2, 6, 0, 0, "审计：零注", ct);
+
+        var boardD = await milk.GetDayAsync(d3, ct);
+        var dateRow = await c.QueryFirstOrDefaultAsync<int?>(new CommandDefinition(
+            "SELECT PickCount FROM dbo.FbMilkRunDate WHERE RunId='AUDIT-GATE-D' AND SalesDate=@d",
+            new { d = d3 }, cancellationToken: ct));
+        var readD3 = await milk.ReadRunLedgerAsync("AUDIT-GATE-D", ct);
+        var inputRowsD = readD3.Count(x => x.Table == "input");
+        var snapRowsD = readD3.Count(x => x.Table == "snapshot");
+        var sourceRowsD = readD3.Count(x => x.Table == "source");
+        checks.Add(("④-9 零注但有输入：照样发布且存档完整",
+            boardD.Count == 0 && dateRow == 0 && inputRowsD == 2 && snapRowsD == 6 && srcRowsD == 2 && sourceRowsD == 2,
+            $"榜面 {boardD.Count} 注／RunDate.PickCount={dateRow}；输入 {inputRowsD} 行、存档 {snapRowsD} 档、"
+            + $"源侧账本 {sourceRowsD} 行（写入 {srcRowsD} 行）"));
+
         // ── 总裁定：报表必须与空跑台账逐项相等 ──
         var milkRep = await milk.GetReportAsync(30, ct);
         var paperRep = await paper.GetReportAsync(30, ct);
@@ -281,6 +447,8 @@ public static class MilkIsolatedCheck
         {
             "FbMilkPick", "FbMilkGate", "FbMilkProbSnapshot", "FbMilkInput",
             "FbMilkRun", "FbMilkRunDate", "FbPaperTrade", "FbMatch",
+            // 榜面读取会联它取「当前固定奖金」（GetDayAsync），不克隆就整页报「对象名无效」。
+            "FbJcOddsHistory",
             // 补列自愈逻辑会读写它（撤注/告警回写）。不克隆，第一次 Settle 就报「对象不存在」。
             "FbTurnAlert"
         };
@@ -320,6 +488,11 @@ IF @sql <> N'' EXEC sp_executesql @sql;");
         var auditStr = new SqlConnectionStringBuilder(prod.ConnectionString) { InitialCatalog = AuditDbName }.ConnectionString;
         await using var conn = new SqlConnection(auditStr);
         await conn.OpenAsync(ct);
+        // 源侧账本表由仓储自建（生产上也是第一次落库时才建），所以不在克隆清单里；
+        // 但每次运行要清空，否则上一次的 RunId 会留在里面。
+        await conn.ExecuteAsync(new CommandDefinition(
+            "IF OBJECT_ID(N'dbo.FbMilkSourceMatch', N'U') IS NOT NULL DELETE FROM dbo.FbMilkSourceMatch;",
+            cancellationToken: ct));
         await conn.ExecuteAsync(new CommandDefinition(sql.ToString(), commandTimeout: 180, cancellationToken: ct));
     }
 

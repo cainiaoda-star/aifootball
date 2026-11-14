@@ -10,6 +10,19 @@
 | 2026-11-13 18:20 与 19:04（两次 `audit-check`） | **结构变更**（幂等 DDL，由自检触发） | `FbMilkPick` `+RunId`；`FbMilkGate` `+RunId`；`FbMilkProbSnapshot` `+RunId`；`FbMilkInput` `+RunId`；新建 `FbMilkRun`、`FbMilkInput`、`FbMilkRunDate`；`FbMilkRun` `+Status/+PublishedAt/+FailReason`；`FbMilkPick` 唯一键 `UX_FbMilkPick(Date,MatchId,PlayType,OptionCode)` → `UX_FbMilkPick_Run(+RunId)`；`FbMilkGate` 唯一键 `UX_FbMilkGate(Date,MatchId)` → `UX_FbMilkGate_Run(+RunId)` | 19:04 那次是自检在真库上打出的两条：① 第二轮写同一注撞旧唯一键（2601），② 闸表同场同日只能留一行。不换键就做不到「四表保留历史」 | **未动任何真实数据行**（注单 28 / 闸门 70 / 存档 0 / 输入 0，均为原样）；探针只在 `2090-01-01`。旧接续兼容：仍写 `RunId=NULL` 的旧构建照常可写（唯一键含 NULL 时按 (Date,NULL,Match) 仍唯一）。**未在下表「部署前必须过审批」清单外另行申请** | **否** —— 用户 11-13 指出「这属于数据库结构变更，不能称完全未改库」；此后结构变更一律先登记再执行 |
 | 2026-11-13 19:03 | `DELETE`（自检中断残留） | `2090-01-01` 的 `FbMilkPick 3` / `FbMilkProbSnapshot 3` / `FbMilkInput 1` / `FbMilkGate 3` / `FbMilkRun 3` 行 | 19:02 那次自检在闸表唯一键处抛异常退出，清理段没跑到 | 只删探针日期，真实数据 0 影响；删后该日期残留全 0 | **否（自检探针自身的残留）** —— 属程序探针清理，登记备查 |
 | 2026-11-13 19:30（第四轮返工） | **无数据变更、无结构变更** | — | 发布前逐档核对 / 历史战绩去重口径 / 自检加隔离库守卫 + `finally` 清理 | 只在真库跑了**只读**核对 `milk-ledger-report 30`：近 30 天 28 行全部是升级前 `RunId IS NULL`，旧口径 28/9、新口径 28/9（历史保留 28→28，多副本 0），五条读路径均正常。本次**未执行** `audit-check`——新增守卫会拒绝在生产库（`AiFootBall`）运行，实测输出「拒绝执行」 | — |
+| 2026-11-14 11:05（第七轮） | **无数据变更、无结构变更**（代码待部署） | — | 修 1419319 输入覆盖、BF 概率单位；新增源侧账本 | 只读查询：`FbMilkRun` / `FbMilkProbSnapshot` / `FbJcOddsHistory` / `BettingCard` / `FbMatch`；隔离库 `AiFootBall_AuditTest` 重建并跑 21 项断言（全部通过）。**生产的 620 行 BF 存档未标记、未回填**（见 `复盘/2026-11-14_BF概率单位缺陷.md`），任何标记需另行报批 | — |
+
+## 待批准的结构变更（部署时才发生，未执行）
+
+| 对象 | 变更 | 触发点 | 说明 |
+|---|---|---|---|
+| `FbMilkSourceMatch` | **新建表**（`RunId, SalesDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime, LastSampleAt, OptionCount, Plays, Outcome, Reason, Evidence, Accepted, CreatedAt`；`UX_FbMilkSource_Run (RunId, MatchId)`） | `MilkPickRepository.EnsureRunSchemaAsync`（幂等 DDL，与 `FbMilkRun` 建表同一处） | 一行 = 本轮源侧的一场：`computed`（有输入凭证）或 `rejected`（有原因+证据）。唯一键含 `RunId`——与 `FbMilkPick/FbMilkGate` 同一教训。**部署前需批准** |
+
+**为什么必须新建这张表**：11-14 的 1419319（大宫松鼠RB vs 山形山神）在库里 `FbMilkInput/ProbSnapshot/Gate` 全 0 行，
+日志也没有任何记录——它是被引擎在**写凭证之前**按「模型不认识这支队」跳过的。
+没有这张表，「源侧有这场、引擎没算」与「源侧根本没有这场」在库里长得一模一样，
+发布前的核对照样能通过（因为预期也取自引擎的凭证）。
+
 
 ## 自检执行规则（2026-11-13 19:30 起）
 

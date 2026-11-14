@@ -40,6 +40,21 @@ public static class RecommendationSelection
             return clock >= Open && clock <= CloseOn(beijing);
         }
 
+        /// <summary>
+        /// 这场在 beijing 这一刻是否还属于「当期在售、来得及买」（2026-11-14 加）。
+        ///
+        /// **只写一份实现**：打分入口 `ScoreAsync` 与源侧快照（`SaveMilkAsync` 的覆盖基准）
+        /// 都调它。两处各写一遍的话，只要有一处漏改，源侧就会混进「已停售」的场次，
+        /// 于是要么误报 missing-input，要么把真正该算的一场放过去——而这两种错都不会自己报错。
+        /// 语义与打分入口原来的三条判断完全一致：已开赛排除、非当日期号排除、
+        /// 过停售时点排除；`MatchTime` 缺失时不额外否决（保持旧行为，不在这里悄悄收紧）。
+        /// </summary>
+        public static bool Sellable(string? matchNo, DateTime? matchTime, DateTime beijing)
+        {
+            if (!IsTodaysIssue(matchNo, beijing)) return false;
+            return matchTime is not DateTime kick || CanStillBuy(beijing, kick);
+        }
+
         /// <summary>这场在 beijing 这一刻是否还来得及买。已开赛为否。</summary>
         public static bool CanStillBuy(DateTime beijing, DateTime kickoff)
         {

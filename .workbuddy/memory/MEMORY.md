@@ -38,6 +38,9 @@
 - ★★ **价格与撤注是两条语义，不能同一次去重**：`MIN(PickId)` 取价会把 `Voided` 冻成首份 → 撤注永远同步不进台账（隔离库实测）。**结算即终态**：`SettledAt` 非空后不许再改撤注。
 - 撤注不进命中率分子分母，单列计数（`MilkPlayStat.Voided`）。生产 11-13 因此 9/28=32.1% → 9/27=33.3%（`PickId=10608`）。
 - **隔离库 `AiFootBall_AuditTest`**（**保留勿删**）：`milk-isolated-check` 克隆 9 张表结构+补 PK/唯一键/默认值，12 项断言要求**报表与空跑台账逐项相等**；硬编码库名，指向生产库名直接拒绝。
+- ★ **场次覆盖的基准在源侧**（`MilkSourceSlate`，11-14）：源＝`BettingCard` 当前批 × `JcSaleHours.Sellable`（与 `ScoreAsync` 同一份实现）＋`FbJcOddsHistory` 每档最新采样。每场必须「输入凭证 或 带证据的拒绝记录」；`name-unresolved` 须独立库检（`FbMatch` 近 18 月按 `TeamNames.CoreKey`）证明是真新队，否则 `stale-name` 不发布；`no-odds` 与源侧档数矛盾即 `contradicted-rejection`；算过的场次过「采样 ≤30min」+「源侧每一档都进了计算」。落库 `FbMilkSourceMatch`（**新建表，待批准**）。
+- ★ **概率三列一律百分数**：`bfPure` 内部是 0~1 比例，只在落库前 ×100；`MilkProbScale` 按 (场次,玩法) 要求三列合计≈100 且同尺，否则不发布。11-14 那 620 行 BF 存档（ModelPctPure≈1.0）**禁用**，不得算 Hit@1 或调权重。
+- ★ 队名解析只允许「查询名比库内名短」→ 竞彩加冠名后缀（大宫松鼠RB）会整场丢失。`Resolve` 已加核心名兜底；**库里出现新队名先查 `team-check`**，别先怀疑样本。
 
 ## 六 赔率新鲜度（按链路分开）
 - 竞彩 `FbJcOddsHistory`（出票价）：2min 一轮、最大间隔 4min → 数据没坏；`GetLatestAsync` **零 age 守卫**。

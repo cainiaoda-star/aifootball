@@ -40,6 +40,34 @@ public static class TeamNames
         return a.Length >= 2 && a == b;
     }
 
+    /// <summary>
+    /// 「去掉赞助商/俱乐部英文标记」后的核心名（2026-11-14 加）。
+    ///
+    /// 起因（1419319 大宫松鼠RB vs 山形山神）：竞彩把球队写成了「大宫松鼠RB」，
+    /// 而库内训练样本全叫「大宫松鼠」。名字解析用的是「简称是全称的子序列」，
+    /// 只允许**查询名比库内名短**；这次查询名反而更长，规则直接不触发 → 整场被判
+    /// 「模型不认识」→ 没有输入凭证、没有存档、没有闸门，静默消失。
+    ///
+    /// 这里只回答一个问题：**两个写法是不是同一支队的名字变体**。
+    /// 判据是严格相等（不是模糊相似）：去掉 ASCII 字母数字（RB / FC / SC / U23 这类标记）、
+    /// 空白与分隔符之后必须一字不差。**不用于配对赛果**（那仍走 <see cref="Same"/>），
+    /// 只用于「解析兜底」与「独立库检时把同一支队的历史捞全」。
+    /// </summary>
+    public static string CoreKey(string? name)
+    {
+        var key = Key(name);
+        if (key.Length == 0) return "";
+        var sb = new System.Text.StringBuilder(key.Length);
+        foreach (var ch in key)
+        {
+            if (ch is >= 'a' and <= 'z') continue;      // Key 已 tolower
+            if (ch is >= '0' and <= '9') continue;
+            if (ch is ' ' or '　' or '\t' or '·' or '・' or '.' or '-' or '_') continue;
+            sb.Append(ch);
+        }
+        return sb.ToString();
+    }
+
     public static string PairKey(string? home, string? away)
     {
         var h = Key(home);

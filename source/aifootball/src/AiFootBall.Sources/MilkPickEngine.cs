@@ -1313,9 +1313,30 @@ public static class MilkPickEngine
         // 少数分支按规则确实不写（半全场算不出联合分布、让球盘脏档），
         // 这些必须自己报出来——发布前核对不接受「没写而且说不出原因」。
         var slateExempts = new List<MilkSlateExemption>();
+        // 场次级拒绝记录（2026-11-14 第七轮）：凡是在写输入凭证之前 continue 的分支，
+        // 都必须在这里留一条带证据的记录。上一版只有内存里的 `funnel.Skipped`（不落库、最多 20 条），
+        // 于是「引擎自己跳过」与「这场根本没进来」在库里看起来一样。
+        var rejections = new List<MilkInputRejection>();
 
-        if (recs.Count == 0 || odds.Count == 0)
-            return new MilkBuildResult { Picks = result, Gates = gates, Funnel = funnel, ProbSnapshots = snapshots, SlateExemptions = slateExempts };
+        void Reject(MatchRecommendation rec, string reason, string evidence)
+        {
+            if (rec.MatchId is not long rid || rid <= 0) return;   // 无 MatchId 记不了，交给源侧判 missing
+            rejections.Add(new MilkInputRejection
+            {
+                MatchId = rid,
+                MatchNo = rec.MatchNo,
+                LeagueName = rec.LeagueName,
+                HomeTeam = rec.HomeTeam,
+                AwayTeam = rec.AwayTeam,
+                SalesDate = SteadyPickRules.SalesDate(
+                    string.IsNullOrWhiteSpace(rec.MatchNo) ? null : rec.MatchNo, rec.MatchTime, DateTime.Today),
+                Reason = reason,
+                Evidence = evidence
+            });
+        }
+
+        if (recs.Count == 0)
+            return new MilkBuildResult { Picks = result, Gates = gates, Funnel = funnel, ProbSnapshots = snapshots, SlateExemptions = slateExempts, Rejections = rejections };
 
         foreach (var r in recs)
         {
@@ -1324,6 +1345,8 @@ public static class MilkPickEngine
             // 证据见 NoPickLeagues 注释：欧国联回放 14 场 Top-1 模型 14.3% vs 市场 42.9%，出注口径 13 注 0 中。
             if (NoPickLeagues.IsExcluded(r.LeagueName))
             {
+                Reject(r, MilkInputRejection.ReasonLeagueExcluded,
+                    $"list=NoPickLeagues;league={r.LeagueName}");
                 if (funnel.Skipped.Count < 20)
                     funnel.Skipped.Add($"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：{r.LeagueName} 属不推名单（国际赛/友谊赛/青年赛，模型无 alpha）");
                 continue;
@@ -1334,6 +1357,8 @@ public static class MilkPickEngine
             // 名单集中在 NoParlayLeagues，恢复某联赛只改那里。
             if (NoParlayLeagues.IsExcluded(r.LeagueName))
             {
+                Reject(r, MilkInputRejection.ReasonLeagueExcluded,
+                    $"list=NoParlayLeagues;league={r.LeagueName}");
                 if (funnel.Skipped.Count < 20)
                     funnel.Skipped.Add($"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：{r.LeagueName} 属黑名单，不进串关");
                 continue;
@@ -1346,6 +1371,7 @@ public static class MilkPickEngine
             }
             if (!odds.TryGetValue(mid, out var points))
             {
+                Reject(r, MilkInputRejection.ReasonNoOdds, "options=0");
                 if (funnel.Skipped.Count < 20) funnel.Skipped.Add($"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：没有竞彩固定奖金快照");
                 continue;
             }
@@ -1353,6 +1379,7 @@ public static class MilkPickEngine
 
             if (string.IsNullOrWhiteSpace(r.HomeTeam) || string.IsNullOrWhiteSpace(r.AwayTeam))
             {
+                Reject(r, MilkInputRejection.ReasonNameMissing, "team=empty");
                 if (funnel.Skipped.Count < 20) funnel.Skipped.Add($"{r.MatchNo}（MatchId {mid}）：队名缺失");
                 continue;
             }
@@ -1380,6 +1407,20 @@ public static class MilkPickEngine
                 || !scores.KnowsTeam(lg, r.HomeTeam!)
                 || !scores.KnowsTeam(lg, r.AwayTeam!))
             {
+                if (!scores.Ready)
+                {
+                    // 模型没就绪不是「这场认不出」：整轮所有场次都会走到这里，原因必须单独记，
+                    // 否则会被当成「一批新队」。这条不接受（发布空榜等于用空榜覆盖上一轮）。
+                    Reject(r, MilkInputRejection.ReasonModelNotReady, "ready=false");
+                }
+                else
+                {
+                    // 认不出的队名要连名字一起记：核对器用它去独立库检，
+                    // 判断这到底是「真新队」还是「同一个队换了个写法」（1419319 = 大宫松鼠RB）。
+                    var missing = !scores.KnowsTeam(lg, r.HomeTeam!) ? r.HomeTeam! : r.AwayTeam!;
+                    Reject(r, MilkInputRejection.ReasonNameUnresolved,
+                        $"team={missing};league={lg};games=0;min={MinTeamGames}");
+                }
                 if (funnel.Skipped.Count < 20)
                 {
                     var why = !scores.Ready ? "比分模型未就绪"
@@ -1401,6 +1442,8 @@ public static class MilkPickEngine
             if (homeGames < MinTeamGames || awayGames < MinTeamGames)
             {
                 funnel.ThinSample++;
+                Reject(r, MilkInputRejection.ReasonThinSample,
+                    $"games={homeGames}/{awayGames};min={MinTeamGames};league={lg}");
                 if (funnel.Skipped.Count < 20)
                     funnel.Skipped.Add(
                         $"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：样本不足（{homeGames}/{awayGames} 场，门槛 {MinTeamGames}）");
@@ -1422,10 +1465,18 @@ public static class MilkPickEngine
             }
 
             var grid = scores.Distribution(lg, r.HomeTeam!, r.AwayTeam!, r.TotalLine);
-            if (grid.Count == 0) continue;
+            if (grid.Count == 0)
+            {
+                Reject(r, MilkInputRejection.ReasonNoDistribution, "grid=0;mass=0");
+                continue;
+            }
 
             var mass = grid.Sum(c => c.P);
-            if (mass <= 0) continue;
+            if (mass <= 0)
+            {
+                Reject(r, MilkInputRejection.ReasonNoDistribution, $"grid={grid.Count};mass=0");
+                continue;
+            }
             funnel.Distributed++;
 
             // 输入凭证记在这里（2026-11-13 加）：**算出分布之后、方向闸之前**。
@@ -2044,7 +2095,7 @@ public static class MilkPickEngine
 
             funnel.Final = perMatchPicks.Count;
             MarkBaseline(perMatchPicks, odds);
-            return new MilkBuildResult { Picks = perMatchPicks, Gates = gates, ShowRows = showRows, Funnel = funnel, ProbSnapshots = snapshots, Inputs = inputs, SlateExemptions = slateExempts };
+            return new MilkBuildResult { Picks = perMatchPicks, Gates = gates, ShowRows = showRows, Funnel = funnel, ProbSnapshots = snapshots, Inputs = inputs, SlateExemptions = slateExempts, Rejections = rejections };
         }
 
         // 4) 按玩法分组各取前几名，不混在一起排。
@@ -2337,7 +2388,8 @@ public static class MilkPickEngine
             CounterCandidates = counterDiag,
             ProbSnapshots = snapshots,
             Inputs = inputs,
-            SlateExemptions = slateExempts
+            SlateExemptions = slateExempts,
+            Rejections = rejections
         };
     }
 
@@ -2959,10 +3011,17 @@ public static class MilkPickEngine
         }
 
         // ---- 比分：具体比分来自 bfPure；「其它」也在其中（余量算法见上面的候选段）----
+        //
+        // ★ 单位（2026-11-14 修）：bfPure 里是 **0~1 比例**（候选段 `Blended` 也吃比例），
+        // 而这张表的三列一律是**百分数**。原来这里写的是 `Math.Round(v, 3)`——直接把比例存进
+        // 「%」列，于是 11-14 那轮 BF 逐场合计 ModelPctPure=1.00 / BlendedPct=30.69，
+        // 另外四个玩法都是 100.00。乘 100 只解决这一处，所以另加 MilkProbScale 在发布前
+        // 按「每玩法合计必须 100」兜住同类错误。**不要**把 bfPure 本身改成百分数：
+        // 候选段的 p ≤ 0、Blend 的 (1-w)·model 都按比例算，改上游会连带改掉出票概率。
         foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bf))
         {
             var odds = pt.Odds > 1m ? pt.Odds : (decimal?)null;
-            decimal? pure = bfPure.TryGetValue(pt.OptionCode, out var v) ? Math.Round(v, 3) : null;
+            decimal? pure = bfPure.TryGetValue(pt.OptionCode, out var v) ? Math.Round(v * 100m, 3) : null;
             Add(JcPlayTypes.Bf, pt.OptionCode, odds, pure);
         }
 

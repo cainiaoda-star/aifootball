@@ -379,15 +379,10 @@ public sealed class RecommendationService
             {
                 if (c.MatchTime is not null && c.MatchTime.Value <= now)
                     continue;
-                if (string.Equals(board, Boards.Jc, StringComparison.OrdinalIgnoreCase))
-                {
-                    var beijing = RecommendationSelection.JcSaleHours.Now();
-                    if (!RecommendationSelection.JcSaleHours.IsTodaysIssue(c.MatchNo, beijing))
-                        continue;
-                    if (c.MatchTime is DateTime kick
-                        && !RecommendationSelection.JcSaleHours.CanStillBuy(beijing, kick))
-                        continue;
-                }
+                if (string.Equals(board, Boards.Jc, StringComparison.OrdinalIgnoreCase)
+                    && !RecommendationSelection.JcSaleHours.Sellable(
+                        c.MatchNo, c.MatchTime, RecommendationSelection.JcSaleHours.Now()))
+                    continue;
             }
 
             decimal? delta = null, drawDelta = null;
@@ -950,6 +945,36 @@ public sealed class RecommendationService
         };
         var plan = MilkBoardPlan.Create(run, build.Picks, today);
 
+        // ★ 源侧快照（2026-11-14 第七轮）：本轮的「应该算哪些场」由**源侧**给出，不是引擎的输入凭证。
+        //
+        // 为什么必须另取一份：`build.Inputs` 只包含「写凭证之前没被 continue 掉」的场次。
+        // 1419319 那种情况（模型认不出队名）在写凭证之前就 continue 了，
+        // 于是「预期」和「实际」两边同时少一场，核对照样通过、照样发布。
+        //
+        // 受注规则与打分入口**同一份实现**（`JcSaleHours.Sellable`）：两处各写一遍的话，
+        // 源侧会混进已停售的场次，要么误报缺失，要么把该算的一场放过去。
+        var source = new List<MilkSourceMatch>();
+        string? sourceError = null;
+        try
+        {
+            var beijing = RecommendationSelection.JcSaleHours.Now();
+            source = (await _repo.GetJcSourceSnapshotAsync(ct))
+                .Where(m => RecommendationSelection.JcSaleHours.Sellable(m.MatchNo, m.MatchTime, beijing))
+                .Select(m =>
+                {
+                    m.SalesDate = SteadyPickRules.SalesDate(
+                        string.IsNullOrWhiteSpace(m.MatchNo) ? null : m.MatchNo, m.MatchTime, today);
+                    return m;
+                })
+                .ToList();
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            // 取不到源侧快照 = 无法证明覆盖，按失败处理（不发布），不猜。
+            sourceError = $"{ex.GetType().Name}: {ex.Message}";
+        }
+
         // ★ 顺序（2026-11-13 第三轮，用户明确要求）：先落 running 头 → 再写四类数据 →
         // 全部成功才标 success 并发布。中途崩溃留下的是 running，**永远不会**被榜面选中；
         // 反过来的顺序（先写数据后标状态）会留下没有轮次头的孤儿行，事后无从判断算不算数。
@@ -1043,6 +1068,7 @@ public sealed class RecommendationService
         var inputTag = run.VersionTag;
         var inputRows = 0;
         var snapRows = 0;
+        var sourceRows = 0;
         try
         {
             inputRows = await _milkPicks.SaveInputsAsync(today, build.Inputs, run.RunId, ct);
@@ -1066,6 +1092,27 @@ public sealed class RecommendationService
                 + $"（本轮不发布）：{ex.GetType().Name}: {ex.Message}", CancellationToken.None);
         }
 
+        // 源侧账本单独一步（2026-11-14）：它记录「源里每一场算没算、没算凭什么」，
+        // 写不进去就等于这一轮无法证明覆盖，必须单独判失败，不能混进存档那一步的原因里。
+        try
+        {
+            sourceRows = await _milkPicks.SaveSourceAsync(run.RunId, today, source, build.Rejections, ct);
+            steps.Ok("source");
+            await _milkPicks.LogAsync("milk:source", "OK", sourceRows,
+                $"[{run.RunId}] 源侧 {source.Count} 场 / 账本 {sourceRows} 行"
+                + $"（算 {build.Inputs.Count} / 拒 {build.Rejections.Count}）"
+                + $"；采样最新 {(source.Count == 0 ? "-" : source.Max(m => m.LastSampleAt)?.ToString("MM-dd HH:mm") ?? "-")}",
+                CancellationToken.None);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            steps.Fail("source", ex);
+            await _milkPicks.LogAsync("milk:source", "FAIL", 0,
+                $"[{run.RunId}] 源侧账本写入失败（本轮不发布，无法证明覆盖）："
+                + $"{ex.GetType().Name}: {ex.Message}", CancellationToken.None);
+        }
+
         // 轮次头（2026-11-13 第二轮）：本轮算了几场、出了几注、走的是哪种模式，落一行。
         // 没有它，「全被过滤」的一轮在库里只表现为「四张表都没变化」，与「作业没跑」无法区分。
         // 收尾（2026-11-13 第三轮）：**四类全部成功才发布**；否则标成失败/跳过，榜面继续显示上一轮。
@@ -1083,7 +1130,7 @@ public sealed class RecommendationService
                     await _milkPicks.LogAsync("milk:run", plan.Mode == MilkBoardMode.Partial ? "PARTIAL" : "SKIP", 0,
                         $"[{run.RunId}] 未发布（{plan.RunStatus}）：{plan.Reason}", CancellationToken.None);
                 }
-                else if (!steps.AllOk("picks", "gate", "input", "snapshot")
+                else if (!steps.AllOk("picks", "gate", "input", "snapshot", "source")
                          || !MilkRunSteps.SnapshotCoversInputs(build.Inputs.Count, snapRows))
                 {
                     var extra = MilkRunSteps.SnapshotCoversInputs(build.Inputs.Count, snapRows)
@@ -1105,7 +1152,11 @@ public sealed class RecommendationService
                     // 所以判据改成「预期账本 vs 库里读回的实际账本」逐键比对，任何缺失/重复/多写都判 failed。
                     MilkLedgerReport? ledger = null;
                     string? ledgerError = null;
-                    try { ledger = await VerifyRunLedgerAsync(run.RunId, plan, build, ct); }
+                    try
+                    {
+                        ledger = await VerifyRunLedgerAsync(
+                            run.RunId, plan, build, source, sourceError, runAt, ct);
+                    }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception ex) { ledgerError = $"{ex.GetType().Name}: {ex.Message}"; }
 
@@ -1114,7 +1165,7 @@ public sealed class RecommendationService
                         var why = ledger is null
                             ? $"逐档核对无法执行（{ledgerError}）"
                             : $"逐档核对不通过（缺失 {ledger.Missing}、重复 {ledger.Duplicated}、多写 {ledger.Unexpected}"
-                              + $"、豁免不成立 {ledger.ExemptDefects}）：{ledger.Detail}";
+                              + $"、豁免/拒绝不成立 {ledger.ExemptDefects}）：{ledger.Detail}";
                         await _milkPicks.CloseRunAsync(run.RunId, MilkRunStatus.Failed,
                             $"落库核对失败：{why}",
                             build.Inputs.Count, snapRows, gateRows, pickRows, CancellationToken.None);
@@ -1170,7 +1221,7 @@ public sealed class RecommendationService
     }
 
     /// <summary>
-    /// 发布前的逐档核对（2026-11-13 第四轮；第五轮把预期改到输入侧）。
+    /// 发布前的逐档核对（2026-11-13 第四轮；第五轮把预期改到输入侧；第七轮加源侧账本）。
     ///
     /// 预期账本：
     ///   pick     = plan.Writes 里每一期的每一注（键含受注日）
@@ -1178,14 +1229,22 @@ public sealed class RecommendationService
     ///   snapshot = **<see cref="MilkExpectedSlate"/> 独立推出的档位**（输入 × 玩法规则），
     ///              不是 `build.ProbSnapshots`——拿引擎输出当预期，引擎漏了永远发现不了
     ///   input    = build.Inputs（一场一行，与 SaveInputsAsync 的去重口径一致）
-    /// 实际账本按 `RunId` 从四张表读回，逐键比对。读的是**本轮的行**，
+    ///   source   = **源侧快照**（BettingCard × 本轮受注规则），本轮写了一行还是拒了一行
+    /// 实际账本按 `RunId` 从五张表读回，逐键比对。读的是**本轮的行**，
     /// 所以上一轮的历史不会让核对结果看起来「多出来」。
+    ///
+    /// 第七轮补的两道判据（都是 11-14 验收暴露出来的）：
+    ///   · <see cref="MilkSourceSlate"/>：源侧每一场必须有凭证或带证据的拒绝记录；
+    ///     算过的场次还要过「采样不超龄」与「源侧每一档都进了计算」两道；
+    ///   · <see cref="MilkProbScale"/>：每个玩法每列概率合计必须是 100%（BF 小数当百分数即在此拦下）。
     ///
     /// 核对失败一律判 failed（不发布）：这几张表的行数完全由本轮输入决定，
     /// 「少写一半」与「写坏了」在榜面上的表现一模一样——都是榜上少了几注。
     /// </summary>
     private async Task<MilkLedgerReport> VerifyRunLedgerAsync(
-        string runId, MilkBoardPlan plan, MilkBuildResult build, CancellationToken ct)
+        string runId, MilkBoardPlan plan, MilkBuildResult build,
+        IReadOnlyList<MilkSourceMatch> source, string? sourceError, DateTime runAt,
+        CancellationToken ct)
     {
         var actual = await _milkPicks!.ReadRunLedgerAsync(runId, ct);
 
@@ -1214,6 +1273,39 @@ public sealed class RecommendationService
         // 赔率缺失不能借豁免绕过推荐限制：no-odds 与该场出票不能同时成立。
         pre.AddRange(MilkExpectedSlate.CrossCheck(slate, plan.Writes.SelectMany(w => w.Picks)));
 
+        // 源侧账本（2026-11-14）：场次集合与拒绝证据。
+        // 「这个队名到底是不是新队」由独立库检回答（FbMatch 近 18 个月按核心名计数），
+        // 引擎自己说「我不认识」不能当证据。名字先一次性查好，再交给纯函数判定——
+        // 不把 IO 塞进判定里，判定才能单测。
+        var unresolved = build.Rejections
+            .Where(r => string.Equals(r.Reason, MilkInputRejection.ReasonNameUnresolved, StringComparison.Ordinal))
+            .SelectMany(r => new[] { r.HomeTeam, r.AwayTeam })
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Select(n => n!.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        Dictionary<string, int> games = new(StringComparer.Ordinal);
+        if (unresolved.Count > 0)
+        {
+            try { games = await _repo.GetRecentTeamGamesAsync(unresolved, ct: ct); }
+            catch (OperationCanceledException) { throw; }
+            catch { games = new(StringComparer.Ordinal); }   // 查不到 → 全部按「无法证明」处理
+        }
+        var gamesSnapshot = games;
+        var sourceReport = MilkSourceSlate.Verify(
+            source, build.Inputs, build.Rejections, runAt,
+            name => !string.IsNullOrWhiteSpace(name) && gamesSnapshot.TryGetValue(name!.Trim(), out var n) ? n : -1);
+        pre.AddRange(sourceReport.Issues);
+        if (!string.IsNullOrWhiteSpace(sourceError))
+            pre.Add(new MilkLedgerIssue
+            {
+                Table = "source", Kind = "source-unavailable", Key = sourceError, Expected = 1, Actual = 0
+            });
+
+        // 概率单位/归一（2026-11-14）：BF 曾把 0~1 的小数写进「%」列，
+        // 逐场合计 1.00 对 99.95，任何按这张表算的汇总都会差 100 倍。
+        pre.AddRange(MilkProbScale.Verify(build.ProbSnapshots));
+
         return MilkRunLedger.Verify(
             new[]
             {
@@ -1224,11 +1316,25 @@ public sealed class RecommendationService
                     Table = "snapshot", Expected = slate.Rows, Actual = Act("snapshot"),
                     Ignore = slate.IgnoreKeys
                 },
-                new MilkLedgerPair { Table = "input", Expected = MilkRunLedger.FromInputs(build.Inputs), Actual = Act("input") }
+                new MilkLedgerPair { Table = "input", Expected = MilkRunLedger.FromInputs(build.Inputs), Actual = Act("input") },
+                new MilkLedgerPair
+                {
+                    Table = "source",
+                    Expected = source.Select(m => new MilkLedgerRow { Key = MilkRunLedger.Keys.Input(m.MatchId) }).ToList(),
+                    Actual = Act("source")
+                }
             },
             pre,
             // 豁免必须连证据一起进日志：只写「有 3 条豁免」，事后无法判断当时成不成立。
-            $"{slate.Summary}；豁免明细 {slate.Detail}");
+            $"{slate.Summary}；豁免明细 {slate.Detail}；{sourceReport.Summary}；拒绝明细 {Reject(sourceReport.Rejections)}");
+    }
+
+    private static string Reject(IReadOnlyList<MilkInputRejection> rows)
+    {
+        if (rows.Count == 0) return "无";
+        var head = rows.Take(8).Select(r => r.ToString());
+        var more = rows.Count > 8 ? $"；另有 {rows.Count - 8} 条" : string.Empty;
+        return string.Join("；", head) + more;
     }
 
     /// <summary>

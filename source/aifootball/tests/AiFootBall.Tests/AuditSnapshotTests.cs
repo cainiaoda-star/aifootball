@@ -211,10 +211,13 @@ public class AuditSnapshotTests
         var grid = new List<(int H, int A, double P)> { (1, 0, 0.2), (2, 1, 0.3), (0, 0, 0.25), (1, 1, 0.25) };
         var mass = grid.Sum(c => c.P);
         var bands = MilkPickEngine.GoalBands(grid, mass);
+        // bfPure 是 **0~1 比例**（与 BuildDetailed 里候选段同一份量：Blend 吃比例）。
+        // 这里原来写成 30m/5m，等于把「比例」当成了「百分数」——正是 11-14 生产上
+        // BF 存档单位错位的同一个误解，所以断言也跟着错位通过了。
         var bfPure = new Dictionary<string, decimal>(StringComparer.Ordinal)
         {
-            ["2:1"] = 30m,
-            ["胜其它"] = 5m
+            ["2:1"] = 0.30m,
+            ["胜其它"] = 0.05m
         };
 
         // picks 故意只放一注：存档的档位数必须和 picks 的条数无关。
@@ -239,9 +242,9 @@ public class AuditSnapshotTests
         var bq33 = rows.Single(x => x.PlayType == JcPlayTypes.Bq && x.OptionCode == "3-3");
         Assert.Equal(30.000m, bq33.ModelPctPure);
 
-        // 比分：纯模型值来自 bfPure，不在这里重新解析。
+        // 比分：纯模型值来自 bfPure（比例），落库前换算成百分数，不在这里重新解析。
         var bf21 = rows.Single(x => x.PlayType == JcPlayTypes.Bf && x.OptionCode == "2:1");
-        Assert.Equal(30m, bf21.ModelPctPure);
+        Assert.Equal(30.000m, bf21.ModelPctPure);
 
         // 三列必须同时有值，且混合值落在纯模型与市场隐含之间（w 在 0~1 之间）。
         Assert.All(rows, x =>

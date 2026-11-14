@@ -13,6 +13,124 @@ public sealed class BettingRepository
 
     /* ---------------- 受注场次 ---------------- */
 
+    /// <summary>
+    /// 独立库检：这些写法各自在近 N 个月里踢过多少场（2026-11-14 加）。
+    ///
+    /// 用途只有一个——判断 `name-unresolved` 到底是「真新队」还是「同一个队换了个写法」。
+    /// 判据不能取自引擎：引擎说「我不认识」正是被质疑的那句话。这里只查库：
+    /// 按**核心名**（去掉 RB/FC 这类 ASCII 标记）把同一支队的历史全捞进来，再按核心名归并计数。
+    /// 归并放在 C#（<see cref="TeamNames.CoreKey"/>）而不是 SQL：SQL 侧没有这份归一规则，
+    /// 在 SQL 里再写一份 LIKE 逻辑就是「同一口径两处实现」，迟早对不上。
+    /// </summary>
+    public async Task<Dictionary<string, int>> GetRecentTeamGamesAsync(
+        IEnumerable<string> names, int months = 18, CancellationToken ct = default)
+    {
+        var result = new Dictionary<string, int>(StringComparer.Ordinal);
+        var queries = (names ?? Array.Empty<string>())
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Select(n => (Name: n!.Trim(), Core: TeamNames.CoreKey(n)))
+            .Where(x => x.Core.Length >= 2)
+            .GroupBy(x => x.Name, StringComparer.Ordinal)
+            .Select(g => g.First())
+            .ToList();
+        if (queries.Count == 0) return result;
+
+        // 同一支队可能同时以两种写法出现在一轮里（主队「大宫松鼠RB」、客队「大宫松鼠」）：
+        // 核心名相同 → 只查一次库，但**两个写法都要有答案**，否则第二种写法会被判成「查不到」。
+        var byCore = queries.GroupBy(x => x.Core, StringComparer.Ordinal).ToList();
+
+        await using var conn = await _factory.OpenAsync(ct);
+        foreach (var grp in byCore)
+        {
+            var pat = TeamNames.ContainsPattern(grp.Key);
+            var rows = (await conn.QueryAsync<(string Name, int N)>(new CommandDefinition(
+                @"SELECT name, COUNT(*) AS N FROM (
+                      SELECT HomeTeamName AS name FROM dbo.FbMatch
+                       WHERE Status = 3 AND MatchTime >= DATEADD(month, -@months, SYSDATETIME())
+                         AND HomeTeamName LIKE @pat
+                      UNION ALL
+                      SELECT AwayTeamName AS name FROM dbo.FbMatch
+                       WHERE Status = 3 AND MatchTime >= DATEADD(month, -@months, SYSDATETIME())
+                         AND AwayTeamName LIKE @pat
+                  ) t
+                  GROUP BY name",
+                new { months, pat }, cancellationToken: ct))).ToList();
+
+            var total = rows
+                .Where(r => string.Equals(TeamNames.CoreKey(r.Name), grp.Key, StringComparison.Ordinal))
+                .Sum(r => r.N);
+
+            foreach (var q in grp) result[q.Name] = total;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 源侧快照（2026-11-14 第七轮加）：本轮开始时**在售卡里有哪些场、各自的赔率采到哪一刻、有哪些档**。
+    ///
+    /// 存在的理由（用户 11-14 明确要求）：发布前的「预期场次」不能取自引擎自己写的输入凭证
+    /// （`FbMilkInput`）。引擎在写凭证之前就跳过的场次，两边同时为 0，核对照样通过——
+    /// 11-14 的 1419319 就是这样消失的。所以预期必须来自源侧两张表：
+    ///   · `BettingCard`（本批受注场次，按 `MAX(CapturedAt)` 取当前批）；
+    ///   · `FbJcOddsHistory`（每档最新采样时刻 + 档位清单）。
+    ///
+    /// 口径与 `JcOddsRepository.GetLatestAsync` **逐字一致**（每键取最新、`Odds > 1`），
+    /// 否则「源侧有 31 档、引擎拿到 30 档」会被当成两次不同的采样而误报。
+    ///
+    /// 只读，不判断受注规则——「这一期能不能买」是纯逻辑，由调用方用
+    /// `RecommendationSelection.JcSaleHours` 判，Data 层不引用 Sources 的口径。
+    /// </summary>
+    public async Task<List<MilkSourceMatch>> GetJcSourceSnapshotAsync(CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+
+        var cards = (await conn.QueryAsync<BettingCardRecord>(new CommandDefinition(
+            @"SELECT c.MatchId, c.MatchNo, c.LeagueName, c.HomeTeam, c.AwayTeam,
+                     COALESCE(c.MatchTime, f.MatchTime) AS MatchTime
+              FROM dbo.BettingCard c
+              LEFT JOIN dbo.FbMatch f ON f.MatchId = c.MatchId
+              WHERE c.Board='jc'
+                AND c.CapturedAt = (SELECT MAX(CapturedAt) FROM dbo.BettingCard WHERE Board='jc')
+                AND c.MatchId IS NOT NULL",
+            cancellationToken: ct))).ToList();
+        if (cards.Count == 0) return new List<MilkSourceMatch>();
+
+        var ids = cards.Select(c => c.MatchId!.Value).Distinct().ToArray();
+        var points = (await conn.QueryAsync<(long MatchId, string PlayType, string OptionCode, DateTime At)>(
+            new CommandDefinition(
+                @"SELECT MatchId, PlayType, OptionCode, MAX(CapturedAt) AS At
+                  FROM dbo.FbJcOddsHistory
+                  WHERE MatchId IN @ids AND Odds > 1
+                  GROUP BY MatchId, PlayType, OptionCode",
+                new { ids }, cancellationToken: ct))).ToList();
+
+        var byMatch = points
+            .GroupBy(p => p.MatchId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        return cards.Select(c =>
+        {
+            var own = byMatch.TryGetValue(c.MatchId!.Value, out var list) ? list : new();
+            return new MilkSourceMatch
+            {
+                MatchId = c.MatchId!.Value,
+                MatchNo = c.MatchNo,
+                LeagueName = c.LeagueName,
+                HomeTeam = c.HomeTeam,
+                AwayTeam = c.AwayTeam,
+                MatchTime = c.MatchTime,
+                LastSampleAt = own.Count == 0 ? null : own.Max(x => x.At),
+                OptionKeys = own
+                    .Select(x => $"{x.PlayType}|{x.OptionCode}")
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(x => x, StringComparer.Ordinal)
+                    .ToList()
+            };
+        }).ToList();
+    }
+
+
     /// <summary>批量写入受注场次（MERGE 幂等）</summary>
     public async Task<int> UpsertCardsAsync(IEnumerable<BettingCardRecord> cards, CancellationToken ct = default)
     {

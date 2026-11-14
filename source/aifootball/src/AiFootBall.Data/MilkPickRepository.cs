@@ -610,7 +610,38 @@ public sealed class MilkPickRepository
                   );
               IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_MilkRunDate_Date'
                              AND object_id=OBJECT_ID(N'dbo.FbMilkRunDate'))
-                  CREATE INDEX IX_MilkRunDate_Date ON dbo.FbMilkRunDate (SalesDate, RunId) INCLUDE (PickCount);",
+                  CREATE INDEX IX_MilkRunDate_Date ON dbo.FbMilkRunDate (SalesDate, RunId) INCLUDE (PickCount);
+
+              -- 源侧快照 + 场次级拒绝记录（2026-11-14 第七轮）。
+              -- 一行 = 「本轮源侧有这一场，它是被算了还是被拒了」。
+              -- 为什么不是另一张表分别存「源」和「拒绝」：这两者本来就是同一场次的两种结局，
+              -- 分成两张表就必须靠 LEFT JOIN 才能回答「这场有没有凭证」，而漏掉的恰恰是 JOIN 不上的那些行。
+              -- 唯一键含 RunId（与 FbMilkPick/FbMilkGate 同一教训：真库撞 2601 才暴露）。
+              IF OBJECT_ID(N'dbo.FbMilkSourceMatch', N'U') IS NULL
+                  CREATE TABLE dbo.FbMilkSourceMatch
+                  (
+                      Id           bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_FbMilkSourceMatch PRIMARY KEY,
+                      RunId        nvarchar(40)  NOT NULL,
+                      SalesDate    date          NOT NULL,
+                      MatchId      bigint        NOT NULL,
+                      MatchNo      nvarchar(32)  NULL,
+                      LeagueName   nvarchar(128) NULL,
+                      HomeTeam     nvarchar(128) NULL,
+                      AwayTeam     nvarchar(128) NULL,
+                      MatchTime    datetime2     NULL,
+                      LastSampleAt datetime2     NULL,
+                      OptionCount  int           NOT NULL CONSTRAINT DF_FbMilkSource_Opt DEFAULT(0),
+                      Plays        nvarchar(120) NULL,
+                      Outcome      varchar(16)   NOT NULL,
+                      Reason       nvarchar(32)  NULL,
+                      Evidence     nvarchar(200) NULL,
+                      Accepted     bit           NOT NULL CONSTRAINT DF_FbMilkSource_Acc DEFAULT(0),
+                      CreatedAt    datetime2     NOT NULL CONSTRAINT DF_FbMilkSource_Created DEFAULT(SYSDATETIME()),
+                      CONSTRAINT UX_FbMilkSource_Run UNIQUE (RunId, MatchId)
+                  );
+              IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='IX_MilkSource_Run'
+                             AND object_id=OBJECT_ID(N'dbo.FbMilkSourceMatch'))
+                  CREATE INDEX IX_MilkSource_Run ON dbo.FbMilkSourceMatch (RunId, SalesDate);",
             cancellationToken: ct));
 
     /// <summary>
@@ -761,10 +792,96 @@ public sealed class MilkPickRepository
               SELECT 'input' AS [Table], CAST(i.MatchId AS varchar(20)) AS [Key], COUNT(*) AS [Count]
               FROM dbo.FbMilkInput i
               WHERE i.RunId=@run
-              GROUP BY i.MatchId",
+              GROUP BY i.MatchId
+              UNION ALL
+              -- 源侧场次账本（2026-11-14）：一行 = 源里的一场，算过或拒过。
+              -- 它不参与「存档覆盖」判定，但必须与 FbMilkInput ∪ 拒绝记录逐键相等，
+              -- 否则「这一场到底有没有被处理」就没有独立凭证。
+              SELECT 'source' AS [Table], CAST(s.MatchId AS varchar(20)) AS [Key], COUNT(*) AS [Count]
+              FROM dbo.FbMilkSourceMatch s
+              WHERE s.RunId=@run
+              GROUP BY s.MatchId",
             new { run = runId }, cancellationToken: ct))).ToList();
         return rows;
     }
+
+    /// <summary>
+    /// 落库源侧快照与场次级拒绝记录（2026-11-14 第七轮）。
+    ///
+    /// 每一行都必须属于本轮（按 RunId 先删后写），且**源侧每一场都要有一行**：
+    /// 算过的写 `computed`（带档数与场景采样时刻），没算的写 `rejected`（带原因与证据）。
+    /// 只有被算过的那些场才同时有 `FbMilkInput` 凭证——两张表一起才能回答
+    /// 「该算的算了没有」和「没算的凭什么不算」。
+    ///
+    /// 空集也要写 0 行并返回 0：本轮源侧没有场次时，核对侧会拿「源 0 场」直接判，
+    /// 不靠「一行没有」去猜。
+    /// </summary>
+    public async Task<int> SaveSourceAsync(
+        string runId, DateTime salesDate,
+        IReadOnlyList<MilkSourceMatch> source,
+        IReadOnlyList<MilkInputRejection> rejections,
+        CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        await EnsureRunSchemaAsync(conn, ct);
+
+        var rejById = (rejections ?? Array.Empty<MilkInputRejection>())
+            .Where(r => r.MatchId > 0)
+            .GroupBy(r => r.MatchId)
+            .ToDictionary(g => g.Key, g => g.Last());
+
+        var payload = (source ?? Array.Empty<MilkSourceMatch>())
+            .Where(m => m.MatchId > 0)
+            .GroupBy(m => m.MatchId)
+            .Select(g => g.First())
+            .Select(m =>
+            {
+                var has = rejById.TryGetValue(m.MatchId, out var r);
+                return new
+                {
+                    run = runId,
+                    d = (m.SalesDate == default ? salesDate : m.SalesDate).Date,
+                    mid = m.MatchId,
+                    no = m.MatchNo,
+                    lg = m.LeagueName,
+                    home = m.HomeTeam,
+                    away = m.AwayTeam,
+                    time = m.MatchTime,
+                    at = m.LastSampleAt,
+                    opts = m.OptionCount,
+                    plays = Trim120(m.Plays),
+                    outcome = has ? "rejected" : "computed",
+                    reason = has ? r!.Reason : null,
+                    evidence = has ? Trim200(r!.Evidence) : null,
+                    accepted = has && r!.Accepted
+                };
+            }).ToList();
+
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM dbo.FbMilkSourceMatch WHERE RunId=@run", new { run = runId }, tx, cancellationToken: ct));
+        if (payload.Count == 0)
+        {
+            await tx.CommitAsync(ct);
+            return 0;
+        }
+
+        var written = await conn.ExecuteAsync(new CommandDefinition(
+            @"INSERT INTO dbo.FbMilkSourceMatch
+                (RunId, SalesDate, MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
+                 LastSampleAt, OptionCount, Plays, Outcome, Reason, Evidence, Accepted)
+              VALUES (@run, @d, @mid, @no, @lg, @home, @away, @time,
+                      @at, @opts, @plays, @outcome, @reason, @evidence, @accepted)",
+            payload, tx, cancellationToken: ct));
+        await tx.CommitAsync(ct);
+        return written;
+    }
+
+    private static string? Trim120(string? s)
+        => string.IsNullOrWhiteSpace(s) ? null : (s.Length > 118 ? s[..118] : s);
+
+    private static string? Trim200(string? s)
+        => string.IsNullOrWhiteSpace(s) ? null : (s.Length > 198 ? s[..198] : s);
 
     private static string? Trim300(string? s)
         => string.IsNullOrWhiteSpace(s) ? null : (s.Length > 280 ? s[..280] : s);

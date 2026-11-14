@@ -238,6 +238,18 @@ public sealed class MilkBuildResult
     /// </summary>
     public List<MilkSlateExemption> SlateExemptions { get; init; } = new();
 
+    /// <summary>
+    /// 引擎对源比赛给出的拒绝记录（2026-11-14 加）。落库 <c>dbo.FbMilkSourceMatch</c>。
+    ///
+    /// 每个「在写输入凭证之前就 continue」的分支都必须在这里留一条——否则那场球
+    /// 在库里既没有输入凭证、也没有拒绝记录，与「本来就没有这场」长得一模一样。
+    /// 11-14 的 1419319 就是这样消失的：`FbMilkInput/ProbSnapshot/Gate` 全 0 行。
+    ///
+    /// 申报不等于放行：原因必须是固定枚举、必须带证据前缀，`name-unresolved` 还要经
+    /// 独立库检证明是真新队（见 <see cref="MilkSourceSlate"/>）。
+    /// </summary>
+    public List<MilkInputRejection> Rejections { get; init; } = new();
+
     /// <summary>被方向闸挡下的场次数。</summary>
     public int DivergedMatches => Gates.Count(g => g.Verdict == MilkGateVerdicts.Diverge);
 

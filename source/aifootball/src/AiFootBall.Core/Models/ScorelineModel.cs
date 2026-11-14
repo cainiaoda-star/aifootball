@@ -135,6 +135,9 @@ public sealed class ScorelineModel
     /// <summary>全库队名集合（与 _teamTotals 同键）。联赛名对不上时用它兜底认队。</summary>
     private readonly HashSet<string> _globalNames;
 
+    /// <summary>全场唯一命中才返回；空串 = 有歧义或没有，都按「认不出」处理，绝不猜。</summary>
+    private readonly Dictionary<string, string> _globalCore;
+
     /// <summary>全局子序列匹配结果缓存（名字 → 全称，空串表示确认认不出）。全局匹配与联赛无关，可缓存。</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _globalAlias = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string[]> _namesByLeague;
@@ -176,6 +179,7 @@ public sealed class ScorelineModel
         _teams = teams;
         _teamTotals = teamTotals;
         _globalNames = new HashSet<string>(teamTotals.Keys, StringComparer.Ordinal);
+        _globalCore = BuildCoreIndex(_globalNames);
         _leaguesByTeam = BuildTeamLeagueIndex(teams);
         _namesByLeague = namesByLeague;
         _rho = rho;
@@ -304,6 +308,24 @@ public sealed class ScorelineModel
         return best;
     }
 
+    /// <summary>
+    /// 核心名索引：去掉赞助商/俱乐部英文标记后的名字 → 唯一对应的库内写法（有歧义则空串）。
+    /// 只服务 <see cref="Resolve"/> 的「查询名比库内名更长」这一种形态（2026-11-14 加）。
+    /// </summary>
+    private static Dictionary<string, string> BuildCoreIndex(IEnumerable<string> names)
+    {
+        var index = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var n in names)
+        {
+            var core = TeamNames.CoreKey(n);
+            if (core.Length == 0) continue;
+            index[core] = index.TryGetValue(core, out var existing) && existing.Length > 0
+                ? string.Empty          // 撞了两个以上 → 记成歧义，永远不返回
+                : n;
+        }
+        return index;
+    }
+
     /// <summary>队名 → 该队踢过的联赛（含场次），供 <see cref="LeagueByTeams"/> 使用。</summary>
     private static Dictionary<string, List<(string League, int Games)>> BuildTeamLeagueIndex(
         Dictionary<string, (double For, double Against, double Weight, int Games)> teams)
@@ -382,6 +404,15 @@ public sealed class ScorelineModel
         }
 
         // 全局子序列：联赛名对不上时的最后一道兜底，仍要求全库唯一命中。
+        //
+        // 2026-11-14 在它之前插一步「核心名」比对（1419319 大宫松鼠RB 事件）：
+        // 子序列只允许**查询名比库内名短**（`cand.Length <= shortName.Length` 直接跳过），
+        // 竞彩给队名加赞助商后缀时查询名反而更长，前面几步全不命中 → 整场丢失。
+        // 核心名只做一件事：去掉 ASCII 标记后一字不差才算同一支队，且必须先在全库唯一。
+        // 有歧义（如同一核心名对应一线队与青年队）一律返回 null —— 宁可丢场，不猜错队。
+        if (_globalCore.TryGetValue(TeamNames.CoreKey(n), out var coreName) && coreName.Length > 0)
+            return coreName;
+
         if (!_globalAlias.TryGetValue(n, out var cached))
         {
             cached = MatchSubsequence(n, _globalNames).Hit ?? "";
