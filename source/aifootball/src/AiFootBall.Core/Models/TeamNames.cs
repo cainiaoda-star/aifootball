@@ -68,6 +68,78 @@ public static class TeamNames
         return sb.ToString();
     }
 
+    /// <summary>
+    /// 青年队 / 后备队 / B 队 / 女足这类附属队标记（没命中返回空串）。2026-11-14 第九轮搬到这里，
+    /// 因为**名字解析**与**历史样本计数**必须用同一份判定——解析时把一线队与梯队分开、
+    /// 计数时又合在一起，等于同一支队有两套历史。
+    ///
+    /// 返回具体标记而不只是 true/false：「谢周三U21」与「谢周三U19」是两支不同的队，
+    /// 只判「都是梯队」会把它们混起来。
+    /// </summary>
+    public static string ReserveMark(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return "";
+        foreach (var mark in ReserveMarks)
+            if (name.Contains(mark, StringComparison.Ordinal)) return mark;
+        return "";
+    }
+
+    /// <summary>队名里的 ASCII 记号集合（小写），如 `大宫松鼠RB` → {rb}、`谢周三U21` → {u21}。</summary>
+    public static HashSet<string> AsciiMarks(string? name)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        if (string.IsNullOrEmpty(name)) return set;
+        var sb = new System.Text.StringBuilder(4);
+        foreach (var ch in name)
+        {
+            if (ch is >= 'A' and <= 'Z') { sb.Append((char)(ch + 32)); continue; }
+            if (ch is >= 'a' and <= 'z') { sb.Append(ch); continue; }
+            if (ch is >= '0' and <= '9') { sb.Append(ch); continue; }
+            if (sb.Length > 0) { set.Add(sb.ToString()); sb.Clear(); }
+        }
+        if (sb.Length > 0) set.Add(sb.ToString());
+        return set;
+    }
+
+    /// <summary>
+    /// **解析身份**：`candidate`（库内写法）能否被当作 `query`（竞彩写法）的同一支队。
+    ///
+    /// 两条闸，方向不能反：
+    ///   ① 梯队标记必须相同 —— 一线队查询绝不受理梯队候选，U21 与 U19 也不互配；
+    ///   ② 候选的 ASCII 记号必须是查询的子集 —— 查询多 `RB`（冠名后缀）允许，
+    ///      候选多 `U21`/`II`/`JFV`（另一支队）拒绝。
+    /// 核心名「全库唯一」只保证不猜，不保证对（第七轮踩过：不来梅 → JFV不来梅U19）。
+    /// </summary>
+    public static bool SameResolveIdentity(string? query, string? candidate)
+    {
+        if (string.IsNullOrEmpty(query) || string.IsNullOrEmpty(candidate)) return false;
+        if (!string.Equals(ReserveMark(query), ReserveMark(candidate), StringComparison.Ordinal)) return false;
+        return AsciiMarks(candidate).IsSubsetOf(AsciiMarks(query));
+    }
+
+    /// <summary>
+    /// **计数身份**：`candidate` 的历史是否该算进 `query` 的样本量。
+    ///
+    /// 与 <see cref="SameResolveIdentity"/> 只差一处：ASCII 记号允许**互相包含**。
+    /// 理由：库内同一支队会有「大宫松鼠」与「大宫松鼠RB」两种写法，谁多谁少取决于当年从哪个源入库；
+    /// 计数是为了「这支队到底踢过几场」，任一方向包含都该合并。梯队那道闸不变——
+    /// `JFV不来梅U19` 的 ReserveMark 是 `U19`，永远不会被算进 `不来梅`。
+    /// </summary>
+    public static bool SameCountIdentity(string? query, string? candidate)
+    {
+        if (string.IsNullOrEmpty(query) || string.IsNullOrEmpty(candidate)) return false;
+        if (!string.Equals(ReserveMark(query), ReserveMark(candidate), StringComparison.Ordinal)) return false;
+        var q = AsciiMarks(query);
+        var c = AsciiMarks(candidate);
+        return c.IsSubsetOf(q) || q.IsSubsetOf(c);
+    }
+
+    /// <summary>附属队（青年队 / 后备队 / B 队 / 女足）。它们和一线队是两套数据，不能混。</summary>
+    public static bool IsReserveOrYouth(string? name) => ReserveMark(name).Length > 0;
+
+    private static readonly string[] ReserveMarks =
+        { "青年队", "后备队", "预备队", "B队", "U19", "U20", "U21", "U23", "女足", "女子" };
+
     public static string PairKey(string? home, string? away)
     {
         var h = Key(home);

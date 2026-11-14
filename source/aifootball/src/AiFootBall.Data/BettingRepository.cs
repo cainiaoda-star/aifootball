@@ -23,7 +23,7 @@ public sealed class BettingRepository
     /// 在 SQL 里再写一份 LIKE 逻辑就是「同一口径两处实现」，迟早对不上。
     /// </summary>
     public async Task<Dictionary<string, int>> GetRecentTeamGamesAsync(
-        IEnumerable<string> names, int months = 18, CancellationToken ct = default)
+        IEnumerable<string> names, int months = MilkThresholds.TeamHistoryMonths, CancellationToken ct = default)
     {
         var result = new Dictionary<string, int>(StringComparer.Ordinal);
         var queries = (names ?? Array.Empty<string>())
@@ -56,11 +56,16 @@ public sealed class BettingRepository
                   GROUP BY name",
                 new { months, pat }, cancellationToken: ct))).ToList();
 
-            var total = rows
-                .Where(r => string.Equals(TeamNames.CoreKey(r.Name), grp.Key, StringComparison.Ordinal))
-                .Sum(r => r.N);
-
-            foreach (var q in grp) result[q.Name] = total;
+            // ★ 身份闸（2026-11-14 第九轮）：核心名相同**不等于**同一支队。
+            // 解析层已经按梯队身份拒绝 `不来梅 → JFV不来梅U19`、`谢周三 → 谢周三U21`，
+            // 计数层若只按核心名归并，就会把梯队的场次算进一线队——同一轮里
+            // 「解析说不认识」与「库里有 22 场」同时成立，`name-unresolved` 也就永远判不出真假。
+            // 这里用与解析同一份实现（`TeamNames.SameCountIdentity`），只把真正的同一支队合并。
+            foreach (var q in grp)
+                result[q.Name] = rows
+                    .Where(r => string.Equals(TeamNames.CoreKey(r.Name), grp.Key, StringComparison.Ordinal)
+                                && TeamNames.SameCountIdentity(q.Name, r.Name))
+                    .Sum(r => r.N);
         }
 
         return result;

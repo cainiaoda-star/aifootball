@@ -274,15 +274,35 @@ public sealed class MilkSourceReport
 /// 为什么 ⑥ 不能省：⑤ 只查「源有档 → 引擎没算」，源侧自己少采一档时预期和输入一起少，
 /// 两边同时为「对」——与 1419319 同一种病因（预期取自被检验的一方）。
 /// 也正因为如此，「采集里没有某玩法的赔率」**不得**被当成「该玩法未启售」：
-/// 未启售需要源侧落库的启售清单才能证明，本轮没有这个字段，所以一律按缺档阻断。
+/// 未启售需要源侧落库的启售清单才能证明，而库内没有这个字段（见 <see cref="SaleBasis"/>），
+/// 所以一律按缺档阻断——这是**无法判定时的保守阻断**，不是「54 档齐全即合格」的验收标准。
+/// 阻断时把 `sale-basis=unavailable` 写进问题键，事后能分清「真缺档」与「不知道有没有启售」。
 /// </summary>
 public static class MilkSourceSlate
 {
     /// <summary>赔率采样允许的最大年龄（分钟）。超龄不是「数据旧」，是「本轮不该拿它出票」。</summary>
-    public const int MaxSampleAgeMinutes = 30;
+    public const int MaxSampleAgeMinutes = MilkThresholds.MaxSampleAgeMinutes;
 
-    /// <summary>判「真新队」时与出注门槛同源（<c>MilkPickEngine.MinTeamGames</c>），由调用方传入。</summary>
-    public const int DefaultMinTeamGames = 5;
+    /// <summary>
+    /// 判「真新队」的门槛。**与出注门槛同一个常量**（2026-11-14 第九轮）：
+    /// 这里原来是 5、引擎是 3，一支 4 场样本的队会同时被引擎算进来、被核对器当新队放行。
+    /// 现在两边都读 <see cref="MilkThresholds.MinTeamGames"/>。
+    /// </summary>
+    public const int DefaultMinTeamGames = MilkThresholds.MinTeamGames;
+
+    /// <summary>
+    /// 玩法启售依据（2026-11-14 第九轮核查结论）：**无法判定**。
+    ///
+    /// 查过的地方：`BettingCard` 只有 `SpfHome/Draw/Away` 三列（胜平负水位），
+    /// 全库没有任何逐玩法的「本场启售/未启售」字段；采集入口 `FetchJcAllPlaysAsync`
+    /// 是从 500 的四个页面各抓一张选项表，某玩法页没抓到（限流、改版、解析失败）
+    /// 与「该场不卖这个玩法」在返回值上完全同形——都是空列表。
+    ///
+    /// 所以：**不得**从「赔率缺失」反推「未启售」，也**不得**把「一律要求满 54 档」
+    /// 说成验收标准（那是「无法判定时保守阻断」的兜底，不是口径正确性的证明）。
+    /// 要打开豁免口子，必须先让采集侧落库逐玩法启售清单，另行报批。
+    /// </summary>
+    public const string SaleBasis = "unavailable";
 
     /// <param name="teamGames">
     /// 独立库检：给定队名，返回该队近 18 个月的完赛场次。空/为 null 时视为**无法证明**，
@@ -447,7 +467,8 @@ public static class MilkSourceSlate
                 {
                     Table = "source", Kind = "source-option-gap",
                     Key = $"{m.MatchId}|{m.MatchNo}|{play}|缺 {missingTotal}/{domain.Count}"
-                          + $"|{string.Join(",", sample)}{(missingTotal > sample.Count ? ",…" : "")}",
+                          + $"|{string.Join(",", sample)}{(missingTotal > sample.Count ? ",…" : "")}"
+                          + $"|sale-basis={SaleBasis}",
                     Expected = domain.Count, Actual = domain.Count - missingTotal
                 });
             }

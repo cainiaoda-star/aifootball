@@ -460,6 +460,17 @@ public static class MilkIsolatedCheck
             $"源 {srcSnap.Count} 场（应 2）；M6 档位 {(snapM6?.OptionKeys.Count ?? -1)}（应 3）；"
             + $"最新采样 {snapM6?.LastSampleAt:HH:mm}（应 ≤ {runAt:HH:mm}）"));
 
+        // ④-13b：**引擎取价也要停在同一时刻**（2026-11-14 第九轮）。
+        // 之前只有源快照带边界，引擎仍取「此刻最新」：账本核的是 asOf 的清单，
+        // 票却是用 asOf 之后落库的价算的——缺档、超龄这些判据全都查不到真正被用的那份数据。
+        var jcOdds = new JcOddsRepository(new SqlConnectionFactory(auditStr));
+        var latestAt = await jcOdds.GetLatestAsync(new[] { M6 }, ct, runAt);
+        var latestAny = await jcOdds.GetLatestAsync(new[] { M6 }, ct);
+        checks.Add(("④-13b 引擎取价按同一时刻截止：asOf 之后落库的档位不进本轮",
+            latestAt.Count == 3 && latestAt.All(p => p.PlayType == "SPF")
+            && latestAny.Count == 3 + JcPlayDomain.Bf.Count,
+            $"asOf 内 {latestAt.Count} 档（应 3，全 SPF）；不加边界 {latestAny.Count} 档（应 {3 + JcPlayDomain.Bf.Count}）"));
+
         // ── 总裁定：报表必须与空跑台账逐项相等 ──
         var milkRep = await milk.GetReportAsync(30, ct);
         var paperRep = await paper.GetReportAsync(30, ct);

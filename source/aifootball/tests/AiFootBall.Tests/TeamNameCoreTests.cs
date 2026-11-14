@@ -120,4 +120,58 @@ public class TeamNameCoreTests
         // 不是「相似就行」：改字（塞维利亚 vs 塞维尔亚）推不出来，必须一模一样。
         Assert.NotEqual(TeamNames.CoreKey("塞维利亚"), TeamNames.CoreKey("塞维尔亚"));
     }
+
+    // ─────────── 计数身份（2026-11-14 第九轮） ───────────
+    //
+    // 用户点名的问题：解析时区分一线队与梯队，`GetRecentTeamGamesAsync` 却只按核心名归并——
+    // 「不来梅」解析层已经拒绝 `JFV不来梅U19`，计数层仍把 U19 的场次算进一线队。
+    // 两个后果：① `name-unresolved` 的独立库检永远证明不了「真新队」；
+    //          ② 同一轮里「认不出这支队」与「库里有 22 场」同时成立。
+
+    [Fact]
+    public void CountIdentity_DoesNotMergeReserveTeamIntoSenior()
+    {
+        Assert.False(TeamNames.SameCountIdentity("不来梅", "JFV不来梅U19"));
+        Assert.False(TeamNames.SameCountIdentity("谢周三", "谢周三U21"));
+        // 梯队之间也不能互并：U19 与 U21 是两支不同的队。
+        Assert.False(TeamNames.SameCountIdentity("谢周三U21", "谢周三U19"));
+    }
+
+    [Fact]
+    public void CountIdentity_MergesSponsorSuffixBothWays()
+    {
+        // 计数是为了「这支队踢过几场」：库内同一支队会有带/不带冠名后缀两种写法，
+        // 谁多谁少取决于当年从哪个源入库，任一方向包含都该合并。
+        Assert.True(TeamNames.SameCountIdentity("大宫松鼠", "大宫松鼠RB"));
+        Assert.True(TeamNames.SameCountIdentity("大宫松鼠RB", "大宫松鼠"));
+        Assert.True(TeamNames.SameCountIdentity("蔚山现代", "蔚山HD"));
+    }
+
+    [Fact]
+    public void ResolveIdentity_IsOneDirectional()
+    {
+        // 解析要比计数严：查询名多 RB 是冠名后缀（允许），
+        // 候选名多 U21 是另一支队（拒绝）——方向反了就会把梯队样本拿来出一线队的票。
+        Assert.True(TeamNames.SameResolveIdentity("大宫松鼠RB", "大宫松鼠"));
+        Assert.False(TeamNames.SameResolveIdentity("大宫松鼠", "大宫松鼠RB"));
+        Assert.False(TeamNames.SameResolveIdentity("谢周三", "谢周三U21"));
+    }
+
+    [Fact]
+    public void CountAndResolve_ShareTheSameReserveGate()
+    {
+        // 两条身份判定的**唯一**差别是 ASCII 记号方向，梯队那道闸必须完全一致：
+        // 梯队标记不同的两支队，两个方法都必须拒绝——否则又会回到「解析拒绝、计数合并」的两套口径。
+        foreach (var (q, c) in new[]
+                 {
+                     ("不来梅", "JFV不来梅U19"), ("谢周三", "谢周三U21"),
+                     ("谢周三U21", "谢周三U19"), ("大宫松鼠", "大宫松鼠RB"),
+                     ("大宫松鼠RB", "大宫松鼠"), ("蔚山现代", "蔚山HD")
+                 })
+        {
+            if (TeamNames.ReserveMark(q) == TeamNames.ReserveMark(c)) continue;
+            Assert.False(TeamNames.SameResolveIdentity(q, c), $"{q} vs {c} 解析层不该认");
+            Assert.False(TeamNames.SameCountIdentity(q, c), $"{q} vs {c} 计数层不该并");
+        }
+    }
 }

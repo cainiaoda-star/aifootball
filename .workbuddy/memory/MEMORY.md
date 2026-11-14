@@ -44,6 +44,10 @@
 - ★★ **档位域必须是代码清单，不是档数**（`JcPlayDomain`，11-14 第八轮）：BQ 有 3 场脏码（`平/胜` 等）让「10 档」看起来齐整。`source-option-gap` 对**所有**源场次逐玩法逐代码比对；域外脏码不阻断、`missing-option` 只看域内。**不给「未启售」豁免**——库里没有逐玩法启售字段，「没采到赔率」一律按缺档阻断（要开口子先加字段报批）。
 - ★★ **源快照必须按 `StartedAt` 截止**（`GetJcSourceSnapshotAsync(asOf)`，两张表都带 `CapturedAt <= @asOf`）：running 头与「最新采样时刻」都不参与过滤，事后补采会改写上一轮的应有场次。
 - ★★ **核心名兜底必须带梯队身份闸**：`ReserveMark(查询)==ReserveMark(候选)` + `AsciiMarks(候选) ⊆ AsciiMarks(查询)`。方向关键：查询多 `RB` 允许，候选多 `U21` 拒绝。**「样本不足会 thin-sample 拒发」不是防误配保障**（梯队≥5 场就出票）。
+- ★★★ **同一轮只能有一个时间基准**（11-14 第九轮）：引擎取价也必须 `GetLatestAsync(asOf: runAt)`，与 `GetJcSourceSnapshotAsync(runAt)` 同刻；否则账本验 08:40 的清单、票用 08:52 的价。
+- ★★★ **身份判定与门槛各只准一份实现**：`TeamNames.SameResolveIdentity`（候选⊆查询）/`SameCountIdentity`（互相包含）——解析与历史计数不能两套口径（解析拒梯队、计数却并梯队 = 库检永远证不出真新队）。门槛 `MilkThresholds.MinTeamGames=3`（引擎与核对同读，不许再写第二个数）。
+- ★ **玩法启售依据 = 无法判定**：`BettingCard` 无逐玩法字段，采集器抓空与「不卖」同形。缺档一律阻断并记 `sale-basis=unavailable`；**不得把「一律 54 档」说成验收标准**，也不得从赔率缺失反推未启售。
+- ★ 计数口径变严会**暴露**归一化缺口：`谢周三` 由 31（含 U21）→0，会被判「真新队」放行；正解是别名（`谢菲尔德星期三`），不是放宽判据。
 - ★ 回滚只回退二进制并**保留新表**，不 `DROP TABLE`（11-14 用户更正）。
 
 ## 六 赔率新鲜度（按链路分开）

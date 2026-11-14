@@ -67,8 +67,11 @@ public static class MilkPickEngine
     /// 代价：回测分层显示 3-5 场组 Brier 0.6239，仍比市场差（0.5857），
     /// 比 0-2 场组（0.6372）好、比瞎猜基线（0.6478）好，但谈不上准。
     /// 这是「先出注、标风险」的产品取舍，不是「变准了」。样本积累到 10+ 场时应回调到 5。
+    ///
+    /// 2026-11-14 第九轮：值搬进 <see cref="MilkThresholds"/>，发布核对读同一个常量。
+    /// 这里保留同名字段只是为了不动既有调用点，**不要再写第二个数字**。
     /// </summary>
-    public const int MinTeamGames = 3;
+    public const int MinTeamGames = MilkThresholds.MinTeamGames;
 
     /// <summary>半全场大奶线。用户 2026-11-04 指定：4.0 以下不发。</summary>
     public const decimal MinHalfFullOdds = 4.0m;

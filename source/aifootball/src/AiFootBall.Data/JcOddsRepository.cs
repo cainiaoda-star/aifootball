@@ -655,22 +655,35 @@ FROM ins;";
         };
     }
 
-    /// <summary>每场每个选项取最近一次大于 1 的赔率。1 是完场后的占位，不当成报价。</summary>
-    public async Task<List<JcOddsHistoryPoint>> GetLatestAsync(IEnumerable<long> matchIds, CancellationToken ct = default)
+    /// <summary>
+    /// 每场每个选项取最近一次大于 1 的赔率。1 是完场后的占位，不当成报价。
+    ///
+    /// <paramref name="asOf"/>（2026-11-14 第九轮加）：只认**该时刻及之前**的采样。
+    /// 为什么必须给：发布核对按 `FbMilkRun.StartedAt` 冻结源侧清单，而引擎这边原来取的是
+    /// 「此刻最新的价」。两条链路各看一个时间点，于是核对器证明的是另一批赔率——
+    /// 采样在 `runAt` 之后又落了一行时，引擎用的是新价、账本记的是旧清单，
+    /// 缺档/超龄这些判据全都查不到真正被用的那份数据上。
+    /// 传 null 保持旧行为（回测/复盘要看「当时最新」，不受本轮边界约束）。
+    /// </summary>
+    public async Task<List<JcOddsHistoryPoint>> GetLatestAsync(
+        IEnumerable<long> matchIds, CancellationToken ct = default, DateTime? asOf = null)
     {
         var ids = matchIds.Distinct().ToArray();
         if (ids.Length == 0) return new();
 
         await using var conn = await _factory.OpenAsync(ct);
+        // 上界用「极大值」而不是 `@asOf IS NULL OR ...`：参数始终有值，不走 OR，
+        // 索引也能用上——这个查询在每轮 11 场 × 54 档上跑，不该为了「null 表示不限」多付扫描。
+        var until = asOf ?? DateTime.MaxValue;
         return (await conn.QueryAsync<JcOddsHistoryPoint>(new CommandDefinition(
             @"SELECT MatchId, PlayType, OptionCode, OptionName, Odds
               FROM (
                   SELECT MatchId, PlayType, OptionCode, OptionName, Odds,
                          ROW_NUMBER() OVER (PARTITION BY MatchId, PlayType, OptionCode ORDER BY CapturedAt DESC) AS rn
                   FROM dbo.FbJcOddsHistory
-                  WHERE MatchId IN @ids AND Odds > 1
+                  WHERE MatchId IN @ids AND Odds > 1 AND CapturedAt <= @until
               ) t WHERE rn = 1",
-            new { ids }, cancellationToken: ct))).ToList();
+            new { ids, until }, cancellationToken: ct))).ToList();
     }
 
     /// <summary>各场胜平负的最新价。键是 MatchId，值是胜/平/负。</summary>

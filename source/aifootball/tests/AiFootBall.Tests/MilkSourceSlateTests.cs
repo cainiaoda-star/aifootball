@@ -316,4 +316,38 @@ public class MilkSourceSlateTests
         Assert.True(r.Ok);
         Assert.Equal(0, r.ComputedCount);
     }
+
+    // ─────────── 第九轮：门槛同源 + 启售依据「无法判定」 ───────────
+
+    [Fact]
+    public void MinTeamGames_IsOneConstant()
+    {
+        // 引擎出票门槛与核对器「真新队」门槛必须是同一个数（原来是 3 与 5）。
+        // 一支 4 场样本的队曾同时被引擎「算进来」、被核对器「当新队放行」，两个结论都自称有依据。
+        Assert.Equal(MilkThresholds.MinTeamGames, MilkSourceSlate.DefaultMinTeamGames);
+        Assert.Equal(MilkThresholds.MinTeamGames, AiFootBall.Sources.MilkPickEngine.MinTeamGames);
+        Assert.Equal(MilkThresholds.MaxSampleAgeMinutes, MilkSourceSlate.MaxSampleAgeMinutes);
+    }
+
+    [Fact]
+    public void SourceOptionGap_RecordsSaleBasisAsUnavailable()
+    {
+        // 库里没有逐玩法启售字段，「缺档」与「未启售」无法区分。
+        // 判据照旧阻断（保守），但必须把「无法判定」写进问题键——
+        // 否则事后会把它当成「真缺档」的结论，而它其实只是「不知道」。
+        //
+        // 构造：源侧自己少一档、引擎与源侧完全一致（没有 missing-option），
+        // 这样报出来的只可能是「源侧缺档」，不会和「引擎少算」混在一起。
+        var keys = FullKeys();
+        var source = new[] { Src(1, "周六001", "A", "B", keys: keys.Take(keys.Count - 1)) };
+        var inputs = new[] { InpFrom(1, "周六001", "A", "B", keys.Take(keys.Count - 1)) };
+
+        var r = MilkSourceSlate.Verify(source, inputs, Array.Empty<MilkInputRejection>(), RunAt);
+
+        var gap = Assert.Single(r.Issues, i => i.Kind == "source-option-gap");
+        Assert.Contains($"sale-basis={MilkSourceSlate.SaleBasis}", gap.Key);
+        Assert.Equal("unavailable", MilkSourceSlate.SaleBasis);
+        Assert.DoesNotContain(r.Issues, i => i.Kind == "missing-option");
+        Assert.False(r.Ok);
+    }
 }

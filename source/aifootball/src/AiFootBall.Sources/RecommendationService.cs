@@ -152,13 +152,16 @@ public sealed class RecommendationService
     /// </summary>
     public async Task<MilkBuildResult> RecommendMilkWithGateAsync(
         IReadOnlyList<MatchRecommendation>? jcRecs = null, CancellationToken ct = default,
-        bool perMatch = false)
+        bool perMatch = false, DateTime? asOf = null)
     {
         var recs = jcRecs ?? await RecommendAsync(Boards.Jc, null, ct);
         var fids = recs.Where(r => r.MatchId is > 0).Select(r => r.MatchId!.Value).Distinct().ToList();
         if (fids.Count == 0 || _hit is null) return new();
 
-        var points = await _jcOdds.GetLatestAsync(fids, ct);
+        // `asOf`（2026-11-14 第九轮）：落库说的那一轮只认该时刻及之前的采样，
+        // 与 `GetJcSourceSnapshotAsync(runAt)` 同一时间点。不给（诊断/API 预览）就取此刻最新。
+        // 两条链路各看一个时间点，等于核对器在验另一批数据——缺档、超龄都查不到真正被用的那份。
+        var points = await _jcOdds.GetLatestAsync(fids, ct, asOf);
         var odds = points
             .Where(p => p.MatchId is > 0)
             .GroupBy(p => p.MatchId!.Value)
@@ -913,8 +916,12 @@ public sealed class RecommendationService
         //
         // 另外每轮生成一个 RunId（2026-11-13 第二轮）：输入凭证、全档存档、闸门、注单、
         // 轮次头五处都写同一个 RunId，验收按轮核对，不再拿上一轮的存档冒充本轮覆盖。
+        // ★ `runAt` 是**这一轮的时间点**，计算与核对都必须停在这里（2026-11-14 第九轮）。
+        // 之前只把它写进 `FbMilkRun.StartedAt` 和源快照，引擎仍取「此刻最新价」：
+        // 采样在 runAt 之后又落一行时，账本核对的是 08:40 的清单、票是用 08:52 的价算的，
+        // 两条链路对不上还都自称有依据。现在 `asOf: runAt` 让两边看同一份采样。
         var runAt = DateTime.Now;
-        var build = await RecommendMilkWithGateAsync(jcRecs, ct);
+        var build = await RecommendMilkWithGateAsync(jcRecs, ct, asOf: runAt);
 
         // ★ 采集状态（2026-11-13 第三轮）：`RawMatches > 0` 只证明「拿到了一些场次」。
         // 部分采集会让 `GetCardsAsync` 的工作集凭空缩小（其余行停在上一批的 CapturedAt），
@@ -1297,7 +1304,11 @@ public sealed class RecommendationService
         var gamesSnapshot = games;
         var sourceReport = MilkSourceSlate.Verify(
             source, build.Inputs, build.Rejections, runAt,
-            name => !string.IsNullOrWhiteSpace(name) && gamesSnapshot.TryGetValue(name!.Trim(), out var n) ? n : -1);
+            name => !string.IsNullOrWhiteSpace(name) && gamesSnapshot.TryGetValue(name!.Trim(), out var n) ? n : -1,
+            // 门槛只有一份（2026-11-14 第九轮）：核对器这里的值曾经是 5、引擎出票门槛是 3，
+            // 一支 4 场样本的队会被引擎算进来、又被核对器当「真新队」放行。
+            // 现在两边都读 `MilkThresholds.MinTeamGames`（= 引擎线上实际生效的 3）。
+            minTeamGames: MilkThresholds.MinTeamGames);
         pre.AddRange(sourceReport.Issues);
         if (!string.IsNullOrWhiteSpace(sourceError))
             pre.Add(new MilkLedgerIssue

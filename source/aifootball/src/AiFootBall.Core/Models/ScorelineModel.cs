@@ -425,8 +425,7 @@ public sealed class ScorelineModel
         if (qCore.Length > 0
             && _globalCore.TryGetValue(qCore, out var coreName)
             && coreName.Length > 0
-            && string.Equals(ReserveMark(n), ReserveMark(coreName), StringComparison.Ordinal)
-            && AsciiMarks(coreName).IsSubsetOf(AsciiMarks(n)))
+            && TeamNames.SameResolveIdentity(n, coreName))
             return coreName;
 
         if (!_globalAlias.TryGetValue(n, out var cached))
@@ -478,41 +477,14 @@ public sealed class ScorelineModel
         return prefix is not null ? (prefix, false) : (null, true);
     }
 
-    /// <summary>青年队 / 后备队 / B 队 / 女足这类附属队。它们和一线队是两套数据，不能混。</summary>
-    private static bool IsReserveOrYouth(string name) => ReserveMark(name).Length > 0;
-
     /// <summary>
-    /// 命中的梯队标记（没命中返回空串）。返回具体标记而不只是 true/false，
-    /// 是因为「谢周三U21」和「谢周三U19」是两支不同的队——只判「都是梯队」会把它们混起来。
+    /// 青年队 / 后备队 / B 队 / 女足这类附属队。它们和一线队是两套数据，不能混。
+    ///
+    /// 2026-11-14 第九轮：判定搬到 <see cref="TeamNames"/>，与历史样本计数共用一份实现。
+    /// 之前解析在这里判、`GetRecentTeamGamesAsync` 只按核心名归并，两边口径不一致——
+    /// 「不来梅」（解析层已拒绝 U19）在计数层仍把 `JFV不来梅U19` 的场次算进一线队。
     /// </summary>
-    private static string ReserveMark(string name)
-    {
-        foreach (var mark in ReserveMarks)
-            if (name.Contains(mark, StringComparison.Ordinal)) return mark;
-        return string.Empty;
-    }
-
-    /// <summary>
-    /// 队名里的 ASCII 记号集合（小写），如 `大宫松鼠RB` → {rb}、`谢周三U21` → {u21}。
-    /// 用于核心名兜底前的身份闸：候选多出来的记号（U21/II/B/JFV）不能凭空带进来。
-    /// </summary>
-    private static HashSet<string> AsciiMarks(string name)
-    {
-        var set = new HashSet<string>(StringComparer.Ordinal);
-        var sb = new System.Text.StringBuilder(4);
-        foreach (var ch in name)
-        {
-            if (ch >= 'A' && ch <= 'Z') { sb.Append((char)(ch + 32)); continue; }
-            if (ch >= 'a' && ch <= 'z') { sb.Append(ch); continue; }
-            if (ch >= '0' && ch <= '9') { sb.Append(ch); continue; }
-            if (sb.Length > 0) { set.Add(sb.ToString()); sb.Clear(); }
-        }
-        if (sb.Length > 0) set.Add(sb.ToString());
-        return set;
-    }
-
-    private static readonly string[] ReserveMarks =
-        { "青年队", "后备队", "预备队", "B队", "U19", "U20", "U21", "U23", "女足", "女子" };
+    private static bool IsReserveOrYouth(string name) => TeamNames.IsReserveOrYouth(name);
 
     /// <summary>shortName 的每个字是否按顺序出现在 longName 里（不要求连续）。</summary>
     private static bool IsSubsequence(string shortName, string longName)
