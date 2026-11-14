@@ -437,6 +437,38 @@ public class MilkSourceSlateTests
     }
 
     [Fact]
+    public void NameUnresolved_Issue_ReachesThePublishGate()
+    {
+        // 「判定成立」不等于「本轮不发布」，中间还有一跳：源侧问题进核对器的 pre 列表，
+        // 由它把整轮判成不通过 → 服务把轮次标 failed → 不写 `FbMilkRunDate` →
+        // 榜面读的是「该受注日最新的 success 轮」，于是停在上一次成功的榜上。
+        //
+        // 隔离库 ④-16d 验的是最后那一跳，但那里的 failed 是手工关的（假定服务已经这么判）。
+        // 这条补上前半跳：源侧问题**确实是致命的**。若哪天有人把它降级成告警/过滤掉，
+        // ④-16d 依旧会绿（它自己关轮次），只有这条会红。
+        var source = new[] { Src(1, "周六002", "首次出现FC", "山形山神") };
+        var rejects = new[]
+        {
+            Rej(1, "周六002", MilkInputRejection.ReasonNameUnresolved,
+                "team=首次出现FC;league=日职乙;games=0;min=3",
+                home: "首次出现FC", away: "山形山神")
+        };
+
+        var src = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt,
+            _ => 0, nameVariants: _ => Array.Empty<string>());
+        Assert.False(src.Ok);
+
+        // 四张表的账本本身完全对齐（预期 = 实际）：整轮不通过只可能来自源侧那一条。
+        var aligned = new[] { new MilkLedgerRow { Key = "1", Count = 1 } };
+        var report = MilkRunLedger.Verify(
+            new[] { new MilkLedgerPair { Table = "input", Expected = aligned, Actual = aligned } },
+            src.Issues);
+
+        Assert.False(report.Ok);
+        Assert.Contains(report.Issues, i => i.Kind == "rejected-rejection" && i.Key.Contains("不能作为新队证明"));
+    }
+
+    [Fact]
     public void ZeroSource_ZeroInput_ZeroRejection_Passes()
     {
         // 没有受注场次的一轮：两边都空，本来就通过，不需要任何豁免。
