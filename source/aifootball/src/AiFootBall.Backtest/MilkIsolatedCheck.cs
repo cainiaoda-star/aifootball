@@ -555,6 +555,118 @@ public static class MilkIsolatedCheck
             + $"；不来梅→[{string.Join(",", variantsByAlias.GetValueOrDefault("不来梅") ?? Array.Empty<string>())}]"
             + $"；全新测试FC→{variantsByAlias.GetValueOrDefault("全新测试FC")?.Count ?? -1} 条（应 0，不是 null）"));
 
+        // ── ④-16 队名解析失败不再因「计数 < 门槛」自动豁免（2026-11-14 第十二轮） ──
+        //
+        // 上一版：库检 games=0 且变体探查为空 → 把拒绝原因升级成 new-team、Accepted=true，整轮放行。
+        // 现在取消这条路径：解析失败就是解析失败，0 场与 1~2 场都阻断；
+        // 「样本不足」另有 thin-sample（模型认出了队、身份已确认），两者不能混用，门槛仍是 3。
+        //
+        // 这一节除了判据，还要验**后果**（用户点名）：被这条挡住的轮次必须 failed、**榜面不动**——
+        // 否则「阻断」只写在日志里，榜面照样被换掉。为了让「榜面不动」不是空断言，
+        // 先发一轮成功榜（F，M1）、再跑被挡的一轮（E，M2 注单真的写进库）、
+        // 最后再发一轮成功榜（G、M2）——F→E 不变、E→G 会变，才说明榜面查询是活的。
+        MilkInputRejection NameRej(long mid, string no, string team, int games) => new()
+        {
+            MatchId = mid, MatchNo = no, LeagueName = "审计联赛",
+            HomeTeam = team, AwayTeam = "审计对手",
+            Reason = MilkInputRejection.ReasonNameUnresolved,
+            Evidence = $"team={team};league=审计联赛;games={games};min={MilkThresholds.MinTeamGames}"
+        };
+
+        var srcTwo = new[] { Src(M1, "周日001"), Src(M2, "周日002") };
+        var inputOne = new[] { InputFull(M1, "周日001", FullKeys()) };
+
+        var vZero = MilkSourceSlate.Verify(srcTwo, inputOne,
+            new[] { NameRej(M2, "周日002", "首次出现FC", 0) }, runAt,
+            _ => 0, nameVariants: _ => Array.Empty<string>());
+        checks.Add(("④-16a 未解析且库检 0 场（变体探查也查不到）→ 仍阻断，不升级 new-team",
+            !vZero.Ok
+            && vZero.Issues.Any(i => i.Kind == "rejected-rejection" && i.Key.Contains("不能作为新队证明"))
+            && !vZero.Rejections.Any(x => x.Accepted)
+            && !vZero.Rejections.Any(x => x.Reason == MilkInputRejection.ReasonNewTeam),
+            vZero.Detail));
+
+        var vTwo = MilkSourceSlate.Verify(srcTwo, inputOne,
+            new[] { NameRej(M2, "周日002", "首次出现FC", Math.Max(1, MilkThresholds.MinTeamGames - 1)) },
+            runAt, _ => Math.Max(1, MilkThresholds.MinTeamGames - 1),
+            nameVariants: _ => Array.Empty<string>());
+        checks.Add(($@"④-16b 未解析且库检 1~{MilkThresholds.MinTeamGames - 1} 场（< 门槛）→ 同样阻断",
+            !vTwo.Ok
+            && vTwo.Issues.Any(i => i.Kind == "rejected-rejection" && i.Key.Contains("队名无法确认"))
+            && !vTwo.Rejections.Any(x => x.Accepted),
+            vTwo.Detail));
+
+        // 同样 2 场，但身份已确认（thin-sample）→ 规则内拒绝，不阻断。区别在身份，不在数字。
+        var thin = MilkSourceSlate.Verify(srcTwo, inputOne,
+            new[]
+            {
+                new MilkInputRejection
+                {
+                    MatchId = M2, MatchNo = "周日002", LeagueName = "审计联赛",
+                    HomeTeam = "首次出现FC", AwayTeam = "审计对手",
+                    Reason = MilkInputRejection.ReasonThinSample,
+                    Evidence = $"games={Math.Max(1, MilkThresholds.MinTeamGames - 1)};min={MilkThresholds.MinTeamGames}"
+                }
+            }, runAt, _ => Math.Max(1, MilkThresholds.MinTeamGames - 1));
+        checks.Add(("④-16c 同样场次但 thin-sample（身份已确认）→ 放行，门槛未改",
+            thin.Ok && thin.Rejections.Count == 1 && thin.Rejections[0].Accepted
+            && MilkThresholds.MinTeamGames == 3,
+            $"{thin.Summary}；门槛={MilkThresholds.MinTeamGames}"));
+
+        // F：先立一面成功榜（M1）。
+        await milk.StartRunAsync(new MilkRun
+        {
+            RunId = "AUDIT-GATE-F", StartedAt = runAt.AddMinutes(20), RawMatches = 1, SalesDates = new[] { d3 }
+        }, d3, "rewrite", "审计：队名阻断前的成功榜", ct);
+        await milk.SaveDayAsync(d3, new List<MilkPick>
+        {
+            new() { MatchId = M1, MatchNo = "周日001", PlayType = JcPlayTypes.Spf, OptionCode = "3", Odds = 2.22m }
+        }, "AUDIT-GATE-F", ct);
+        await milk.PublishRunAsync("AUDIT-GATE-F",
+            new[] { new MilkRunDateCount { SalesDate = d3, PickCount = 1 } }, 1, 3, 0, 1, "审计：成功榜", ct);
+
+        // E：这一轮的场次里有「队名未解析且库检 0 场」→ 判 failed。注单照样写进库（模拟落库已完成）。
+        await milk.StartRunAsync(new MilkRun
+        {
+            RunId = "AUDIT-GATE-E", StartedAt = runAt.AddMinutes(25), RawMatches = 2, SalesDates = new[] { d3 }
+        }, d3, "rewrite", "审计：队名未确认", ct);
+        await milk.SaveDayAsync(d3, new List<MilkPick>
+        {
+            new() { MatchId = M2, MatchNo = "周日002", PlayType = JcPlayTypes.Spf, OptionCode = "0", Odds = 3.30m }
+        }, "AUDIT-GATE-E", ct);
+        await milk.CloseRunAsync("AUDIT-GATE-E", MilkRunStatus.Failed,
+            $"源侧账本：队名无法确认（按本名查得 0 场，门槛 {MilkThresholds.MinTeamGames}）", 1, 3, 0, 1, ct);
+
+        var boardAfterE = await milk.GetDayAsync(d3, ct);
+        var eStatus = await c.QueryFirstOrDefaultAsync<string>(new CommandDefinition(
+            "SELECT Status FROM dbo.FbMilkRun WHERE RunId='AUDIT-GATE-E'", cancellationToken: ct));
+        var eDateRows = await c.QueryFirstOrDefaultAsync<int>(new CommandDefinition(
+            "SELECT COUNT(*) FROM dbo.FbMilkRunDate WHERE RunId='AUDIT-GATE-E'", cancellationToken: ct));
+        var ePickRows = await c.QueryFirstOrDefaultAsync<int>(new CommandDefinition(
+            "SELECT COUNT(*) FROM dbo.FbMilkPick WHERE RunId='AUDIT-GATE-E'", cancellationToken: ct));
+        checks.Add(("④-16d 被队名判据挡住的一轮：注单在库但不上榜（榜面仍 F 的 M1）",
+            boardAfterE.Count == 1 && boardAfterE.All(x => x.MatchId == M1)
+            && eStatus == MilkRunStatus.Failed && eDateRows == 0 && ePickRows == 1,
+            $"榜面 {boardAfterE.Count} 注，MatchId={string.Join(",", boardAfterE.Select(x => x.MatchId))}（应 M1）"
+            + $"；E 状态 {eStatus}；E 的 RunDate {eDateRows} 行、注单 {ePickRows} 行（应 0 / 1）"));
+
+        // G：再发一轮成功榜（M2）→ 榜面必须跟着换，证明 ④-16d 不是「查询根本没工作」。
+        await milk.StartRunAsync(new MilkRun
+        {
+            RunId = "AUDIT-GATE-G", StartedAt = runAt.AddMinutes(30), RawMatches = 1, SalesDates = new[] { d3 }
+        }, d3, "rewrite", "审计：成功榜顶替", ct);
+        await milk.SaveDayAsync(d3, new List<MilkPick>
+        {
+            new() { MatchId = M2, MatchNo = "周日002", PlayType = JcPlayTypes.Spf, OptionCode = "0", Odds = 3.30m }
+        }, "AUDIT-GATE-G", ct);
+        await milk.PublishRunAsync("AUDIT-GATE-G",
+            new[] { new MilkRunDateCount { SalesDate = d3, PickCount = 1 } }, 1, 3, 0, 1, "审计：成功榜顶替", ct);
+
+        var boardAfterG = await milk.GetDayAsync(d3, ct);
+        checks.Add(("④-16e 之后的成功轮能正常顶榜（证明榜面查询是活的）",
+            boardAfterG.Count == 1 && boardAfterG.All(x => x.MatchId == M2),
+            $"榜面 {boardAfterG.Count} 注，MatchId={string.Join(",", boardAfterG.Select(x => x.MatchId))}（应 M2）"));
+
         // ── 总裁定：报表必须与空跑台账逐项相等 ──
         var milkRep = await milk.GetReportAsync(30, ct);
         var paperRep = await paper.GetReportAsync(30, ct);

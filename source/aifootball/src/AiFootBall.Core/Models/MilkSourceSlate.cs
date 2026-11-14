@@ -82,8 +82,10 @@ public sealed class MilkInputRejection
 
     /// <summary>
     /// 最终是否被接受（由核对器独立判定后回填）。引擎申报时一律先按规则判：
-    /// 规则本身不接受的原因（如 not-sale）恒 false；`name-unresolved` 要等核对器
-    /// 用**库内真实样本量**判定它到底是「真新队」还是「名字变了」。
+    /// 规则本身不接受的原因（如 not-sale）恒 false。
+    ///
+    /// `name-unresolved` 自 2026-11-14 第十二轮起**恒不接受**：库检只能回答
+    /// 「用这个名字查到几场」，回答不了「这支队是不是新的」（见 <c>Verify</c> 内注释）。
     /// </summary>
     public bool Accepted { get; set; }
 
@@ -96,16 +98,20 @@ public sealed class MilkInputRejection
     public const string ReasonNoOdds = "no-odds";
     /// <summary>主客队名缺失，无法定位球队。</summary>
     public const string ReasonNameMissing = "name-missing";
-    /// <summary>队名解析不出——**默认不接受**，须核对器用库内样本证明是真新队。</summary>
+    /// <summary>队名解析不出——**恒不接受**（2026-11-14 第十二轮），须补别名或人工确认。</summary>
     public const string ReasonNameUnresolved = "name-unresolved";
-    /// <summary>模型认得队，但该队在本联赛样本不足（真样本不足，不是名字问题）。</summary>
+    /// <summary>模型认得队，但该队在本联赛样本不足（**身份已确认**，不是名字问题）。</summary>
     public const string ReasonThinSample = "thin-sample";
     /// <summary>比分分布算出空网格/零质量，无法给任何一档概率。</summary>
     public const string ReasonNoDistribution = "no-distribution";
     /// <summary>比分模型没就绪（样本 &lt; 30 场）：整轮没有可用的概率，不是「这场有问题」。</summary>
     public const string ReasonModelNotReady = "model-not-ready";
 
-    /// <summary>真新队（库内确无样本），由核对器把 name-unresolved 升级而来。</summary>
+    /// <summary>
+    /// 历史原因码：2026-11-14 第十一轮前由核对器把 `name-unresolved` 升级而来。
+    /// **第十二轮起不再产生**——计数小不能证明是新队，身份未确认就是未确认。
+    /// 保留常量只为读懂库里/日志里的旧行，规则恒为不接受。
+    /// </summary>
     public const string ReasonNewTeam = "new-team";
 
     public sealed class Rule
@@ -152,22 +158,22 @@ public sealed class MilkInputRejection
             Reason = ReasonNameUnresolved,
             EvidencePrefix = "team=",
             Accepted = false,
-            Condition = "无正当条件（引擎自己认不出不等于该队没有样本）",
-            RejectNote = "name-unresolved 不接受：须由核对器用独立库检证明该队在近 18 个月确无样本，"
-                         + "且库内不存在同一身份的相近写法，否则这是队名归一化缺陷（1419319 即此形态）"
+            Condition = "无正当条件（引擎自己认不出不等于该队没有样本，也不等于它是新队）",
+            RejectNote = "name-unresolved 不接受：库检只能说明「用这个名字查到几场」，"
+                         + "零计数既可能是真新队、也可能是同一支队换了个写法，二者在计数上不可分。"
+                         + "只能补别名或人工确认（2026-11-14 第十二轮取消「计数 < 门槛即升级 new-team」）"
         },
         new()
         {
             Reason = ReasonNewTeam,
             EvidencePrefix = "team=",
-            // ★ 只能由核对器升级产生（2026-11-14 第十一轮）：上一版这里是 Accepted=true，
-            // 于是调用方只要自己写 `new-team` 就能跳过两道库检——「自报即自证」，
-            // 与 `engine-skipped` 同一种病。现在自报一律按 name-unresolved 重走判定；
-            // 核对器自己升级出来的那条会带上 dbGames/variants，走的是同一条判定后的结果。
+            // ★ 这个原因码自第十二轮起**不再产生**：它原来由核对器把「计数 < 门槛」的
+            // name-unresolved 升级而来，等于用计数证明身份，而计数恰恰分不清「新队」与「换写法」。
+            // 规则恒不接受，只为读懂旧行/旧日志；调用方自报也按 name-unresolved 重走同一套判定。
             Accepted = false,
-            Condition = "由核对器独立库检升级：库内近 18 个月样本 < 出注门槛，且不存在同一身份的相近写法",
-            RejectNote = "new-team 不接受自报：真新队只能由核对器用两次独立查询得出，"
-                         + "调用方自己声明等于用结论证明结论"
+            Condition = "已停用（2026-11-14 第十二轮）：不再有产生它的路径",
+            RejectNote = "new-team 不接受：该原因已停用。计数小不能证明是真新队，"
+                         + "自报或历史轮次里的 new-team 一律按 name-unresolved 重判"
         },
         new()
         {
@@ -198,7 +204,7 @@ public sealed class MilkInputRejection
     public bool EvidenceOk
         => Matched is { } r && HasEvidence && Evidence.StartsWith(r.EvidencePrefix, StringComparison.Ordinal);
 
-    /// <summary>按规则判定（不含「真新队」升级——那一步要独立库检）。</summary>
+    /// <summary>按规则判定（不含任何「升级为接受」的路径——第十二轮起不存在这种路径）。</summary>
     public bool AcceptedByRule => Matched is { Accepted: true } && EvidenceOk;
 
     public string Defect
@@ -270,9 +276,11 @@ public sealed class MilkSourceReport
 /// 判据（每条都能机器核验）：
 ///   ① 源里每一场，必须要么有输入凭证、要么有拒绝记录；两者都有或都没有都判失败；
 ///   ② 拒绝记录必须是枚举内的原因 + 证据前缀相符；
-///   ③ `name-unresolved` 只有在该队近 18 个月样本 **低于出注门槛**、
-///      且库里**不存在同一身份的相近写法**时才算真新队
-///      （由调用方用独立查询判定，不看引擎结论；两道都成立才放行，见 <c>Verify</c> 内注释）；
+///   ③ `name-unresolved` **恒不接受**（2026-11-14 第十二轮）：独立库检只能回答
+///      「用这个名字查到几场」，回答不了「这支队是不是新的」——「谢周三」0 场与
+///      「谢菲尔德星期三」74 场在计数上不可分，零计数既可能是真新队、也可能是换了个写法。
+///      **样本不足另有原因 `thin-sample`（模型认出了这支队、身份已确认）**，两者不能混用；
+///      身份未确认时只能补别名或人工确认，门槛值不动（仍是 3）；
 ///   ④ 算过的场次，其最新赔率采样不得超龄（默认 30 分钟）；超龄即「历史赔率不等于本轮有效」；
 ///   ⑤ 算过的场次，源侧每一个档位都必须出现在输入凭证的档位清单里——
 ///      少一档同样是「引擎少算」，不能靠「预期=输入」自动通过；
@@ -292,9 +300,13 @@ public static class MilkSourceSlate
     public const int MaxSampleAgeMinutes = MilkThresholds.MaxSampleAgeMinutes;
 
     /// <summary>
-    /// 判「真新队」的门槛。**与出注门槛同一个常量**（2026-11-14 第九轮）：
-    /// 这里原来是 5、引擎是 3，一支 4 场样本的队会同时被引擎算进来、被核对器当新队放行。
-    /// 现在两边都读 <see cref="MilkThresholds.MinTeamGames"/>。
+    /// 核对器用来判断「队名与样本是否自相矛盾」的门槛：库内 ≥ 这个数就说明
+    /// **这个名字**确实有队，认不出只能是队名归一化缺陷。
+    /// **与出注门槛同一个常量**（2026-11-14 第九轮）：这里原来是 5、引擎是 3，
+    /// 一支 4 场样本的队会同时被引擎算进来、被核对器当新队放行。
+    ///
+    /// 注意它只用来**加严**（≥ 门槛 → 判队名存疑），**不用来放行**：
+    /// &lt; 门槛 既可能是新队、也可能是换写法，第十二轮起一律阻断，门槛值本身不动。
     /// </summary>
     public const int DefaultMinTeamGames = MilkThresholds.MinTeamGames;
 
@@ -313,13 +325,17 @@ public static class MilkSourceSlate
     public const string SaleBasis = "unavailable";
 
     /// <param name="teamGames">
-    /// 独立库检：给定队名，返回该队近 18 个月的完赛场次。空/为 null 时视为**无法证明**，
-    /// `name-unresolved` 一律不接受（宁可少发一轮，也不把「认不出」当「新队」）。
+    /// 独立库检：给定队名，返回该队近 18 个月的完赛场次。空/为 null 时视为**无法证明**。
+    /// 返回值**只用于说明拒绝理由**（≥ 门槛 → 队名存疑），不构成放行依据：
+    /// &lt; 门槛（含 0）自 2026-11-14 第十二轮起一律阻断。
     /// </param>
     /// <param name="nameVariants">
     /// 第二条独立事实（2026-11-14 第十一轮）：给定队名，返回库内**同一身份、名字相近**的写法
     /// （按 <see cref="TeamNames.SameIdentity"/> 过滤，梯队不算）。返回 null = 这项探查没做/查不到，
-    /// 与「查到 0 条」是两件事——**没做探查不能当没找到**。
+    /// 与「查到 0 条」是两件事。
+    ///
+    /// 第十二轮起它**只作诊断**：查到相近写法就把「这是队名解析缺陷」说清楚，查不到也不放行
+    /// （计数小既可能是新队、也可能是换写法，这一项证明不了是前者）。
     /// </param>
     public static MilkSourceReport Verify(
         IReadOnlyList<MilkSourceMatch>? source,
@@ -394,7 +410,8 @@ public static class MilkSourceSlate
             var defect = r.Defect;
 
             // `name-unresolved` 不能靠引擎自证：名称认不出恰恰说明引擎那套名字解析在这个名字上失效了。
-            // 唯一独立的问题是「库里到底有没有这支队」，所以这里只认独立库检的场次。
+            // 但「库里查得到几场」也**证明不了它是新队**——所以下面两次独立查询（场次、相近写法）
+            // 从第十二轮起只用来**说清拒绝的理由**，没有任何一条构成放行依据。
             //
             // 注意判据顺序：这条原因本身是 `Accepted=false`（默认不放行），
             // 所以不能先看 `Defect`——那会直接拿到「不接受」的说明，永远走不到库检。
@@ -407,22 +424,29 @@ public static class MilkSourceSlate
                 var awayGames = teamGames?.Invoke(r.AwayTeam) ?? -1;
                 var known = Math.Max(homeGames, awayGames);
                 if (known < 0)
-                    defect = "无法证明是真新队（独立库检不可用）";
+                    defect = "无法证明身份（独立库检不可用）：name-unresolved 保持拒绝";
                 else if (known >= minTeamGames)
                     defect = $"队名存疑：库内该队近 18 个月有 {known} 场（门槛 {minTeamGames}），"
                              + "属于队名归一化缺陷，不是新队";
                 else
                 {
-                    // ★ 零计数不能证明是真新队（2026-11-14 第十一轮）：
-                    // `games=0` 只说明「用这个名字查不到」，而 `name-unresolved` 的成因恰恰就是
-                    // 「名字写法不同」——「谢周三」按本名查是 0 场，「谢菲尔德星期三」是 74 场，
-                    // 同一个零把它们判成同一件事。所以还要一条独立事实：库内不存在同一身份的
-                    // 相近写法。两条都成立才升级为 new-team；探查没做/查不到一律按「无法证明」阻断。
+                    // ★ 取消「场次 < 门槛即升级 new-team」（2026-11-14 第十二轮，用户点名）。
+                    //
+                    // 计数全是「用**这个名字**查到几场」。而 name-unresolved 的成因恰恰是名字写法不同：
+                    // 「谢周三」按本名 0 场 / 「谢菲尔德星期三」74 场；「不来梅」0 场 / 「云达不莱梅」58 场。
+                    // 同一个零既可能是「真新队」，也可能是「同一支队换了个写法」——两者在计数上不可分，
+                    // 所以计数（0 或 1~2 都一样）不能作为身份证据。
+                    //
+                    // 样本不足有专门的原因 `thin-sample`：那是**身份已确认**（模型认出了这支队）
+                    // 只是本联赛样本不够。这里身份**没确认**，不能借用它的语义放行，门槛值也不动。
+                    //
+                    // 变体探查仍然跑，但只作诊断：查到相近写法就把「这是队名解析缺陷」说清楚；
+                    // 查不到也不放行——「附近没有相似写法」不等于「这支队是新的」。
                     var similar = new List<string>();
                     var probed = nameVariants is not null;
                     foreach (var (name, gamesOfSide) in new[] { (r.HomeTeam, homeGames), (r.AwayTeam, awayGames) })
                     {
-                        // 这一侧已经被证明不是新队（>= 门槛）就不再纠结名字；-1 已在上面判死。
+                        // 这一侧样本已够门槛（>= 门槛），上面已判死；-1 同理，不必再纠结名字。
                         if (gamesOfSide < 0 || gamesOfSide >= minTeamGames) continue;
                         var found = nameVariants?.Invoke(name);
                         if (found is null) { probed = false; continue; }
@@ -430,24 +454,15 @@ public static class MilkSourceSlate
                             if (!string.IsNullOrWhiteSpace(v)) similar.Add($"{name}≈{v}");
                     }
 
-                    if (!probed)
-                        defect = "无法证明是真新队（未做队名变体探查）";
-                    else if (similar.Count > 0)
-                        defect = $"队名存疑：库内存在同一身份的相近写法（{string.Join("、", similar.Take(3))}），"
-                                 + "属于队名归一化缺陷，不是新队";
-                    else
-                    {
-                        // 真新队：升级原因为 new-team，并把两次独立查询的结果写进证据，事后可复核。
-                        final.Add(new MilkInputRejection
-                        {
-                            MatchId = r.MatchId, MatchNo = r.MatchNo, LeagueName = r.LeagueName,
-                            HomeTeam = r.HomeTeam, AwayTeam = r.AwayTeam, SalesDate = r.SalesDate,
-                            Reason = MilkInputRejection.ReasonNewTeam,
-                            Evidence = $"{r.Evidence};dbGames={Math.Max(known, 0)};variants=0;min={minTeamGames}",
-                            Accepted = true
-                        });
-                        continue;
-                    }
+                    var count = known == 0 ? "按本名查得 0 场" : $"按本名只查到 {known} 场";
+                    var hint = similar.Count > 0
+                        ? $"；库内存在同一身份的相近写法（{string.Join("、", similar.Take(3))}），属队名解析缺陷"
+                        : probed
+                            ? "；库内没有同一身份的其它写法，但这不能证明该队是新的"
+                            : "；变体探查未完成（不足以说明任何一侧）";
+                    defect = $"队名无法确认（{count}，门槛 {minTeamGames}）{hint}。"
+                             + "解析失败时零计数与低计数都不能作为新队证明，本轮阻断，"
+                             + "须补别名或人工确认";
                 }
             }
 

@@ -93,24 +93,88 @@ public class MilkSourceSlateTests
     }
 
     [Fact]
-    public void NameUnresolved_AndTrulyNewTeam_IsAcceptedAsNewTeam()
+    public void NameUnresolved_ZeroGames_EvenWithCleanVariantProbe_IsRejected()
     {
+        // ★ 2026-11-14 第十二轮：这条替换掉原来那条「0 场 + 变体探查为空 → 升级 new-team 并放行」。
+        //
+        // 为什么取消了：计数回答的是「用**这个名字**查到几场」，而 name-unresolved 的成因
+        // 恰恰是「名字写法不同」。「谢周三」0 场 / 「谢菲尔德星期三」74 场、
+        // 「不来梅」0 场 / 「云达不莱梅」58 场——同一个零把「真新队」与「换了个写法」判成一件事。
+        // 变体探查查不到，也只说明「附近没有相似写法」，仍然证明不了「这支队是新的」。
+        //
+        // 所以现在两种结局都是阻断：查到写法 → 队名解析缺陷；查不到 → 仍然无法确认身份。
         var source = new[] { Src(1, "周六002", "首次出现FC", "山形山神") };
         var rejects = new[]
         {
-            Rej(1, "周六002", MilkInputRejection.ReasonNameUnresolved, "team=首次出现FC;league=日职乙;games=0;min=5")
+            Rej(1, "周六002", MilkInputRejection.ReasonNameUnresolved, "team=首次出现FC;league=日职乙;games=0;min=3",
+                home: "首次出现FC", away: "山形山神")
         };
 
-        // 两条独立否定都成立：0 场 + 变体探查也没查到相近写法。
         var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt,
             _ => 0, nameVariants: _ => Array.Empty<string>());
 
-        Assert.True(r.Ok, r.Detail);
-        var one = Assert.Single(r.Rejections);
-        Assert.Equal(MilkInputRejection.ReasonNewTeam, one.Reason);
-        Assert.True(one.Accepted);
-        Assert.Contains("dbGames=0", one.Evidence);
-        Assert.Contains("variants=0", one.Evidence);
+        Assert.False(r.Ok);
+        var issue = Assert.Single(r.Issues, i => i.Kind == "rejected-rejection");
+        Assert.Contains("队名无法确认", issue.Key);
+        Assert.Contains("0 场", issue.Key);
+        Assert.Contains("不能作为新队证明", issue.Key);
+        Assert.DoesNotContain(r.Rejections, x => x.Accepted);
+        // 原因码保持原样：不许在核对器里改写成 new-team（那等于用结论证明结论）。
+        Assert.DoesNotContain(r.Rejections, x => x.Reason == MilkInputRejection.ReasonNewTeam);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void NameUnresolved_LowButNonZeroGames_IsNotAutoExempt(int games)
+    {
+        // 「1~2 场」是最容易被误判成「新队」的区间：既不是 0，又达不到门槛 3。
+        // 但它同样证明不了身份——样本少只说明这个名字在库里出现得少。
+        var source = new[] { Src(1, "周六002", "某支新队", "山形山神") };
+        var rejects = new[]
+        {
+            Rej(1, "周六002", MilkInputRejection.ReasonNameUnresolved,
+                $"team=某支新队;league=日职乙;games={games};min=3",
+                home: "某支新队", away: "山形山神")
+        };
+
+        var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt,
+            _ => games, nameVariants: _ => Array.Empty<string>());
+
+        Assert.False(r.Ok);
+        var issue = Assert.Single(r.Issues, i => i.Kind == "rejected-rejection");
+        Assert.Contains("队名无法确认", issue.Key);
+        Assert.Contains($"{games} 场", issue.Key);
+        Assert.DoesNotContain(r.Rejections, x => x.Accepted);
+    }
+
+    [Fact]
+    public void ThinSample_SameLowCount_IsStillAccepted_BecauseIdentityIsConfirmed()
+    {
+        // 「另行区分」（用户 2026-11-14 第十二轮点名）：样本不足本身有一个原因码 thin-sample，
+        // 它成立的前提是**模型认出了这支队**（身份已确认），只是本联赛样本不够。
+        // 同样 2 场，走 name-unresolved 是阻断，走 thin-sample 是规则内拒绝——
+        // 差别不在数字，在身份有没有被确认。门槛值两边都是 3，没有改。
+        var source = new[] { Src(1, "周六002", "某支球队", "山形山神"), Src(2, "周六003", "某支新队", "山形山神") };
+        var rejects = new[]
+        {
+            Rej(1, "周六002", MilkInputRejection.ReasonThinSample, "games=2;min=3;league=日职乙",
+                home: "某支球队", away: "山形山神"),
+            Rej(2, "周六003", MilkInputRejection.ReasonNameUnresolved, "team=某支新队;league=日职乙;games=2;min=3",
+                home: "某支新队", away: "山形山神")
+        };
+
+        var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt,
+            _ => 2, nameVariants: _ => Array.Empty<string>());
+
+        Assert.False(r.Ok);   // 未确认身份那一场必须阻断
+        var byReason = r.Rejections.ToDictionary(x => x.Reason, StringComparer.Ordinal);
+        Assert.True(byReason[MilkInputRejection.ReasonThinSample].Accepted);
+        Assert.False(byReason[MilkInputRejection.ReasonNameUnresolved].Accepted);
+        var issue = Assert.Single(r.Issues, i => i.Kind == "rejected-rejection");
+        Assert.Contains("name-unresolved", issue.Key);
+        Assert.DoesNotContain("thin-sample", issue.Key);
+        Assert.Equal(3, MilkThresholds.MinTeamGames);   // 门槛未被改动
     }
 
     [Fact]
@@ -136,20 +200,20 @@ public class MilkSourceSlateTests
     [Fact]
     public void NameUnresolved_ZeroGames_WithoutVariantProbe_IsRejected()
     {
-        // ★ 这一轮的核心判据（2026-11-14 第十一轮）：**零计数不能证明是真新队**。
-        // 「谢周三」按本名查是 0 场，「谢菲尔德星期三」是 74 场——同一个零把两件事判成一件事。
-        // 所以只报 games=0、不做变体探查时，一律按「无法证明」阻断，不许放行。
+        // 零计数不能证明是真新队：「谢周三」按本名查是 0 场、「谢菲尔德星期三」是 74 场。
+        // 第十二轮起即使做了变体探查、查到 0 条写法，也照样阻断（见上面那条）；
+        // 这条覆盖连探查都没做的情况——理由里要写明这一点，事后才分得清「查过没有」。
         var source = new[] { Src(1, "周六002", "某新队", "山形山神") };
         var rejects = new[]
         {
-            Rej(1, "周六002", MilkInputRejection.ReasonNameUnresolved, "team=某新队;league=日职乙;games=0;min=5",
+            Rej(1, "周六002", MilkInputRejection.ReasonNameUnresolved, "team=某新队;league=日职乙;games=0;min=3",
                 home: "某新队", away: "山形山神")
         };
 
         var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt, _ => 0);
 
         Assert.False(r.Ok);
-        Assert.Contains(r.Issues, i => i.Kind == "rejected-rejection" && i.Key.Contains("未做队名变体探查"));
+        Assert.Contains(r.Issues, i => i.Kind == "rejected-rejection" && i.Key.Contains("变体探查未完成"));
         Assert.DoesNotContain(r.Rejections, x => x.Accepted);
     }
 

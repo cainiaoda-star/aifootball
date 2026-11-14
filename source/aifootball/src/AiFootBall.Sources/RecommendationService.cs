@@ -1288,7 +1288,8 @@ public sealed class RecommendationService
         // 引擎自己说「我不认识」不能当证据。名字先一次性查好，再交给纯函数判定——
         // 不把 IO 塞进判定里，判定才能单测。
         var unresolved = build.Rejections
-            .Where(r => string.Equals(r.Reason, MilkInputRejection.ReasonNameUnresolved, StringComparison.Ordinal))
+            .Where(r => string.Equals(r.Reason, MilkInputRejection.ReasonNameUnresolved, StringComparison.Ordinal)
+                        || string.Equals(r.Reason, MilkInputRejection.ReasonNewTeam, StringComparison.Ordinal))
             .SelectMany(r => new[] { r.HomeTeam, r.AwayTeam })
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .Select(n => n!.Trim())
@@ -1302,8 +1303,9 @@ public sealed class RecommendationService
             catch (OperationCanceledException) { throw; }
             catch { games = new(StringComparer.Ordinal); }   // 查不到 → 全部按「无法证明」处理
 
-            // 第二条独立事实（2026-11-14 第十一轮）：0 场不能单独证明「真新队」，
-            // 还必须证明库里没有同一身份的相近写法。查不到 → 空字典 → 核对器按「未做探查」阻断。
+            // 第二条查询（2026-11-14 第十一轮加，第十二轮起**只作诊断**）：
+            // 查到相近写法就能把「这是队名解析缺陷」说清楚；查不到也不放行，
+            // 因为「附近没有相似写法」证明不了「这支队是新的」。查不到 → 空字典 → 报「探查未完成」。
             try { variants = await _repo.GetTeamNameVariantsAsync(unresolved, ct: ct); }
             catch (OperationCanceledException) { throw; }
             catch { variants = new(StringComparer.Ordinal); }
@@ -1314,8 +1316,9 @@ public sealed class RecommendationService
             source, build.Inputs, build.Rejections, runAt,
             name => !string.IsNullOrWhiteSpace(name) && gamesSnapshot.TryGetValue(name!.Trim(), out var n) ? n : -1,
             // 门槛只有一份（2026-11-14 第九轮）：核对器这里的值曾经是 5、引擎出票门槛是 3，
-            // 一支 4 场样本的队会被引擎算进来、又被核对器当「真新队」放行。
+            // 两支口径不同的门槛会让同一支队在两处得到相反结论。
             // 现在两边都读 `MilkThresholds.MinTeamGames`（= 引擎线上实际生效的 3）。
+            // 第十二轮起这个值只用于「≥ 门槛 → 判队名存疑」，**不再用于放行**，数值不变。
             minTeamGames: MilkThresholds.MinTeamGames,
             // 变体探查：null 表示这一项没做成（与「查到 0 条」是两件事），核对器据此判「无法证明」。
             nameVariants: name => !string.IsNullOrWhiteSpace(name) && variantsSnapshot.TryGetValue(name!.Trim(), out var v)
