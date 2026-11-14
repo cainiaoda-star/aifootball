@@ -434,21 +434,34 @@ public class MilkPickTests
     [Fact]
     public void SnapshotComplete_RequiresEveryOfficialBucket()
     {
-        // 档数校验只数「有赔率的去重选项数」，不关心具体是哪几档。
-        var bf31 = new List<JcOddsHistoryPoint>();
-        for (var i = 0; i < 31; i++) bf31.Add(Pt(1, JcPlayTypes.Bf, "c" + i, 9m));
+        // 2026-11-14 第十轮：判据从「数档数」改成「逐档位」。
+        // 只数档数时，一条脏码（生产 BQ 出现过 `平/胜`）顶替一条合法档也照样算「齐」，
+        // 真正缺的那一档反而看不见——这正是「预期取自被检验的一方」的另一种形态。
+        List<JcOddsHistoryPoint> Official(string play, IReadOnlyList<string> domain, decimal odds)
+            => domain.Select(c => Pt(1, play, c, odds)).ToList();
+
+        var bf31 = Official(JcPlayTypes.Bf, JcPlayDomain.Bf, 9m);
         Assert.True(MilkPickEngine.SnapshotComplete(bf31, JcPlayTypes.Bf));
         Assert.False(MilkPickEngine.SnapshotComplete(bf31.Take(30).ToList(), JcPlayTypes.Bf));
 
-        var bq9 = new List<JcOddsHistoryPoint>();
-        for (var i = 0; i < 9; i++) bq9.Add(Pt(1, JcPlayTypes.Bq, "b" + i, 6m));
+        var bq9 = Official(JcPlayTypes.Bq, JcPlayDomain.Bq, 6m);
         Assert.True(MilkPickEngine.SnapshotComplete(bq9, JcPlayTypes.Bq));
         Assert.False(MilkPickEngine.SnapshotComplete(bq9.Take(8).ToList(), JcPlayTypes.Bq));
 
-        var jq8 = new List<JcOddsHistoryPoint>();
-        for (var i = 0; i < 8; i++) jq8.Add(Pt(1, JcPlayTypes.Jq, "j" + i, 4m));
+        var jq8 = Official(JcPlayTypes.Jq, JcPlayDomain.Jq, 4m);
         Assert.True(MilkPickEngine.SnapshotComplete(jq8, JcPlayTypes.Jq));
         Assert.False(MilkPickEngine.SnapshotComplete(jq8.Take(7).ToList(), JcPlayTypes.Jq));
+
+        // 档数不变、用一条脏码换掉一条合法档：必须判「不全」。
+        var swapped = bq9.Where(p => p.OptionCode != "0-0").ToList();
+        swapped.Add(Pt(1, JcPlayTypes.Bq, "平/胜", 6m));
+        Assert.Equal(9, swapped.Count);
+        Assert.False(MilkPickEngine.SnapshotComplete(swapped, JcPlayTypes.Bq));
+
+        // 反过来：9 档齐全时多一条脏码，不能因此判不完整（脏码不参与完整性，也不参与计算）。
+        var extra = bq9.ToList();
+        extra.Add(Pt(1, JcPlayTypes.Bq, "平/胜", 6m));
+        Assert.True(MilkPickEngine.SnapshotComplete(extra, JcPlayTypes.Bq));
     }
 
     [Fact]

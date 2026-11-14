@@ -1,5 +1,6 @@
 using AiFootBall.Core.Models;
 using AiFootBall.Data;
+using AiFootBall.Sources;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using System.Text;
@@ -470,6 +471,43 @@ public static class MilkIsolatedCheck
             latestAt.Count == 3 && latestAt.All(p => p.PlayType == "SPF")
             && latestAny.Count == 3 + JcPlayDomain.Bf.Count,
             $"asOf 内 {latestAt.Count} 档（应 3，全 SPF）；不加边界 {latestAny.Count} 档（应 {3 + JcPlayDomain.Bf.Count}）"));
+
+        // ── ④-14 截止后新增采样不改变本轮计算（2026-11-14 第十轮） ──
+        //
+        // ④-13/13b 只证明「边界写对了」，这一条证明**边界之后的写入不会改本轮的结果**：
+        // 同一个 asOf 先取一次价、把引擎真正要用的输入逐档记下来，再插一条 asOf+8min 的同档新价，
+        // 用同一个 asOf 再取一次。两份输入必须逐档相同，派生量（是否完整、归一因子）也必须相同。
+        // 同时不加边界再查一次，确认那条新价**确实落库了**——否则「没变化」可能只是因为压根没写进去。
+        static string Digest(IEnumerable<JcOddsHistoryPoint> pts)
+            => string.Join(";", pts
+                .OrderBy(p => p.PlayType, StringComparer.Ordinal)
+                .ThenBy(p => p.OptionCode, StringComparer.Ordinal)
+                .Select(p => $"{p.PlayType}|{p.OptionCode}|{p.Odds:0.###}"));
+
+        var beforePts = await jcOdds.GetLatestAsync(new[] { M6 }, ct, runAt);
+        var beforeDigest = Digest(beforePts);
+        var spfOver = MilkPickEngine.StandardOverRound(JcPlayTypes.Spf);
+        var beforeNorm = MilkPickEngine.BlendNormalizer(beforePts, JcPlayTypes.Spf, spfOver);
+        var beforeComplete = MilkPickEngine.SnapshotComplete(beforePts, JcPlayTypes.Spf);
+
+        await c.ExecuteAsync(new CommandDefinition(
+            @"INSERT INTO dbo.FbJcOddsHistory (MatchId, MatchNo, PlayType, OptionCode, OptionName, Odds, CapturedAt)
+              VALUES (@m6, N'周日101', 'SPF', '3', N'胜', 1.55, @late2)",
+            new { m6 = M6, late2 = runAt.AddMinutes(8) }, cancellationToken: ct));
+
+        var afterPts = await jcOdds.GetLatestAsync(new[] { M6 }, ct, runAt);
+        var afterAny = await jcOdds.GetLatestAsync(new[] { M6 }, ct);
+        var afterDigest = Digest(afterPts);
+        var afterNorm = MilkPickEngine.BlendNormalizer(afterPts, JcPlayTypes.Spf, spfOver);
+        var afterComplete = MilkPickEngine.SnapshotComplete(afterPts, JcPlayTypes.Spf);
+        var spf3Any = afterAny.FirstOrDefault(p => p.PlayType == JcPlayTypes.Spf && p.OptionCode == "3");
+
+        checks.Add(("④-14 截止后的新采样不改变本轮计算（同 asOf 两次取价逐档相同）",
+            beforeDigest == afterDigest && beforeNorm == afterNorm && beforeComplete == afterComplete
+            && spf3Any is not null && spf3Any.Odds == 1.55m,
+            $"输入 {beforePts.Count}→{afterPts.Count} 档；逐档相同={beforeDigest == afterDigest}；"
+            + $"归一 {beforeNorm:0.000000}→{afterNorm:0.000000}；完整 {beforeComplete}→{afterComplete}；"
+            + $"不加边界看到 SPF|3 = {spf3Any?.Odds}（应 1.55）"));
 
         // ── 总裁定：报表必须与空跑台账逐项相等 ──
         var milkRep = await milk.GetReportAsync(30, ct);

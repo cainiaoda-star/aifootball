@@ -67,6 +67,37 @@ public static class JcPlayDomain
     /// <summary>域大小；未知玩法返回 0。</summary>
     public static int Size(string? playType) => Of(playType)?.Count ?? 0;
 
+    /// <summary>
+    /// 档位代码归一（2026-11-14 第十轮）。只做一件事：把「其它」与「其他」两种写法统一。
+    ///
+    /// 为什么需要：采集端的写法并不统一，500 用「胜其它」，个别源出现过「胜其他」，
+    /// 而引擎的候选段（`bfPure` 的「其它」分支）本来就两种都认。
+    /// 如果域判定只认「其它」，一条「胜其他」就会被当成域外脏码 —— 结果不是「多算一档」，
+    /// 而是「整场比分判为不全、退回纯模型」甚至「缺档阻断发布」，把一个改名当成了缺数据。
+    /// 归一放在这里而不是改写上游的 `OptionCode`：落库键、去重键、显示名都不该被这一步牵动。
+    /// </summary>
+    public static string Normalize(string? code)
+        => string.IsNullOrEmpty(code) ? string.Empty : code.Replace("其他", "其它", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 该玩法下这个档位代码是否属于**标准域**（2026-11-14 第十轮）。
+    ///
+    /// 完整性判断（<c>SnapshotComplete</c>）、去水归一（<c>BlendNormalizer</c>）、
+    /// 计算入口（候选生成与全档存档）必须共用这一个判定：
+    /// 少一处过滤，域外脏码就会参与 Σ1/赔率 把合法档的概率整体压低；
+    /// 反过来，只用档数（`>= 31`）判完整，一条脏码换掉一条合法档也看不出来。
+    /// </summary>
+    public static bool Contains(string? playType, string? code)
+    {
+        if (string.IsNullOrEmpty(code)) return false;
+        var domain = Of(playType);
+        if (domain is null || domain.Count == 0) return false;
+        var c = Normalize(code);
+        foreach (var d in domain)
+            if (string.Equals(d, c, StringComparison.Ordinal)) return true;
+        return false;
+    }
+
     /// <summary>全五玩法的总档数（3+3+9+8+31=54）。**只用于日志与展示**，不得作为核对判据。</summary>
     public static int TotalSize
     {

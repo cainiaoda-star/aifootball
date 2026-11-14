@@ -413,19 +413,19 @@ public sealed class ScorelineModel
         // **全库唯一 ≠ 身份正确**（2026-11-14 第八轮，用户点名）：库里「不来梅」一线队没有样本时，
         // 唯一核心名是两个梯队「JFV不来梅U19」，于是「不来梅」被配成 U19；
         // 「谢周三」同样被配成「谢周三U21」。唯一性只保证不猜，不保证是同一支队。
-        // 所以这里再加两道身份闸（都只在核心名这一步判，不影响上面的既有链路）：
-        //   ① 梯队身份必须**相等**：查询名不带青年/后备/女足标记时绝不接受梯队候选；
-        //      查询名自己带标记时也只认同一个标记（谢周三U21 ≠ 谢周三U19）。
+        // 所以这里再加两道闸：
+        //   ① 梯队层次必须**相等**（`TeamNames.SameIdentity`）：查询名不带青年/二队/女足标记时
+        //      绝不接受梯队候选；查询名自己带标记时也只认同一个层次（谢周三U21 ≠ 谢周三U19）。
         //      实测能正确匹配到青年队靠的是上面的精确/别名步，不靠这条兜底。
-        //   ② 候选多出来的 ASCII 记号视为身份标记（U21 / II / B / JFV），查询名里没有就不认。
-        //      必须用**原始名**比：核心名把 ASCII 全去掉了，正好盖住这一层信息。
-        //      方向很关键——查询名多 RB（大宫松鼠RB）是允许的赞助商后缀；
-        //      候选名多 U21（谢周三 → 谢周三U21）是另一支队，必须拒绝。
+        //   ② 候选不得引入新的 ASCII 记号（`AsciiMarks ⊆`）。这一条**只在这条路**上加：
+        //      核心名比对绕过了下面的歧义判定，如果直接放行 `米兰 → AC米兰`，
+        //      就把一个歧义问题悄悄变成答案。走上子序列那条路时歧义会被正常判出来。
         var qCore = TeamNames.CoreKey(n);
         if (qCore.Length > 0
             && _globalCore.TryGetValue(qCore, out var coreName)
             && coreName.Length > 0
-            && TeamNames.SameResolveIdentity(n, coreName))
+            && TeamNames.SameIdentity(n, coreName)
+            && TeamNames.AsciiMarks(coreName).IsSubsetOf(TeamNames.AsciiMarks(n)))
             return coreName;
 
         if (!_globalAlias.TryGetValue(n, out var cached))
@@ -456,14 +456,38 @@ public sealed class ScorelineModel
     {
         var hits = new List<string>(2);
         var shortIsReserve = IsReserveOrYouth(shortName);
+        var shortCore = TeamNames.CoreKey(shortName);
+        var identityConflict = false;
         foreach (var cand in candidates)
         {
             if (cand.Length <= shortName.Length) continue;
             if (cand.Length - shortName.Length > 4) continue;
             if (!shortIsReserve && IsReserveOrYouth(cand)) continue;
+
+            // 同一核心名下的候选，身份由**同一个判据**决定（2026-11-14 第十轮）。
+            // 核心名那一步（Resolve 里的 _globalCore）已经用 SameIdentity 拒过一遍，
+            // 这里若不再判，`帕丘卡` 被拒之后会被子序列重新捡成 `帕丘卡III`、
+            // `BKMA` 被捡成 `BKMA II` —— 「解析拒绝、下一条链路又接受」，
+            // 与第九轮计数层的老问题同源。
+            //
+            // 只拦**梯队层次不同**的候选：`埃因霍温 → PSV埃因霍温`（库内 147 场）这类
+            // 只多一个俱乐部前缀的写法，层次相同，仍然走子序列正常匹配。
+            //
+            // ★ 冲突要升级成「歧义」，不能简单跳过：`米兰` 同时对上 `国际米兰`（核心名不同）
+            // 与 `AC米兰`（核心名相同、多了 AC 这个俱乐部记号）。跳过 AC 会得到
+            // 「唯一命中 = 国际米兰」，把一个歧义问题悄悄变成错误答案。宁可判「认不出」。
+            if (shortCore.Length >= 2
+                && string.Equals(TeamNames.CoreKey(cand), shortCore, StringComparison.Ordinal)
+                && !TeamNames.SameIdentity(shortName, cand))
+            {
+                identityConflict = true;
+                continue;
+            }
+
             if (!IsSubsequence(shortName, cand)) continue;
             hits.Add(cand);
         }
+        if (identityConflict) return (null, true);
         if (hits.Count == 0) return (null, false);
         if (hits.Count == 1) return (hits[0], false);
 

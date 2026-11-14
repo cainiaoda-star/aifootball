@@ -41,9 +41,11 @@
 - ★ **场次覆盖的基准在源侧**（`MilkSourceSlate`，11-14）：源＝`BettingCard` 当前批 × `JcSaleHours.Sellable`（与 `ScoreAsync` 同一份实现）＋`FbJcOddsHistory` 每档最新采样。每场必须「输入凭证 或 带证据的拒绝记录」；`name-unresolved` 须独立库检（`FbMatch` 近 18 月按 `TeamNames.CoreKey`）证明是真新队，否则 `stale-name` 不发布；`no-odds` 与源侧档数矛盾即 `contradicted-rejection`；算过的场次过「采样 ≤30min」+「源侧每一档都进了计算」。落库 `FbMilkSourceMatch`（**新建表，待批准**）。
 - ★ **概率三列一律百分数**：`bfPure` 内部是 0~1 比例，只在落库前 ×100；`MilkProbScale` 按 (场次,玩法) 要求三列合计≈100 且同尺，否则不发布。11-14 那 620 行 BF 存档（ModelPctPure≈1.0）**禁用**，不得算 Hit@1 或调权重。
 - ★ 队名解析只允许「查询名比库内名短」→ 竞彩加冠名后缀（大宫松鼠RB）会整场丢失。`Resolve` 已加核心名兜底；**库里出现新队名先查 `team-check`**，别先怀疑样本。
-- ★★ **档位域必须是代码清单，不是档数**（`JcPlayDomain`，11-14 第八轮）：BQ 有 3 场脏码（`平/胜` 等）让「10 档」看起来齐整。`source-option-gap` 对**所有**源场次逐玩法逐代码比对；域外脏码不阻断、`missing-option` 只看域内。**不给「未启售」豁免**——库里没有逐玩法启售字段，「没采到赔率」一律按缺档阻断（要开口子先加字段报批）。
+- ★★ **档位域必须是代码清单，不是档数**（`JcPlayDomain`，11-14 第八轮；第十轮收敛到四处）：BQ 有 3 场脏码（`平/胜` 等）让「10 档」看起来齐整。**完整性（逐档存在）、归一化（Σ1/赔率只算域内）、候选与全档存档、预期侧**都只认这一份域；`source-option-gap` 对**所有**源场次逐玩法逐代码比对；域外脏码不阻断、`missing-option` 只看域内。**不给「未启售」豁免**——库里没有逐玩法启售字段，「没采到赔率」一律按缺档阻断（要开口子先加字段报批）。
+- ★★ **域判定不能替代玩法相等**：`Contains(playType, code)` 单用会把 SPF 的 `0/1/3` 算进 JQ 分母（JQ 域就是 `0..7`），实测 ΣBlended 100→40.745 且不报错。过滤永远写 `PlayType == playType && Contains(...)`。
 - ★★ **源快照必须按 `StartedAt` 截止**（`GetJcSourceSnapshotAsync(asOf)`，两张表都带 `CapturedAt <= @asOf`）：running 头与「最新采样时刻」都不参与过滤，事后补采会改写上一轮的应有场次。
-- ★★ **核心名兜底必须带梯队身份闸**：`ReserveMark(查询)==ReserveMark(候选)` + `AsciiMarks(候选) ⊆ AsciiMarks(查询)`。方向关键：查询多 `RB` 允许，候选多 `U21` 拒绝。**「样本不足会 thin-sample 拒发」不是防误配保障**（梯队≥5 场就出票）。
+- ★★ **身份判据 = 梯队层次，不是「有没有字母」**（11-14 第十轮）：`TeamNames.SameIdentity` 一份，解析与计数共用；层次由 `HierarchyMark` 判（中文名单 + ASCII `U15~U23` + 罗马数字 `II/III/IV` + 单独 `B` + 二队）。`PSV`/`FC`/`RB` 是俱乐部名的一部分，不算另一支队——按「候选记号 ⊆ 查询记号」实现会误杀 `埃因霍温→PSV埃因霍温`(147 场)、`辛那提→FC辛辛那提`(75 场)。**「样本不足会 thin-sample 拒发」不是防误配保障**（梯队≥5 场就出票）。
+- ★ 子序列链路会把核心名那步拒掉的候选**捡回来**（`帕丘卡`→`帕丘卡III`）：同核心名必须再判一次身份，冲突**升级为歧义**（跳过会让 `米兰` 变成「国际米兰」）。
 - ★★★ **同一轮只能有一个时间基准**（11-14 第九轮）：引擎取价也必须 `GetLatestAsync(asOf: runAt)`，与 `GetJcSourceSnapshotAsync(runAt)` 同刻；否则账本验 08:40 的清单、票用 08:52 的价。
 - ★★★ **身份判定与门槛各只准一份实现**：`TeamNames.SameResolveIdentity`（候选⊆查询）/`SameCountIdentity`（互相包含）——解析与历史计数不能两套口径（解析拒梯队、计数却并梯队 = 库检永远证不出真新队）。门槛 `MilkThresholds.MinTeamGames=3`（引擎与核对同读，不许再写第二个数）。
 - ★ **玩法启售依据 = 无法判定**：`BettingCard` 无逐玩法字段，采集器抓空与「不卖」同形。缺档一律阻断并记 `sale-basis=unavailable`；**不得把「一律 54 档」说成验收标准**，也不得从赔率缺失反推未启售。

@@ -270,9 +270,17 @@ public static class MilkPickEngine
         _ => MarketWeightDefault
     };
 
-    /// <summary>一个玩法所有选项的 (1/赔率) 之和（观测值）。只用于诊断快照完整性，不参与去水。</summary>
+    /// <summary>
+    /// 一个玩法所有**域内**档位的 (1/赔率) 之和（观测值）。只用于诊断快照完整性，不参与去水。
+    ///
+    /// 域外脏码必须排除（2026-11-14 第十轮）：它没有对应的真实档位，
+    /// 算进 Σ1/赔率 只会把「水位看起来更高」这个诊断量抬高，让人以为是盘口变了。
+    /// </summary>
     public static decimal ObservedOverRound(IEnumerable<JcOddsHistoryPoint> points, string playType)
-        => points.Where(p => p.PlayType == playType && p.Odds > 1m).Sum(p => 1m / p.Odds);
+        => points.Where(p => p.Odds > 1m
+                             && string.Equals(p.PlayType, playType, StringComparison.Ordinal)
+                             && JcPlayDomain.Contains(playType, p.OptionCode))
+                 .Sum(p => 1m / p.Odds);
 
     /// <summary>
     /// 一条注单的完整版本戳（2026-11-12 加，落库 FbMilkPick.ModelVersion）。
@@ -619,25 +627,28 @@ public static class MilkPickEngine
     }
 
     /// <summary>
-    /// 竞彩每个玩法的档数是固定的（比分 31 / 半全场 9 / 总进球 8 / 胜平负 3）。
-    /// 快照抓到的档数不足，说明生成推荐时盘口还没开全：这时拿「全档的水位」去水会把
+    /// 竞彩每个玩法的档位是固定的（比分 31 / 半全场 9 / 总进球 8 / 胜平负 3）。
+    /// 快照抓到的档位不足，说明生成推荐时盘口还没开全：这时拿「全档的水位」去水会把
     /// 仅有的几档隐含概率放大（分母是全档，分子只有几档的 1/赔率），必须退回纯模型概率。
     ///
-    /// 档数一律取 <see cref="JcPlayDomain"/>（2026-11-14 第八轮）：这个数原来在引擎里写一份、
-    /// 发布核对要用的档位域又要写一份，两处各写一份就是下一次「口径不一致」的种子。
+    /// 判据是**逐档位**而不是档数（2026-11-14 第八轮，第十轮收敛到 <see cref="JcPlayDomain"/>）：
+    /// 只比档数时，一条脏码（生产 BQ 出现过 `平/胜`）顶替一条合法档也照样算「齐」，
+    /// 而真正缺的那一档反而看不见。现在要求**域内每一档都存在**，域外代码不计数。
     /// </summary>
     public static bool SnapshotComplete(IEnumerable<JcOddsHistoryPoint> points, string playType)
     {
-        var expected = JcPlayDomain.Size(playType);
-        if (expected == 0) return false;
-        return DistinctOptionCount(points, playType) >= expected;
-    }
+        var domain = JcPlayDomain.Of(playType);
+        if (domain is null || domain.Count == 0) return false;
 
-    private static int DistinctOptionCount(IEnumerable<JcOddsHistoryPoint> points, string playType)
-        => points.Where(p => p.PlayType == playType && p.Odds > 1m)
-                 .Select(p => p.OptionCode)
-                 .Distinct(StringComparer.Ordinal)
-                 .Count();
+        var have = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var p in points)
+            if (p.Odds > 1m && string.Equals(p.PlayType, playType, StringComparison.Ordinal))
+                have.Add(JcPlayDomain.Normalize(p.OptionCode));
+
+        foreach (var code in domain)
+            if (!have.Contains(code)) return false;
+        return true;
+    }
 
     /// <summary>
     /// 把模型概率（0-1 比例）和盘口隐含概率加权。overRound 必须是该玩法的官方固定水位
@@ -677,7 +688,16 @@ public static class MilkPickEngine
     public static decimal BlendNormalizer(IEnumerable<JcOddsHistoryPoint> points, string playType, decimal overRound)
     {
         if (overRound <= 0m) return 1m;
-        var sumMarket = points.Where(p => p.PlayType == playType && p.Odds > 1m)
+        // 分母只用**域内**档位（2026-11-14 第十轮）：域外脏码没有真实概率，却会在 Σ1/赔率 里
+        // 占一份，归一因子随之变小，**所有合法档的混合概率被整体压低**。
+        // 生产 BQ 出现过的 `平/胜` 就是这样一类：它不该影响任何一档的合法性。
+        //
+        // ★ 玩法相等这一半不能省：SPF / NSPF 的代码也是 `0/1/3`，而 JQ 的域同样是 `0..7`。
+        // 只按「域包含」过滤会把 SPF 的三条报价算进 JQ 的分母（探针实测：ΣBlended 100 → 40.7）。
+        // 域判定回答「这个代码在这个玩法里合不合法」，玩法相等回答「这条报价是不是这个玩法」。
+        var sumMarket = points.Where(p => p.Odds > 1m
+                                          && string.Equals(p.PlayType, playType, StringComparison.Ordinal)
+                                          && JcPlayDomain.Contains(playType, p.OptionCode))
                               .Sum(p => 1m / p.Odds) / overRound;
         if (sumMarket <= 0m) return 1m;
         var w = MarketWeightFor(playType);
@@ -1244,13 +1264,12 @@ public static class MilkPickEngine
     /// 逆转档平注回报率 0.451、顺风档 1.04~1.11，结论是「顺风档被低估」。但那是
     /// 全联赛混合样本；聚焦到「欧战低水热门」这个子集后，反转档才是真实价值洼地。
     /// 半全场概率来自 <see cref="HalfFullJoint"/> 的完整 3×3 联合分布，9 档本来就都算得出来。
+    ///
+    /// 2026-11-14 第十轮：数组内容改为直接取自 <see cref="JcPlayDomain.Bq"/>，
+    /// 不再各写一份——「计算入口算哪些档」与「完整性判断要求哪些档」必须是同一个清单，
+    /// 否则脏码在两处一边被当有效档、一边被当域外码，账永远对不上。
     /// </summary>
-    public static readonly string[] HalfFullCombos =
-    {
-        "3-3", "3-1", "3-0",
-        "1-3", "1-1", "1-0",
-        "0-3", "0-1", "0-0"
-    };
+    public static readonly string[] HalfFullCombos = JcPlayDomain.Bq.ToArray();
 
     /// <summary>
     /// 高赔反转档（大奶）——半场与全场「方向翻转」的 4 个组合，起步赔率 12.5~16 倍。
@@ -1577,7 +1596,12 @@ public static class MilkPickEngine
             // 2026-11-12 改结构：先一次性算出**全档纯模型概率** bfPure，候选与分布存档共用。
             // 旧写法把「算概率」和「判闸」缠在同一个循环里，存档若另写一份必然漂移
             // （本项目已经因为「两处各写一份」栽过：出票闸与撤注闸互相打架）。
-            var bfPoints = points.Where(p => p.PlayType == JcPlayTypes.Bf).ToList();
+            // 计算入口只吃**域内**档位（2026-11-14 第十轮）：域外脏码没有对应的真实选项，
+            // 让它进 bfPure 会白算一份概率、进存档会多出一行永远对不上的档；
+            // 更要紧的是它会进 BlendNormalizer 的分母，把合法档的概率整体压低。
+            var bfPoints = points
+                .Where(p => p.PlayType == JcPlayTypes.Bf && JcPlayDomain.Contains(JcPlayTypes.Bf, p.OptionCode))
+                .ToList();
             var bfPure = new Dictionary<string, decimal>(StringComparer.Ordinal);
             var others = new Dictionary<char, JcOddsHistoryPoint>();
             var listed = new Dictionary<char, decimal> { ['3'] = 0m, ['1'] = 0m, ['0'] = 0m };
@@ -1627,6 +1651,7 @@ public static class MilkPickEngine
             var jqBands = GoalBands(grid, mass);
             foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Jq))
             {
+                if (!JcPlayDomain.Contains(JcPlayTypes.Jq, pt.OptionCode)) continue;
                 if (!int.TryParse(pt.OptionCode, out var n)) continue;
                 if (pt.Odds < MinOptionOdds) continue;
                 if (pt.Odds > MaxGoalOdds) continue;
@@ -1686,7 +1711,9 @@ public static class MilkPickEngine
 
                 foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bq))
                 {
-                    if (!HalfFullCombos.Contains(pt.OptionCode, StringComparer.Ordinal)) continue;
+                    // 与完整性判断同一个域：生产 BQ 出现过 `平/胜`/`平/负`/`平/平` 三条脏码，
+                    // 它们没有对应的联合分布格子，进候选只会取到 SideIndex('平') 的兜底值。
+                    if (!JcPlayDomain.Contains(JcPlayTypes.Bq, pt.OptionCode)) continue;
                     if (pt.Odds < MinHalfFullOdds) continue;
                     if (pt.Odds > MaxHalfFullOdds) continue;
                     var p = joint[SideIndex(pt.OptionCode[0]), SideIndex(pt.OptionCode[2])];
@@ -3016,7 +3043,8 @@ public static class MilkPickEngine
         // 另外四个玩法都是 100.00。乘 100 只解决这一处，所以另加 MilkProbScale 在发布前
         // 按「每玩法合计必须 100」兜住同类错误。**不要**把 bfPure 本身改成百分数：
         // 候选段的 p ≤ 0、Blend 的 (1-w)·model 都按比例算，改上游会连带改掉出票概率。
-        foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bf))
+        foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bf
+                                              && JcPlayDomain.Contains(JcPlayTypes.Bf, p.OptionCode)))
         {
             var odds = pt.Odds > 1m ? pt.Odds : (decimal?)null;
             decimal? pure = bfPure.TryGetValue(pt.OptionCode, out var v) ? Math.Round(v * 100m, 3) : null;
@@ -3026,6 +3054,7 @@ public static class MilkPickEngine
         // ---- 总进球：GoalBands 与候选同源，7+ 是余量 ----
         foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Jq))
         {
+            if (!JcPlayDomain.Contains(JcPlayTypes.Jq, pt.OptionCode)) continue;
             if (!int.TryParse(pt.OptionCode, out var n) || n < 0 || n > 7) continue;
             var odds = pt.Odds > 1m ? pt.Odds : (decimal?)null;
             var pure = Math.Round(jqBands[n] * 100m, 3);
@@ -3042,7 +3071,7 @@ public static class MilkPickEngine
 
             foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bq))
             {
-                if (!HalfFullCombos.Contains(pt.OptionCode, StringComparer.Ordinal)) continue;
+                if (!JcPlayDomain.Contains(JcPlayTypes.Bq, pt.OptionCode)) continue;
                 var odds = pt.Odds > 1m ? pt.Odds : (decimal?)null;
                 decimal pure = refined.TryGetValue(pt.OptionCode, out var rv)
                     ? rv
@@ -3062,7 +3091,7 @@ public static class MilkPickEngine
             // 域外的脏代码由输入侧记 code-outside-domain，报在这里会让同一个键有两套说法。
             var bqCoded = points
                 .Where(p => p.PlayType == JcPlayTypes.Bq)
-                .Where(p => HalfFullCombos.Contains(p.OptionCode, StringComparer.Ordinal))
+                .Where(p => JcPlayDomain.Contains(JcPlayTypes.Bq, p.OptionCode))
                 .GroupBy(p => p.OptionCode)
                 .ToList();
             foreach (var pt in bqCoded)

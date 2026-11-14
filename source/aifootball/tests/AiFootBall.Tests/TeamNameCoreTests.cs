@@ -121,57 +121,70 @@ public class TeamNameCoreTests
         Assert.NotEqual(TeamNames.CoreKey("塞维利亚"), TeamNames.CoreKey("塞维尔亚"));
     }
 
-    // ─────────── 计数身份（2026-11-14 第九轮） ───────────
+    // ─────────── 身份判据：解析与计数**共用同一个函数**（2026-11-14 第十轮） ───────────
     //
-    // 用户点名的问题：解析时区分一线队与梯队，`GetRecentTeamGamesAsync` 却只按核心名归并——
-    // 「不来梅」解析层已经拒绝 `JFV不来梅U19`，计数层仍把 U19 的场次算进一线队。
-    // 两个后果：① `name-unresolved` 的独立库检永远证明不了「真新队」；
-    //          ② 同一轮里「认不出这支队」与「库里有 22 场」同时成立。
+    // 第九轮这里是两个函数：解析用「候选记号 ⊆ 查询记号」，计数用「互相包含」。
+    // 第十轮取消后者——库里存在 `BKMA` / `BKMA II`、`WSG蒂洛尔` / `WSG蒂洛尔 II`、
+    // `帕丘卡` / `帕丘卡III` 这种只差一个 ASCII 记号的两支队，互相包含会把预备队并进一线队，
+    // 「解析拒绝、计数合并」的老问题只是换了个方向重演。
 
     [Fact]
-    public void CountIdentity_DoesNotMergeReserveTeamIntoSenior()
+    public void Identity_NeverMergesReserveTeamIntoSenior()
     {
-        Assert.False(TeamNames.SameCountIdentity("不来梅", "JFV不来梅U19"));
-        Assert.False(TeamNames.SameCountIdentity("谢周三", "谢周三U21"));
+        Assert.False(TeamNames.SameIdentity("不来梅", "JFV不来梅U19"));
+        Assert.False(TeamNames.SameIdentity("谢周三", "谢周三U21"));
         // 梯队之间也不能互并：U19 与 U21 是两支不同的队。
-        Assert.False(TeamNames.SameCountIdentity("谢周三U21", "谢周三U19"));
+        Assert.False(TeamNames.SameIdentity("谢周三U21", "谢周三U19"));
+        // 罗马数字二队（生产库内真实存在，且这些写法不在中文名单里，靠 HierarchyMark 的第二类识别）。
+        Assert.False(TeamNames.SameIdentity("BKMA", "BKMA II"));
+        Assert.False(TeamNames.SameIdentity("帕丘卡", "帕丘卡III"));
+        Assert.False(TeamNames.SameIdentity("WSG蒂洛尔", "WSG蒂洛尔 II"));
+        // 年龄段：库里 U15~U23 全有，原来只认 U19~U23，U18 会被当成一线队。
+        Assert.False(TeamNames.SameIdentity("曼联", "曼联U18"));
+        Assert.False(TeamNames.SameIdentity("曼联U18", "曼联U21"));
+        // 单独的 B（`马拉加 B`）与中文「二队」。
+        Assert.False(TeamNames.SameIdentity("马拉加", "马拉加 B"));
+        Assert.False(TeamNames.SameIdentity("FC摩城", "FC摩城二队"));
     }
 
     [Fact]
-    public void CountIdentity_MergesSponsorSuffixBothWays()
+    public void Identity_IgnoresClubAffixes()
     {
-        // 计数是为了「这支队踢过几场」：库内同一支队会有带/不带冠名后缀两种写法，
-        // 谁多谁少取决于当年从哪个源入库，任一方向包含都该合并。
-        Assert.True(TeamNames.SameCountIdentity("大宫松鼠", "大宫松鼠RB"));
-        Assert.True(TeamNames.SameCountIdentity("大宫松鼠RB", "大宫松鼠"));
-        Assert.True(TeamNames.SameCountIdentity("蔚山现代", "蔚山HD"));
+        // 身份只看**梯队层次**：PSV / FC / SC / RB / HD 是俱乐部名的一部分，不是另一支队。
+        // 这里曾经写成「候选的 ASCII 记号必须是查询的子集」，结果误杀两组真匹配：
+        // `埃因霍温 → PSV埃因霍温`（147 场）、`辛那提 → FC辛辛那提`（75 场）。
+        Assert.True(TeamNames.SameIdentity("大宫松鼠RB", "大宫松鼠"));
+        Assert.True(TeamNames.SameIdentity("大宫松鼠", "大宫松鼠SC"));
+        Assert.True(TeamNames.SameIdentity("埃因霍温", "PSV埃因霍温"));
+        Assert.True(TeamNames.SameIdentity("辛辛那提", "FC辛辛那提"));
+        Assert.True(TeamNames.SameIdentity("蔚山现代", "蔚山HD"));
     }
 
     [Fact]
-    public void ResolveIdentity_IsOneDirectional()
+    public void Identity_IsWhatResolveUses()
     {
-        // 解析要比计数严：查询名多 RB 是冠名后缀（允许），
-        // 候选名多 U21 是另一支队（拒绝）——方向反了就会把梯队样本拿来出一线队的票。
-        Assert.True(TeamNames.SameResolveIdentity("大宫松鼠RB", "大宫松鼠"));
-        Assert.False(TeamNames.SameResolveIdentity("大宫松鼠", "大宫松鼠RB"));
-        Assert.False(TeamNames.SameResolveIdentity("谢周三", "谢周三U21"));
-    }
-
-    [Fact]
-    public void CountAndResolve_ShareTheSameReserveGate()
-    {
-        // 两条身份判定的**唯一**差别是 ASCII 记号方向，梯队那道闸必须完全一致：
-        // 梯队标记不同的两支队，两个方法都必须拒绝——否则又会回到「解析拒绝、计数合并」的两套口径。
+        // 这条钉住「解析和计数是同一份判据」：凡是 Resolve 认可的匹配，
+        // SameIdentity 必须同时为真；反之亦然。两条链路再分叉，就会回到
+        // 「解析说不认识、计数说库里有 22 场」的自相矛盾。
+        var model = Model(
+            ("JFV不来梅U19", "奥格斯堡青年队"),
+            ("谢周三U21", "女王公园巡游者U21"),
+            ("帕丘卡III", "另一队"),
+            ("PSV埃因霍温", "第三队"));
         foreach (var (q, c) in new[]
                  {
-                     ("不来梅", "JFV不来梅U19"), ("谢周三", "谢周三U21"),
-                     ("谢周三U21", "谢周三U19"), ("大宫松鼠", "大宫松鼠RB"),
-                     ("大宫松鼠RB", "大宫松鼠"), ("蔚山现代", "蔚山HD")
+                     ("不来梅", "JFV不来梅U19"),
+                     ("谢周三", "谢周三U21"),
+                     ("帕丘卡", "帕丘卡III"),
+                     ("大宫松鼠SC", "大宫松鼠"),
+                     ("大宫松鼠RB", "大宫松鼠"),
+                     ("埃因霍温", "PSV埃因霍温")
                  })
         {
-            if (TeamNames.ReserveMark(q) == TeamNames.ReserveMark(c)) continue;
-            Assert.False(TeamNames.SameResolveIdentity(q, c), $"{q} vs {c} 解析层不该认");
-            Assert.False(TeamNames.SameCountIdentity(q, c), $"{q} vs {c} 计数层不该并");
+            var resolved = model.Resolve("日职乙", q);
+            var accepted = resolved is not null
+                           && string.Equals(TeamNames.CoreKey(resolved), TeamNames.CoreKey(c));
+            Assert.Equal(accepted, TeamNames.SameIdentity(q, c));
         }
     }
 }

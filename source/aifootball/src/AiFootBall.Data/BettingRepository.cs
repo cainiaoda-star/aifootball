@@ -56,15 +56,19 @@ public sealed class BettingRepository
                   GROUP BY name",
                 new { months, pat }, cancellationToken: ct))).ToList();
 
-            // ★ 身份闸（2026-11-14 第九轮）：核心名相同**不等于**同一支队。
-            // 解析层已经按梯队身份拒绝 `不来梅 → JFV不来梅U19`、`谢周三 → 谢周三U21`，
-            // 计数层若只按核心名归并，就会把梯队的场次算进一线队——同一轮里
-            // 「解析说不认识」与「库里有 22 场」同时成立，`name-unresolved` 也就永远判不出真假。
-            // 这里用与解析同一份实现（`TeamNames.SameCountIdentity`），只把真正的同一支队合并。
+            // ★ 身份闸（2026-11-14 第九轮，第十轮收敛为**与解析同一个函数**）：
+            // 核心名相同**不等于**同一支队。解析层已经按梯队身份拒绝 `不来梅 → JFV不来梅U19`、
+            // `谢周三 → 谢周三U21`；计数层若只按核心名归并，就会把梯队的场次算进一线队——
+            // 同一轮里「解析说不认识」与「库里有 22 场」同时成立，`name-unresolved` 也就永远判不出真假。
+            //
+            // 第九轮这里用的是另一个「允许互相包含」的变体，第十轮取消：库里存在
+            // `BKMA` / `BKMA II`、`WSG蒂洛尔` / `WSG蒂洛尔 II` 这种只差一个 ASCII 记号的两支队，
+            // 互相包含会把预备队并进来。现在两边都调 `TeamNames.SameIdentity`——
+            // 一套判据、一个方向，计数回答的就是「这些行会不会被解析成本场这支球队」。
             foreach (var q in grp)
                 result[q.Name] = rows
                     .Where(r => string.Equals(TeamNames.CoreKey(r.Name), grp.Key, StringComparison.Ordinal)
-                                && TeamNames.SameCountIdentity(q.Name, r.Name))
+                                && TeamNames.SameIdentity(q.Name, r.Name))
                     .Sum(r => r.N);
         }
 

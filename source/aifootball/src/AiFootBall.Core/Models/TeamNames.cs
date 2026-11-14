@@ -102,43 +102,66 @@ public static class TeamNames
     }
 
     /// <summary>
-    /// **解析身份**：`candidate`（库内写法）能否被当作 `query`（竞彩写法）的同一支队。
+    /// **队名身份**：`candidate`（库内写法）是否属于 `query`（竞彩写法）这支球队。
+    /// 队名解析与历史样本计数**共用这一个函数**（2026-11-14 第十轮）。
     ///
-    /// 两条闸，方向不能反：
-    ///   ① 梯队标记必须相同 —— 一线队查询绝不受理梯队候选，U21 与 U19 也不互配；
-    ///   ② 候选的 ASCII 记号必须是查询的子集 —— 查询多 `RB`（冠名后缀）允许，
-    ///      候选多 `U21`/`II`/`JFV`（另一支队）拒绝。
-    /// 核心名「全库唯一」只保证不猜，不保证对（第七轮踩过：不来梅 → JFV不来梅U19）。
+    /// 判据只有一条：**梯队层次必须相同**（见 <see cref="HierarchyMark"/>）。
+    /// 一线队 (`""`) 绝不接受 `U21`/`II`/`B`/`女足`/`二队` 这些候选——那是另一支队；
+    /// `U21` 与 `U19` 也不互配。
+    ///
+    /// 为什么不再用「候选的 ASCII 记号必须是查询的子集」（第九、十轮之交的写法）：
+    /// 那会把「多一个俱乐部前缀」也当成另一支队，实测误杀两组真匹配——
+    /// `埃因霍温 → PSV埃因霍温`（库内 147 场）、`辛辛那提 → FC辛辛那提`（75 场）。
+    /// 两种情况的机器可辨差别不是「有没有字母」，而是「字母是不是梯队层次」：
+    /// `PSV`/`FC`/`RB`/`SC` 是俱乐部名的一部分，`U18`/`II`/`B` 是另一支队的标记。
+    /// 「查询名是某个带前缀写法的一部分、但库内还有别的队也叫这个名字」（`米兰` → `国际米兰`/`AC米兰`）
+    /// 属于**歧义**，由 <c>ScorelineModel.Resolve</c> 的歧义判定处理，不该在这一层判死。
     /// </summary>
-    public static bool SameResolveIdentity(string? query, string? candidate)
+    public static bool SameIdentity(string? query, string? candidate)
     {
-        if (string.IsNullOrEmpty(query) || string.IsNullOrEmpty(candidate)) return false;
-        if (!string.Equals(ReserveMark(query), ReserveMark(candidate), StringComparison.Ordinal)) return false;
-        return AsciiMarks(candidate).IsSubsetOf(AsciiMarks(query));
+        if (string.IsNullOrWhiteSpace(query) || string.IsNullOrWhiteSpace(candidate)) return false;
+
+        // 先过别名表：`蔚山HD` 与 `蔚山现代` 是同一支队的两种写法，别名表已经登记过。
+        var q = TeamAliases.Canonical(query);
+        var c = TeamAliases.Canonical(candidate);
+
+        return string.Equals(HierarchyMark(q), HierarchyMark(c), StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// **计数身份**：`candidate` 的历史是否该算进 `query` 的样本量。
+    /// 梯队层次标记（没命中返回空串）。比 <see cref="ReserveMark"/> 多认两类写法：
+    ///   · 年龄段 ASCII 记号 `U15`~`U23`；
+    ///   · 罗马数字 `II`/`III`/`IV` 与单独的 `B`（库里 `BKMA II`、`帕丘卡III`、`马拉加 B` 都是二队）。
     ///
-    /// 与 <see cref="SameResolveIdentity"/> 只差一处：ASCII 记号允许**互相包含**。
-    /// 理由：库内同一支队会有「大宫松鼠」与「大宫松鼠RB」两种写法，谁多谁少取决于当年从哪个源入库；
-    /// 计数是为了「这支队到底踢过几场」，任一方向包含都该合并。梯队那道闸不变——
-    /// `JFV不来梅U19` 的 ReserveMark 是 `U19`，永远不会被算进 `不来梅`。
+    /// 为什么必须多认：`IsReserveOrYouth` 原来只认中文与 U19/U20/U21/U23，
+    /// 于是 `曼联U18`、`BKMA II`、`帕丘卡III` 在「一线队查询」眼里都是**合法候选**——
+    /// 这两类合计在近 18 个月样本里数以千计，拿它们出票就是拿二队的战绩算一线队。
     /// </summary>
-    public static bool SameCountIdentity(string? query, string? candidate)
+    public static string HierarchyMark(string? name)
     {
-        if (string.IsNullOrEmpty(query) || string.IsNullOrEmpty(candidate)) return false;
-        if (!string.Equals(ReserveMark(query), ReserveMark(candidate), StringComparison.Ordinal)) return false;
-        var q = AsciiMarks(query);
-        var c = AsciiMarks(candidate);
-        return c.IsSubsetOf(q) || q.IsSubsetOf(c);
+        var rm = ReserveMark(name);
+        if (rm.Length > 0) return rm;
+        if (string.IsNullOrEmpty(name)) return "";
+
+        foreach (var token in AsciiMarks(name))
+        {
+            if (token.Length == 3 && token[0] == 'u'
+                && token[1] is >= '1' and <= '2' && token[2] is >= '5' and <= '9'
+                && (token[1] == '2' ? token[2] <= '3' : true))
+                return token;
+            if (token is "ii" or "iii" or "iv" or "b") return token;
+        }
+        return "";
     }
 
-    /// <summary>附属队（青年队 / 后备队 / B 队 / 女足）。它们和一线队是两套数据，不能混。</summary>
-    public static bool IsReserveOrYouth(string? name) => ReserveMark(name).Length > 0;
+    /// <summary>附属队（青年队 / 后备队 / B 队 / 二队 / 女足 / 各年龄段）。它们和一线队是两套数据，不能混。</summary>
+    public static bool IsReserveOrYouth(string? name) => HierarchyMark(name).Length > 0;
 
     private static readonly string[] ReserveMarks =
-        { "青年队", "后备队", "预备队", "B队", "U19", "U20", "U21", "U23", "女足", "女子" };
+    {
+        "青年队", "后备队", "预备队", "二队", "B队", "女足", "女子",
+        "U15", "U16", "U17", "U18", "U19", "U20", "U21", "U22", "U23"
+    };
 
     public static string PairKey(string? home, string? away)
     {

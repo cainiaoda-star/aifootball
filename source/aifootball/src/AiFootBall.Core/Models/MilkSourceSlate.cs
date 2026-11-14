@@ -549,11 +549,6 @@ public static class MilkSourceSlate
     {
         var bar = key.IndexOf('|');
         if (bar <= 0) return false;
-        var domain = JcPlayDomain.Of(key[..bar]);
-        if (domain is null) return false;
-        var code = key[(bar + 1)..];
-        foreach (var c in domain)
-            if (string.Equals(c, code, StringComparison.Ordinal)) return true;
-        return false;
+        return JcPlayDomain.Contains(key[..bar], key[(bar + 1)..]);
     }
 }

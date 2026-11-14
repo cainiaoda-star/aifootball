@@ -254,36 +254,26 @@ public sealed class MilkSlateBuild
 /// </summary>
 public static class MilkExpectedSlate
 {
-    /// <summary>玩法档位域。BF 不设固定域（比分档由源站给，有多少存多少）。</summary>
+    /// <summary>
+    /// 玩法档位域（2026-11-14 第十轮：全部委托给 <see cref="JcPlayDomain"/>）。
+    ///
+    /// 这次不再保留任何本地清单：预期侧原来对**比分不设域**（"有多少存多少"），
+    /// 而引擎侧自第十轮起只算域内档位——两边不同源，一条脏码就会造成
+    /// 「预期要求存档、实际没存」的假缺档，或者「实际存了、预期没有」的假多余。
+    /// </summary>
     public static class Domains
     {
-        public static readonly string[] ThreeWay = { "3", "1", "0" };
+        public static readonly string[] ThreeWay = JcPlayDomain.Spf.ToArray();
 
-        /// <summary>半全场 9 个组合，与 <c>MilkPickEngine.HalfFullCombos</c> 同一份（避免两处各写一遍）。</summary>
-        public static readonly string[] HalfFull =
-        {
-            "3-3", "3-1", "3-0",
-            "1-3", "1-1", "1-0",
-            "0-3", "0-1", "0-0"
-        };
+        /// <summary>半全场 9 个组合，与 <c>MilkPickEngine.HalfFullCombos</c> 同一份。</summary>
+        public static readonly string[] HalfFull = JcPlayDomain.Bq.ToArray();
 
         /// <summary>总进球 0~7（7 = 7+）。</summary>
         public const int JqMax = 7;
 
+        /// <summary>是否属于标准域。域外代码（脏码、未启售玩法）不产生「应有存档」。</summary>
         public static bool Contains(string? playType, string? code)
-        {
-            if (string.IsNullOrEmpty(code)) return false;
-            return playType switch
-            {
-                JcPlayTypes.Spf or JcPlayTypes.Nspf => ThreeWay.Contains(code, StringComparer.Ordinal),
-                JcPlayTypes.Bq => HalfFull.Contains(code, StringComparer.Ordinal),
-                JcPlayTypes.Jq => int.TryParse(code, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)
-                                  && n >= 0 && n <= JqMax,
-                // 比分：源站给几档存几档，档位代码不在本地维护（"胜其他"/"其它"这类也在里面）。
-                JcPlayTypes.Bf => true,
-                _ => false
-            };
-        }
+            => JcPlayDomain.Contains(playType, code);
 
         public static bool IsKnownPlay(string? playType)
             => playType is JcPlayTypes.Spf or JcPlayTypes.Nspf or JcPlayTypes.Bq
