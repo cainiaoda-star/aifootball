@@ -533,6 +533,12 @@ public sealed class JobScheduler
     private readonly SemaphoreSlim _recommendLane = new(1, 1);
 
     /// <summary>
+    /// 受注场次采集专用通道（2026-11-14）：不再与主采集（odds/exchange）抢同一把锁，
+    /// 也不进 recommend 出榜通道。真实并发影响列为后续部署评估项，本轮只钉住分流。
+    /// </summary>
+    private readonly SemaphoreSlim _cardsLane = new(1, 1);
+
+    /// <summary>
     /// 把作业丢进对应通道执行。主循环不等待，只保留句柄用于退出时收尾。
     ///
     /// 通道内部是串行的：同一个通道里前一个没跑完，后一个就等着。
@@ -541,11 +547,24 @@ public sealed class JobScheduler
     private async Task EnqueueAsync(Entry entry, CancellationToken ct)
         => await RunThroughLaneAsync(entry, entry.Pending, ct);
 
+    /// <summary>通道名（单测钉住 cards ≠ main / recommend / jc-odds）。</summary>
+    public static string LaneNameOf(string type)
+    {
+        if (RecommendJobTypes.Contains(type)) return "recommend";
+        if (DetachedJobTypes.Contains(type)) return "jc-odds";
+        if (string.Equals(type, "cards", StringComparison.OrdinalIgnoreCase)) return "cards";
+        return "main";
+    }
+
     /// <summary>按作业类型选通道。</summary>
     private SemaphoreSlim LaneOf(ScheduledJob job)
-        => RecommendJobTypes.Contains(job.Type) ? _recommendLane
-            : DetachedJobTypes.Contains(job.Type) ? _jcLane
-            : _mainLane;
+        => LaneNameOf(job.Type) switch
+        {
+            "recommend" => _recommendLane,
+            "jc-odds" => _jcLane,
+            "cards" => _cardsLane,
+            _ => _mainLane
+        };
 
     /// <summary>
     /// 走通道执行一份作业，返回真实结果（排队被取消/进程退出时返回 null）。
@@ -1066,8 +1085,10 @@ public sealed class JobScheduler
                     result = CollectionResult.Fail("推荐服务未注入");
                     break;
                 }
-                var (jc, bd, sfc) = await _recommendation.CollectCardsAsync(ct);
-                result = CollectionResult.Ok(jc + bd + sfc, $"受注场次：竞彩 {jc} / 北单 {bd} / 胜负彩 {sfc}");
+                var cards = await _recommendation.CollectCardsAsync(ct);
+                result = cards.SyncSuccess
+                    ? CollectionResult.Ok(cards.TotalRows, cards.SyncMessage)
+                    : CollectionResult.Fail(cards.TotalRows, cards.SyncMessage);
                 break;
             }
 
@@ -1172,10 +1193,18 @@ public sealed class JobScheduler
                     result = CollectionResult.Fail("推荐服务未注入");
                     break;
                 }
-                var (refreshed, stale, saved) = await _recommendation.RefreshNearKickoffAsync(ct);
-                result = refreshed
-                    ? CollectionResult.Ok(saved, $"临场重算：{stale} 场临近开赛但数据早于赛前 60 分钟，已重算并保存 {saved} 场")
-                    : CollectionResult.Ok(0, "临场重算：没有需要重算的场次");
+                try
+                {
+                    var refresh = await _recommendation.RefreshNearKickoffAsync(ct);
+                    result = NearKickoffJobMapping.ToCollectionResult(refresh);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    // 异常保留真实原因，不冒充闸拒绝 / 未发布
+                    result = CollectionResult.Fail(0,
+                        $"临场重算异常（非闸拒绝）：{ex.GetType().Name}: {ex.Message}");
+                }
                 break;
             }
 
@@ -1191,11 +1220,20 @@ public sealed class JobScheduler
                 var guard = await _recommendation.RunTurnGuardAsync(ct);
                 // 文案必须说「榜面变了什么」，不能只说「喊了几声」——
                 // 2026-11-08 用户的原话是「你监控到了，为啥不去改首页上的推荐结果」。
+                // 撤注 / 闸拒 / 异常三者分开，互不冒充
                 var msg = guard.Alerts == 0
                     ? "临场转向哨兵：本轮无市场转向告警"
-                    : $"临场转向哨兵：{guard.Alerts} 注告警（高危 {guard.High}），已回写榜面红标 {guard.Marked} 注、撤注 {guard.Voided} 注"
-                      + (guard.Recalculated ? "；出现新高危，已立即重算当日榜" : "");
-                result = CollectionResult.Ok(guard.Alerts, msg);
+                    : $"临场转向哨兵：{guard.Alerts} 注告警（高危 {guard.High}），红标 {guard.Marked} 注、风险撤注 {guard.Voided} 注"
+                      + (guard.Recalculated
+                          ? "；新高危已重算并发布当日榜"
+                          : guard.RecalcFaulted
+                              ? $"；风险撤注已生效，重算异常（非闸拒绝）：{guard.RecalcError}"
+                              : guard.GateBlockedRecalc
+                                  ? "；风险撤注已生效，但批次闸未放行全量重算"
+                                  : "");
+                result = guard.RecalcFaulted
+                    ? CollectionResult.Fail(guard.Alerts, msg)
+                    : CollectionResult.Ok(guard.Alerts, msg);
                 break;
             }
 
@@ -1373,22 +1411,36 @@ public sealed class JobScheduler
                     result = CollectionResult.Fail("推荐服务未注入");
                     break;
                 }
-                var all = await _recommendation.RecommendAllAndSaveAsync(ct);
-                var sample = all.Values.Sum(v => v.Count);
-                // 2026-11-10 加：榜空时必须留下漏斗数字。原本文案是一句固定的
-                // 「今天没有可算的胜平负方向」，11-09 一整天 0 注，事后谁也说不清是
-                // 「没有场次」还是「有场次但一条都没过」—— FbMilkGate 那天同样一行没有
-                // （闸诊断只对进入流程的场次写行），凭证全丢。
-                // 现在每次跑都报一遍分盘口条数：Jc 0 就说明抓取/赛程这一层就断了。
+                var save = await _recommendation.RecommendAllAndSaveAsync(ct);
+                var boardNote = save.BoardPublishedAt is DateTime at
+                    ? $"；当前榜面发布时间 {at:yyyy-MM-dd HH:mm:ss}"
+                    : (save.BoardStatusError is not null
+                        ? $"；榜面状态读取失败（未伪造时间）：{save.BoardStatusError}"
+                        : "");
+                if (save.Outcome is "gate-skip" || save.Verdict == "cross-day-skip")
+                {
+                    // 跨日跳过：不冒充发布成功，也不记 FAILED（与页面 lastAttemptSkipped 一致）
+                    result = CollectionResult.Skipped(
+                        $"跨日跳过未发布[{save.Verdict}] {save.Message}{boardNote}");
+                    break;
+                }
+                if (!save.Published)
+                {
+                    // 闸拒绝 / milk-skipped / milk-failed / no-sale：不得写成成功
+                    result = CollectionResult.Fail(0,
+                        $"未发布[{save.Outcome}/{save.Verdict}] {save.Message}"
+                        + (save.RunId is not null ? $"；RunId={save.RunId}" : "")
+                        + boardNote);
+                    break;
+                }
+                var sample = save.SavedCount;
+                var all = save.Boards;
                 var funnel = all.Count == 0
                     ? "无盘口"
                     : string.Join("/", all.Select(kv => $"{kv.Key} {kv.Value.Count}"));
-                // 2026-11-04 用户拍板：胜平负/让球不再对外发布（「发出来还是错的，浪费」）。
-                // 这批行只是校准样本 + 否决台账的分母，所以文案不再说「已保存今日推荐」——
-                // 那句话会让人以为页面上真能照着买。对外只有大奶。
                 result = CollectionResult.Ok(sample, sample == 0
-                    ? $"大奶榜已刷新；今天没有可算的胜平负方向（不影响大奶）；漏斗 {funnel}"
-                    : $"大奶榜已刷新；胜平负方向 {sample} 场只作校准样本，不对外发布；漏斗 {funnel}");
+                    ? $"大奶榜已刷新（RunId={save.RunId}）；今天没有可算的胜平负方向（不影响大奶）；漏斗 {funnel}"
+                    : $"大奶榜已刷新（RunId={save.RunId}）；胜平负方向 {sample} 场只作校准样本，不对外发布；漏斗 {funnel}");
                 break;
             }
 

@@ -315,4 +315,78 @@ public sealed class TurnGuardTests
         Assert.Contains("EV", alert.Reason);
         Assert.Contains("反向转向", alert.Reason);
     }
+
+    /// <summary>
+    /// 反例：风险撤注先于闸；闸拒绝后仍须呈现 Voided&gt;0 + Recalculated=false + GateBlockedRecalc。
+    /// 不得把结果读成「所有票不变」。
+    /// </summary>
+    [Fact]
+    public void GateBlocked_KeepsVoided_And_Flags_BlockedRecalc()
+    {
+        var r = TurnGuard.ComposeRunResult(
+            alertCount: 2, highCount: 1, newHigh: 1,
+            marked: 2, voided: 1,
+            recalculated: false, gateBlockedRecalc: true);
+
+        Assert.Equal(1, r.Voided);
+        Assert.False(r.Recalculated);
+        Assert.True(r.GateBlockedRecalc);
+        Assert.False(r.RecalcFaulted);
+        Assert.Equal(1, r.NewHigh);
+    }
+
+    [Fact]
+    public void RecalcFault_Is_Not_GateBlocked()
+    {
+        var r = TurnGuard.ComposeRunResult(
+            alertCount: 1, highCount: 1, newHigh: 1,
+            marked: 1, voided: 1,
+            recalculated: false, gateBlockedRecalc: false,
+            recalcFaulted: true, recalcError: "TimeoutException: db");
+        Assert.Equal(1, r.Voided);
+        Assert.True(r.RecalcFaulted);
+        Assert.False(r.GateBlockedRecalc);
+        Assert.Contains("TimeoutException", r.RecalcError);
+    }
+
+    [Fact]
+    public void Recalculated_Clears_GateBlocked_Flag()
+    {
+        var r = TurnGuard.ComposeRunResult(
+            alertCount: 1, highCount: 1, newHigh: 1,
+            marked: 1, voided: 1,
+            recalculated: true, gateBlockedRecalc: true);
+        Assert.True(r.Recalculated);
+        Assert.False(r.GateBlockedRecalc);
+        Assert.False(r.RecalcFaulted);
+    }
+}
+
+public class MilkBoardStatusTests
+{
+    [Fact]
+    public void Skipped_Is_Not_Failure_Banner()
+    {
+        var st = new MilkBoardStatus
+        {
+            SalesDate = DateTime.Today,
+            LastStatus = "skipped",
+            LastFailReason = "cross-day@2026-11-13",
+            PublishedAt = DateTime.Today.AddHours(-4)
+        };
+        Assert.True(st.LastAttemptSkipped);
+        Assert.False(st.LastAttemptFailed);
+    }
+
+    [Fact]
+    public void Failed_Is_Failure_Banner()
+    {
+        var st = new MilkBoardStatus
+        {
+            LastStatus = "failed",
+            LastFailReason = "manual-only:…"
+        };
+        Assert.True(st.LastAttemptFailed);
+        Assert.False(st.LastAttemptSkipped);
+    }
 }

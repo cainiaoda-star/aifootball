@@ -46,11 +46,14 @@ public sealed class RecommendationService
     private readonly OddsCaptureRepository? _oddsCapture;
     /// <summary>积分榜仓储（2026-11-08 加）：复盘要用「赛前排名」讲「排名靠后先进球」。</summary>
     private readonly StandingRepository? _standings;
+    private readonly SyncLogRepository? _sync;
+    private readonly RecommendSaveHooks? _hooks;
 
     public RecommendationService(BettingCardSource cardSource, BettingRepository repo, JcOddsRepository jcOdds,
         HitProbabilityService? hit = null, MilkScanService? milk = null, TicketRepository? tickets = null,
         MilkPickRepository? milkPicks = null, OddsCaptureRepository? oddsCapture = null,
-        StandingRepository? standings = null)
+        StandingRepository? standings = null, SyncLogRepository? sync = null,
+        RecommendSaveHooks? hooks = null)
     {
         _cardSource = cardSource;
         _repo = repo;
@@ -61,7 +64,12 @@ public sealed class RecommendationService
         _milkPicks = milkPicks;
         _oddsCapture = oddsCapture;
         _standings = standings;
+        _sync = sync;
+        _hooks = hooks;
     }
+
+    /// <summary>构造点核对用：批次闸依赖 SyncLog；Api/Collector 都必须注入。</summary>
+    public bool HasSyncLog => _sync is not null;
 
     /// <summary>采样竞彩四类玩法固定奖金，写入 FbJcOddsHistory 时间序列。</summary>
     public async Task<CollectionResult> SampleJcOddsAsync(CancellationToken ct = default)
@@ -118,15 +126,18 @@ public sealed class RecommendationService
             $"{date:yyyy-MM-dd} 竞彩回填 {onDay.Count} 场（比分 {onDay.Count(c => c.BfOdds.Count > 0)} / 总进球 {onDay.Count(c => c.JqOdds.Count > 0)} / 半全场 {onDay.Count(c => c.BqOdds.Count > 0)}），写入 {rows} 个选项");
     }
 
-    /// <summary>采集三个板块的受注场次并入库，返回各板块场次数</summary>
-    public async Task<(int Jc, int Bd, int Sfc)> CollectCardsAsync(CancellationToken ct = default)
+    /// <summary>采集三个板块的受注场次并入库（三态：Ok / NoSale / FetchFailed）。</summary>
+    public async Task<CardsCollectResult> CollectCardsAsync(CancellationToken ct = default)
     {
-        var jc = await _cardSource.FetchJcAsync(ct);
-        var bd = await _cardSource.FetchBdAsync(ct);
-        var sfc = await _cardSource.FetchSfcAsync(ct);
+        var jc = await _cardSource.FetchJcDetailedAsync(ct);
+        var bd = await _cardSource.FetchBdDetailedAsync(ct);
+        var sfc = await _cardSource.FetchSfcDetailedAsync(ct);
 
-        await _repo.UpsertCardsAsync(jc.Concat(bd).Concat(sfc), ct);
-        return (jc.Count, bd.Count, sfc.Count);
+        var rows = jc.Records.Concat(bd.Records).Concat(sfc.Records).ToList();
+        if (rows.Count > 0)
+            await _repo.UpsertCardsAsync(rows, ct);
+
+        return new CardsCollectResult { Jc = jc, Bd = bd, Sfc = sfc };
     }
 
     /// <summary>为某板块生成今日推荐</summary>
@@ -529,6 +540,134 @@ public sealed class RecommendationService
         finally { BdSpGate.Release(); }
     }
 
+    /// <summary>纯读：组装闸输入并判定。hooks.EvaluateGate 优先（接线测试替身）。</summary>
+    public async Task<MilkGateResult> EvaluateMilkBatchGateAsync(CancellationToken ct = default)
+    {
+        if (_hooks?.EvaluateGate is { } eval)
+            return await eval(ct);
+
+        var runAt = DateTime.Now;
+        DateTime? cap = null;
+        var complete = false;
+        string? captureError = null;
+        try
+        {
+            var (batchAt, issues) = await _repo.GetJcCaptureStateAsync(ct);
+            cap = batchAt;
+            // 只有「本批仍有在售期行」且各期 Complete 才算完整。
+            // issues 为空（全已开赛 / 无在售）→ complete=false，不得凭空放行。
+            complete = issues.Count > 0 && issues.All(i => i.Complete);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            captureError = $"{ex.GetType().Name}: {ex.Message}";
+        }
+
+        CardsSyncRec? rec = null;
+        var capUnchanged = false;
+        string? syncError = null;
+        if (_sync is null)
+        {
+            syncError = "SyncLogRepository-not-injected";
+        }
+        else
+        {
+            try
+            {
+                var row = await _sync.GetLatestCardsSuccessAsync(ct);
+                if (row is not null)
+                {
+                    rec = new CardsSyncRec
+                    {
+                        TaskName = row.TaskName,
+                        FinishedAt = row.FinishedAt,
+                        RowsAffected = row.RowsAffected ?? 0,
+                        Message = row.Message ?? ""
+                    };
+                    var prev = await _sync.GetPreviousCardsFinishedAsync(row.FinishedAt, ct);
+                    if (cap is DateTime c && prev is DateTime p)
+                        capUnchanged = MilkBatchGate.TimesClose(c, p);
+                    else if (cap is DateTime c2 && prev is null)
+                        // 没有更早成功采集：若 cap 不贴近本轮 rec，视为「未被本轮改写」
+                        capUnchanged = !MilkBatchGate.TimesClose(c2, row.FinishedAt);
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                syncError = $"{ex.GetType().Name}: {ex.Message}";
+            }
+        }
+
+        return MilkBatchGate.Check(new MilkGateInput
+        {
+            RunAt = runAt,
+            Cap = cap,
+            Rec = rec,
+            Complete = complete,
+            CapUnchangedSinceRec = capUnchanged,
+            CaptureError = captureError,
+            SyncError = syncError
+        });
+    }
+
+    /// <summary>
+    /// 闸拒绝/告警/跳过落痕。
+    /// ★ 注意：走真实 MilkPickRepository 时 <c>StartRunAsync</c> 会调
+    /// <c>EnsureRunSchemaAsync</c>——库缺表/缺列时可能执行 CREATE/ALTER（见交付说明）。
+    /// 接线测试应注入 <see cref="RecommendSaveHooks.RecordRejection"/> 避开 DDL。
+    /// </summary>
+    private async Task RecordGateRejectionAsync(MilkGateResult gate, CancellationToken ct)
+    {
+        if (_hooks?.RecordRejection is { } rec)
+        {
+            await rec(gate, ct);
+            return;
+        }
+        if (_milkPicks is null) return;
+        var runAt = DateTime.Now;
+        var run = new MilkRun
+        {
+            RunId = MilkRun.NewId(runAt),
+            StartedAt = runAt,
+            RawMatches = 0,
+            SalesDates = Array.Empty<DateTime>()
+        };
+        try
+        {
+            var status = gate.Band == MilkGateBand.Skip
+                ? MilkRunStatus.Skipped
+                : MilkRunStatus.Failed;
+            var note = gate.Band == MilkGateBand.Skip
+                ? gate.FailReason
+                : gate.Verdict;
+            await _milkPicks.StartRunAsync(run, runAt.Date, "gate", note, ct);
+            await _milkPicks.CloseRunAsync(
+                run.RunId, status, gate.FailReason ?? gate.Verdict, ct: ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { /* 落痕失败不能挡住「未发布」结论 */ }
+    }
+
+    /// <summary>辅助读：失败不抛、不伪造 PublishedAt；错误经 out 带回。</summary>
+    private async Task<(MilkBoardStatus? Status, string? Error)> TryReadBoardStatusAsync(
+        DateTime salesDate, CancellationToken ct)
+    {
+        try
+        {
+            if (_hooks?.GetBoardStatus is { } get)
+                return (await get(salesDate, ct), null);
+            if (_milkPicks is null) return (null, null);
+            return (await _milkPicks.GetBoardStatusAsync(salesDate, ct), null);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            return (null, $"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     /// <summary>把此刻页面上的推荐和库里当天的行写成证据，按时间追加，不覆盖。</summary>
     public Task<string> CaptureEvidenceAsync(CancellationToken ct = default)
         => RecommendationEvidence.CaptureAsync(this, _repo, ct);
@@ -538,8 +677,30 @@ public sealed class RecommendationService
         => DailyReview.WriteAsync(this, _repo, day, ct, _milk, _tickets, _standings);
 
     /// <summary>生成推荐并落库（复盘用）。2026-11-04 改向：胜负彩、北单推荐下线（采集保留），
-    /// 只生成竞彩；竞彩胜平负/让球照算照存（校准、否决台账靠它们），对外发布只发大奶。</summary>
-    public async Task<Dictionary<string, List<MatchRecommendation>>> RecommendAllAndSaveAsync(CancellationToken ct = default)    {
+    /// 只生成竞彩；竞彩胜平负/让球照算照存（校准、否决台账靠它们），对外发布只发大奶。
+    /// 2026-11-14：入口最前挂 <see cref="MilkBatchGate"/>；闸拒绝时本入口不删榜、不撤票。
+    /// ★ turn-guard 的风险撤注发生在调用本方法**之前**，闸拒绝不会回滚那些撤注。
+    /// ★ <see cref="RecommendSaveResult.Published"/> 只认 <see cref="SaveMilkAsync"/> 真实落库结论。</summary>
+    public async Task<RecommendSaveResult> RecommendAllAndSaveAsync(CancellationToken ct = default)
+    {
+        var salesDate = DateTime.Today;
+        var (boardStatus, boardStatusError) = await TryReadBoardStatusAsync(salesDate, ct);
+        var priorPublishedAt = boardStatus?.PublishedAt;
+
+        var gate = await EvaluateMilkBatchGateAsync(ct);
+        if (gate.Band != MilkGateBand.Allow)
+        {
+            await RecordGateRejectionAsync(gate, ct);
+            return RecommendSaveResult.FromGate(gate, priorPublishedAt, boardStatusError);
+        }
+
+        // 替身仍返回 MilkSaveOutcome，入口必须走 FromMilkOutcome（不得直接宣称 Published）
+        if (_hooks?.AfterGateSaveMilk is { } afterGate)
+        {
+            var (hookBoards, hookMilk) = await afterGate(ct);
+            return RecommendSaveResult.FromMilkOutcome(hookMilk, hookBoards, priorPublishedAt, boardStatusError);
+        }
+
         var all = new Dictionary<string, List<MatchRecommendation>>();
         var toSave = new List<RecommendationRecord>();
         // ForDisplay 会把非北单的让球方向清掉（那是给页面展示用的），但落库和出票都要用它。
@@ -622,11 +783,9 @@ public sealed class RecommendationService
 
         await _repo.SaveRecommendationsAsync(toSave, ct);
 
-        // 大奶推荐与出票（2026-11-04 改向）：每日发布只发竞彩大奶——比分/半全场/总进球。
-        // 台账落 FbMilkPick，票落既有票面台账（单关：概率最高的一注，2串1 命中率相乘与「提高中奖率」相反）。
-        await SaveMilkAsync(raw.GetValueOrDefault(Boards.Jc), ct);
-
-        return all;
+        // 大奶推荐与出票：Published 只认 SaveMilk 回传
+        var milk = await SaveMilkAsync(raw.GetValueOrDefault(Boards.Jc), ct);
+        return RecommendSaveResult.FromMilkOutcome(milk, all, priorPublishedAt, boardStatusError);
     }
 
     /// <summary>
@@ -635,24 +794,28 @@ public sealed class RecommendationService
     /// 固定保存时点（08:40 / 11:40 / 16:40 / 20:40 + 停售前 8 分钟的终版：工作日 21:50、周末 22:50）都是全量重算，
     /// 20:40 那次对当晚早些时候开赛的比赛可能已经晚了。规则文本说的是「终盘」，实际用的是早盘价。
     ///
-    /// 返回 (是否需要重算, 待重算场次数, 保存场次数)。
+    /// 返回结构化结果（含 Outcome/Verdict）；调度层按 gate-skip / reject / milk-* 分别记账，
+    /// 不得把非发布一律压成 false 后记 FAILED。
     /// </summary>
-    public async Task<(bool Refreshed, int Stale, int Saved)> RefreshNearKickoffAsync(CancellationToken ct = default)
+    public async Task<NearKickoffRefreshResult> RefreshNearKickoffAsync(CancellationToken ct = default)
     {
         var stale = await _repo.CountNearKickoffStaleAsync(ct: ct);
-        if (stale <= 0) return (false, 0, 0);
+        if (stale <= 0) return NearKickoffRefreshResult.Idle();
 
-        var all = await RecommendAllAndSaveAsync(ct);
-        return (true, stale, all.Values.Sum(v => v.Count));
+        var save = await RecommendAllAndSaveAsync(ct);
+        return NearKickoffRefreshResult.FromSave(stale, save);
     }
 
     /// <summary>
     /// 临场转向哨兵（2026-11-05 加）：开赛前扫一遍当天已发出的未开赛大奶注，
     /// 对比净胜球诊断的转向信号与注的方向，命中的落告警到 dbo.FbTurnAlert。
     ///
-    /// 这是「早干啥去了」的直接补丁——数据每 2 分钟在采、净胜球诊断在刷新，
-    /// 但以前没有任何一条代码把「已出注的场次临场发生了市场转向」主动推出来。
-    /// 返回本次新落库的告警条数。
+    /// ★ 顺序（2026-11-14 复审钉死，不得改）：
+    ///   1) SaveTurnAlerts → ApplyTurnAlertsToPicks（风险撤注**先于**批次闸）；
+    ///   2) 若有新高危再调 RecommendAllAndSaveAsync（受闸约束）。
+    /// 闸拒绝时：不回滚第 1 步已做的撤注；Recalculated=false；GateBlockedRecalc=true。
+    /// 重算抛错或 milk-skipped/milk-failed：RecalcFaulted=true，保留真实原因，不冒充闸拒绝。
+    /// 不得宣称「闸拒绝则所有票不变」——撤注已经生效。
     /// </summary>
     public async Task<TurnGuardRunResult> RunTurnGuardAsync(CancellationToken ct = default)
     {
@@ -662,27 +825,40 @@ public sealed class RecommendationService
         if (openCount == 0) return new TurnGuardRunResult();
 
         var save = await _milkPicks.SaveTurnAlertsAsync(DateTime.Today, scan, ct);
+        // 风险撤注先于闸——本轮不擅自取消
         var (marked, voided) = await _milkPicks.ApplyTurnAlertsToPicksAsync(DateTime.Today, ct);
 
-        // ★ 高危告警必须当场改变榜面（2026-11-08，闭环的核心）。
-        //
-        // 旧行为：告警只写进 FbTurnAlert，榜单纹丝不动，下一次重算要等到 16:40 / 20:40。
-        // 15:30 开赛的场次，最后一版榜是 11:40 —— 12:00 之后市场怎么塌，榜都不会动。
-        // 用户 2026-11-08 的原话：「你监控到了，为啥不去改首页上的推荐结果，你是看着我往坑里跳吗？」
-        //
-        // 现在：一旦出现**新的**高危告警（mid→high 也算新），立刻全量重算当日榜，
-        // 重算后再判一次并把告警回写——这样撤掉的注会从主榜消失，或换成同场另一个档位，
-        // 推荐页在同一分钟内就看到结果，而不是等到下一个固定时点。
         var recalculated = false;
+        var gateBlocked = false;
+        var recalcFaulted = false;
+        string? recalcError = null;
         if (save.NewHigh > 0)
         {
             try
             {
-                await RecommendAllAndSaveAsync(ct);
-                recalculated = true;
+                var pub = await RecommendAllAndSaveAsync(ct);
+                recalculated = pub.Published;
+                if (!pub.Published)
+                {
+                    // 仅 gate-* 标闸拒；milk-skipped / milk-failed 保留真实原因，不冒充闸拒绝
+                    if (pub.Outcome is "gate-reject" or "gate-skip")
+                        gateBlocked = true;
+                    else
+                    {
+                        recalcFaulted = true;
+                        recalcError = $"[{pub.Outcome}/{pub.Verdict}] {pub.Message}"
+                            + (pub.RunId is not null ? $"; RunId={pub.RunId}" : "");
+                    }
+                }
             }
             catch (OperationCanceledException) { throw; }
-            catch { recalculated = false; }
+            catch (Exception ex)
+            {
+                recalculated = false;
+                gateBlocked = false;
+                recalcFaulted = true;
+                recalcError = $"{ex.GetType().Name}: {ex.Message}";
+            }
 
             if (recalculated)
             {
@@ -697,15 +873,16 @@ public sealed class RecommendationService
             }
         }
 
-        return new TurnGuardRunResult
-        {
-            Alerts = scan.Count,
-            High = scan.Count(a => a.Severity == "high"),
-            NewHigh = save.NewHigh,
-            Marked = marked,
-            Voided = voided,
-            Recalculated = recalculated
-        };
+        return TurnGuard.ComposeRunResult(
+            alertCount: scan.Count,
+            highCount: scan.Count(a => a.Severity == "high"),
+            newHigh: save.NewHigh,
+            marked: marked,
+            voided: voided,
+            recalculated: recalculated,
+            gateBlockedRecalc: gateBlocked,
+            recalcFaulted: recalcFaulted,
+            recalcError: recalcError);
     }
 
     /// <summary>
@@ -882,9 +1059,11 @@ public sealed class RecommendationService
         return SteadyPickEngine.Build(recs, odds);
     }
 
-    private async Task SaveMilkAsync(List<MatchRecommendation>? jcRecs, CancellationToken ct)
+    /// <summary>大奶落库；返回真实 published/skipped/failed（含 RunId）。</summary>
+    private async Task<MilkSaveOutcome> SaveMilkAsync(List<MatchRecommendation>? jcRecs, CancellationToken ct)
     {
-        if (_milkPicks is null || _tickets is null) return;
+        if (_milkPicks is null || _tickets is null)
+            return MilkSaveOutcome.NotConfigured();
 
         // 2026-11-10 修：按**注单自己的受注日**分组落库，不再一律用 DateTime.Today。
         //
@@ -1000,9 +1179,13 @@ public sealed class RecommendationService
             await _milkPicks.LogAsync("milk:run", "FAIL", 0,
                 $"[{run.RunId}] 轮次头写入失败，本轮不发布（榜面保持上一轮）："
                 + $"{ex.GetType().Name}: {ex.Message}", CancellationToken.None);
+            return MilkSaveOutcome.Fail(
+                $"轮次头写入失败：{ex.GetType().Name}: {ex.Message}",
+                run.RunId, plan.Mode.ToString().ToLowerInvariant());
         }
 
         var steps = new MilkRunSteps();
+        MilkSaveOutcome? outcome = null;
 
         var pickRows = 0;
         if (plan.Mode != MilkBoardMode.Rewrite)
@@ -1133,34 +1316,14 @@ public sealed class RecommendationService
         {
             try
             {
-                if (plan.Mode != MilkBoardMode.Rewrite)
+                // 核对只在 Rewrite 且步骤齐全时执行；结论一律经 MilkSaveDecision.Conclude
+                bool ledgerOk = false;
+                string? ledgerDetail = null;
+                MilkLedgerReport? ledger = null;
+                if (plan.Mode == MilkBoardMode.Rewrite
+                    && steps.AllOk(MilkSaveDecision.RequiredSteps)
+                    && MilkRunSteps.SnapshotCoversInputs(build.Inputs.Count, snapRows))
                 {
-                    await _milkPicks.CloseRunAsync(run.RunId, plan.RunStatus, plan.Reason,
-                        build.Inputs.Count, snapRows, gateRows, 0, CancellationToken.None);
-                    await _milkPicks.LogAsync("milk:run", plan.Mode == MilkBoardMode.Partial ? "PARTIAL" : "SKIP", 0,
-                        $"[{run.RunId}] 未发布（{plan.RunStatus}）：{plan.Reason}", CancellationToken.None);
-                }
-                else if (!steps.AllOk("picks", "gate", "input", "snapshot", "source")
-                         || !MilkRunSteps.SnapshotCoversInputs(build.Inputs.Count, snapRows))
-                {
-                    var extra = MilkRunSteps.SnapshotCoversInputs(build.Inputs.Count, snapRows)
-                        ? steps.Detail
-                        : $"存档缺失：输入 {build.Inputs.Count} 场但存档 0 行。{steps.Detail}";
-                    await _milkPicks.CloseRunAsync(run.RunId, MilkRunStatus.Failed,
-                        $"落库未全部成功：{steps.Summary}。{extra}",
-                        build.Inputs.Count, snapRows, gateRows, pickRows, CancellationToken.None);
-                    await _milkPicks.LogAsync("milk:run", "FAIL", pickRows,
-                        $"[{run.RunId}] 未发布（failed）：{steps.Summary}；{extra}", CancellationToken.None);
-                }
-                else
-                {
-                    // ★ 2026-11-13 第四轮：发布前**逐场逐玩法逐档位**核对（用户明确要求）。
-                    //
-                    // 上一版的判据是「四步都 ok + input>0 ⇒ snapshot>0」，那只是两个总数：
-                    // 少写了一半档位、或者同一档写了两行，总数照样可能「看起来正常」。
-                    // 而榜面读的就是重写后的行——少的那几档当场从榜上消失，多的那几行让同一注出现两次。
-                    // 所以判据改成「预期账本 vs 库里读回的实际账本」逐键比对，任何缺失/重复/多写都判 failed。
-                    MilkLedgerReport? ledger = null;
                     string? ledgerError = null;
                     try
                     {
@@ -1172,40 +1335,63 @@ public sealed class RecommendationService
 
                     if (ledger is null || !ledger.Ok)
                     {
-                        var why = ledger is null
+                        ledgerOk = false;
+                        ledgerDetail = ledger is null
                             ? $"逐档核对无法执行（{ledgerError}）"
                             : $"逐档核对不通过（缺失 {ledger.Missing}、重复 {ledger.Duplicated}、多写 {ledger.Unexpected}"
                               + $"、豁免/拒绝不成立 {ledger.ExemptDefects}）：{ledger.Detail}";
-                        await _milkPicks.CloseRunAsync(run.RunId, MilkRunStatus.Failed,
-                            $"落库核对失败：{why}",
-                            build.Inputs.Count, snapRows, gateRows, pickRows, CancellationToken.None);
-                        await _milkPicks.LogAsync("milk:verify", "FAIL", pickRows,
-                            $"[{run.RunId}] {why}；{steps.Summary}；本轮不发布，榜面保持上一轮",
-                            CancellationToken.None);
                     }
                     else
                     {
-                        var dates = plan.Writes
-                            .Select(w => new MilkRunDateCount { SalesDate = w.SalesDate, PickCount = w.Picks.Count })
-                            .ToList();
-                        await _milkPicks.PublishRunAsync(run.RunId, dates,
-                            build.Inputs.Count, snapRows, gateRows, pickRows, plan.Reason, ct);
-                        await _milkPicks.LogAsync("milk:run", "SUCCESS", pickRows,
-                            $"[{run.RunId}] 已发布：{plan.Reason}；受注日 "
-                            + string.Join(",", dates.Select(x => $"{x.SalesDate:MM-dd}({x.PickCount}注)"))
-                            + $"；{steps.Summary}；逐档核对 {ledger.Summary}；{ledger.ExemptSummary}"
-                            // 采集口径要写全：`Batch >= Known` 只到「与库内已知集合一致」，
-                            // 不是「源站没漏场」，也不是「赔率新鲜」。日志里不写清，事后会被当成保证。
-                            + $"；采集 {capture.IssueText}（与库内已知集合一致，非源站基准；"
-                            + $"批次 {capture.BatchAt:MM-dd HH:mm} 不代表赔率新鲜）",
-                            CancellationToken.None);
+                        ledgerOk = true;
+                        ledgerDetail = ledger.Summary;
                     }
+                }
+
+                var publishedAt = DateTime.Now;
+                outcome = MilkSaveDecision.Conclude(
+                    plan, run.RunId, steps,
+                    build.Inputs.Count, snapRows, pickRows,
+                    ledgerOk, ledgerDetail, publishedAt);
+
+                if (outcome.Kind == MilkSaveKind.Published)
+                {
+                    var dates = plan.Writes
+                        .Select(w => new MilkRunDateCount { SalesDate = w.SalesDate, PickCount = w.Picks.Count })
+                        .ToList();
+                    await _milkPicks.PublishRunAsync(run.RunId, dates,
+                        build.Inputs.Count, snapRows, gateRows, pickRows, plan.Reason, ct);
+                    await _milkPicks.LogAsync("milk:run", "SUCCESS", pickRows,
+                        $"[{run.RunId}] 已发布：{plan.Reason}；受注日 "
+                        + string.Join(",", dates.Select(x => $"{x.SalesDate:MM-dd}({x.PickCount}注)"))
+                        + $"；{steps.Summary}；逐档核对 {ledgerDetail}"
+                        + (ledger is not null ? $"；{ledger.ExemptSummary}" : "")
+                        + $"；采集 {capture.IssueText}（与库内已知集合一致，非源站基准；"
+                        + $"批次 {capture.BatchAt:MM-dd HH:mm} 不代表赔率新鲜）",
+                        CancellationToken.None);
+                }
+                else if (plan.Mode != MilkBoardMode.Rewrite)
+                {
+                    await _milkPicks.CloseRunAsync(run.RunId, plan.RunStatus, plan.Reason,
+                        build.Inputs.Count, snapRows, gateRows, 0, CancellationToken.None);
+                    await _milkPicks.LogAsync("milk:run",
+                        plan.Mode == MilkBoardMode.Partial ? "PARTIAL" : "SKIP", 0,
+                        $"[{run.RunId}] 未发布（{plan.RunStatus}）：{plan.Reason}", CancellationToken.None);
+                }
+                else
+                {
+                    await _milkPicks.CloseRunAsync(run.RunId, MilkRunStatus.Failed, outcome.Reason,
+                        build.Inputs.Count, snapRows, gateRows, pickRows, CancellationToken.None);
+                    var task = outcome.Reason.StartsWith("落库核对失败", StringComparison.Ordinal)
+                        ? "milk:verify" : "milk:run";
+                    await _milkPicks.LogAsync(task, "FAIL", pickRows,
+                        $"[{run.RunId}] 未发布（failed）：{outcome.Reason}；{steps.Summary}",
+                        CancellationToken.None);
                 }
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
-                // 发布失败（含事务中途失败）：尽力把这一轮标成 failed，别让它停在 running。
                 try
                 {
                     await _milkPicks.CloseRunAsync(run.RunId, MilkRunStatus.Failed,
@@ -1216,18 +1402,23 @@ public sealed class RecommendationService
                 await _milkPicks.LogAsync("milk:run", "FAIL", 0,
                     $"[{run.RunId}] 发布失败（榜面保持上一轮）：{ex.GetType().Name}: {ex.Message}",
                     CancellationToken.None);
+                outcome = MilkSaveOutcome.Fail(
+                    $"发布失败：{ex.GetType().Name}: {ex.Message}", run.RunId);
             }
         }
 
-        // 票只装**当日受注**的那批注（2026-11-10 随上面的分组一起改）。
-        // 跨期混票会把「明天才开售/才停售」的场次塞进今天的方案：用户照着买，
-        // 其中一半根本不在今天这一期里。榜可以同时挂着两期（页面按日期分区显示），
-        // 但购买方案必须只对应一期，否则它既不是今天的方案也不是明天的。
-        var todayPicks = plan.Writes.FirstOrDefault(w => w.SalesDate == today)?.Picks
-                         ?? (IReadOnlyList<MilkPick>)Array.Empty<MilkPick>();
-        var draft = MilkPickEngine.BuildTicket(todayPicks, today);
-        if (draft is null) return;
-        await _tickets.UpsertAsync(draft, ct);
+        // 票只装**当日受注**的那批注（仅在真正发布成功时出票，避免跳过轮次写空票）
+        if (outcome is { Kind: MilkSaveKind.Published })
+        {
+            var todayPicks = plan.Writes.FirstOrDefault(w => w.SalesDate == today)?.Picks
+                             ?? (IReadOnlyList<MilkPick>)Array.Empty<MilkPick>();
+            var draft = MilkPickEngine.BuildTicket(todayPicks, today);
+            if (draft is not null)
+                await _tickets.UpsertAsync(draft, ct);
+        }
+
+        return outcome ?? MilkSaveOutcome.Fail("轮次未开始或未得出结论", run.RunId,
+            plan.Mode.ToString().ToLowerInvariant());
     }
 
     /// <summary>

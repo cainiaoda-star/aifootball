@@ -271,6 +271,9 @@
   .milk-record .milk-head{margin-bottom:6px;cursor:pointer;user-select:none}
   .milk-record .milk-head:hover h3{color:var(--accent, #e6c36a)}
   .milk-record .milk-fold-arrow{display:inline-block;font-size:13px;color:var(--dim);transition:transform .15s}
+  /* 出榜闸告警（2026-11-14）：未刷新原因 + 当前榜面实际发布时间，失败时不得假装已更新。 */
+  .board-status-banner{margin:8px 0 10px;padding:8px 12px;font-size:12.5px;color:var(--dim);border:1px solid var(--line);border-radius:8px;background:var(--panel2)}
+  .board-status-banner.warn{color:#c45c26;border-color:#e0a070;background:#fff6ee}
   /* 方向闸（2026-11-05）：被拦下的场次和诱盘告警，放在大奶榜上方，先看这个再看榜。 */
   .milk-gate{margin:14px 0 4px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--panel2)}
   .milk-gate .gate-head{font-size:13px;margin-bottom:6px}
@@ -918,6 +921,7 @@
         <label class="filter" title="猜胜平负/让球：只留预计命中率 ≥60% 的场；大奶榜：只留模型概率 ≥12% 的注。原来的文字写「EV≥1」，但代码一直是按概率筛的，而且 EV 在竞彩里永远到不了 1（天花板=返奖率），已改成与实际一致的说明。"><input id="strongOnly" type="checkbox" /> 只看高命中率（≥60% / 大奶 ≥12%）</label>
         <span class="date" id="refreshStatus"></span>
       </div>
+      <div id="boardStatusBanner" class="board-status-banner" style="display:none" aria-live="polite"></div>
       <div id="boards"></div>
       <div id="betPickBar" class="bet-pick-bar" aria-live="polite"></div>
       <div id="mybets" style="display:none"></div>
@@ -1089,10 +1093,71 @@ $('#recDate').onchange = () => {
 $('#refreshBtn').onclick = () => {
   $('#refreshStatus').textContent = '正在采集最新受注场次…';
   api('/api/recommend/collect', {method:'POST'})
-    .then(()=>{ $('#refreshStatus').textContent = '正在生成推荐…'; })
-    .catch(()=>{ $('#refreshStatus').textContent = '采集失败，使用已有数据'; })
-    .finally(()=> loadRecommendations().then(()=>{ $('#refreshStatus').textContent='已更新 ' + new Date().toLocaleTimeString(); }));
+    .then(async (res)=>{
+      const msg = (res && res.message) ? String(res.message) : '';
+      const failed = res && (res.status === 'FAILED' || /^\[fetch-failed\]/i.test(msg) || /^\[partial\]/i.test(msg));
+      const noSale = /^\[no-sale\]/i.test(msg);
+      if(failed){
+        $('#refreshStatus').textContent = '采集未成功：' + (msg || 'FAILED') + '（榜面未刷新）';
+        await loadBoardStatusBanner();
+        return;
+      }
+      if(noSale){
+        $('#refreshStatus').textContent = '本轮竞彩无在售（不发布、保留旧榜）：' + msg;
+        await loadBoardStatusBanner();
+        await loadRecommendations();
+        return;
+      }
+      $('#refreshStatus').textContent = '采集完成，正在加载…';
+      await loadRecommendations();
+      await loadBoardStatusBanner();
+      const st = window.__boardStatus;
+      if(st && st.lastAttemptFailed){
+        const pub = st.publishedAt ? new Date(st.publishedAt).toLocaleString() : '未知';
+        $('#refreshStatus').textContent =
+          '采集完成，但出榜未刷新：' + (st.lastFailReason || st.lastNote || st.lastStatus || '')
+          + '；当前榜面发布时间 ' + pub;
+      } else {
+        const pub = st && st.publishedAt ? new Date(st.publishedAt).toLocaleString() : '';
+        $('#refreshStatus').textContent = '采集完成' + (pub ? '；榜面发布时间 ' + pub : ' ' + new Date().toLocaleTimeString());
+      }
+    })
+    .catch(async (err)=>{
+      $('#refreshStatus').textContent = '采集失败，使用已有数据（' + (err && err.message ? err.message : 'error') + '）';
+      await loadBoardStatusBanner();
+      await loadRecommendations();
+    });
 };
+
+async function loadBoardStatusBanner(){
+  const el = $('#boardStatusBanner');
+  try{
+    // 与页面受注日一致，禁止用全局最新成功轮冒充
+    const q = recommendDate ? ('?date=' + encodeURIComponent(recommendDate)) : '';
+    const st = await api('/api/milk/board-status' + q);
+    window.__boardStatus = st || null;
+    if(!el) return;
+    if(!st){ el.style.display='none'; return; }
+    const pub = st.publishedAt ? new Date(st.publishedAt).toLocaleString() : '尚无成功发布';
+    const day = st.salesDate || recommendDate || '';
+    if(st.lastAttemptFailed){
+      el.style.display = 'block';
+      el.className = 'board-status-banner warn';
+      el.textContent = '出榜未刷新（' + day + '）：' + (st.lastFailReason || st.lastNote || st.lastStatus || 'failed')
+        + '。当前榜面实际发布时间：' + pub;
+    } else if(st.lastAttemptSkipped){
+      el.style.display = 'block';
+      el.className = 'board-status-banner';
+      el.textContent = '跨日跳过未重写（' + day + '，非失败）。当前榜面发布时间：' + pub;
+    } else {
+      el.style.display = 'block';
+      el.className = 'board-status-banner';
+      el.textContent = '当前榜面发布时间（' + day + '）：' + pub;
+    }
+  }catch(_){
+    if(el) el.style.display='none';
+  }
+}
 
 const RESULT_TEXT = {'3':'主胜','1':'平局','0':'客胜'};
 
@@ -1533,6 +1598,7 @@ async function loadRecommendations(){
     _totals = data.totals || [];
     $('#dateLabel').textContent = '';
     renderBoards();
+    loadBoardStatusBanner();
   }catch(err){
     if(err.message !== 'unauthorized') $('#boards').innerHTML = `<div class="empty">加载失败：${err.message}</div>`;
   }

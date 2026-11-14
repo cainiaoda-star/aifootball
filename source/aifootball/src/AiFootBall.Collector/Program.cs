@@ -41,7 +41,10 @@ internal static class Program
             // 引擎那几道闸在命令行这一路上等于没开，而它们恰恰是最能改变结果的部分。
             // 表现极具欺骗性：榜照出、库照写，只是「撤注闸一注都没撤过」。
             oddsCapture: new OddsCaptureRepository(factory),
-            standings: new StandingRepository(factory));
+            standings: new StandingRepository(factory),
+            // 2026-11-14 复审：批次闸读 SyncLog（cards-daily / cards:manual）。
+            // 漏注则 rec 恒空 → 一律 batch-mismatch，CLI 出榜永久拒，和 Api 行为分叉。
+            sync: syncRepo);
         var progress = new Progress<string>(Console.WriteLine);
 
         try
@@ -263,15 +266,25 @@ internal static class Program
 
                 case "cards":
                 {
-                    var (jc, bd, sfc) = await recService.CollectCardsAsync();
-                    Console.WriteLine($"受注场次采集完成：竞彩 {jc} 场 / 北单 {bd} 场 / 胜负彩 {sfc} 场");
-                    return 0;
+                    var cards = await recService.CollectCardsAsync();
+                    Console.WriteLine($"受注场次采集完成：{cards.SyncMessage}");
+                    return cards.SyncSuccess ? 0 : 1;
                 }
 
                 case "recommend":
                 {
                     var board = opts.GetValueOrDefault("board", "all");
-                    var all = await recService.RecommendAllAndSaveAsync();
+                    var save = await recService.RecommendAllAndSaveAsync();
+                    if (!save.Published)
+                    {
+                        Console.WriteLine($"未发布[{save.Outcome}/{save.Verdict}] {save.Message}"
+                            + (save.RunId is not null ? $" RunId={save.RunId}" : "")
+                            + (save.BoardStatusError is not null ? $" boardStatus={save.BoardStatusError}" : ""));
+                        // cross-day-skip：退出码 0（未失败），其它未发布为 1
+                        return save.Outcome == "gate-skip" ? 0 : 1;
+                    }
+                    Console.WriteLine($"已发布 RunId={save.RunId} {save.Message}");
+                    var all = save.Boards;
                     foreach (var (b, recs) in all)
                     {
                         if (board != "all" && board != b) continue;

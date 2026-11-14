@@ -185,4 +185,46 @@ public sealed class SyncLogRepository
               FROM dbo.SyncLog ORDER BY LogId DESC", new { take });
         return rows.ToList();
     }
+
+    /// <summary>
+    /// 最近一条成功的 cards 采集（定时 <c>job:cards-daily</c> 或手动 <c>cards:manual</c>）。
+    /// 闸 L1/L2 必须落在同一条记录上，所以这里只取一条，不做「配对一条 + 达标另一条」。
+    /// </summary>
+    public async Task<CardsSyncRow?> GetLatestCardsSuccessAsync(CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<CardsSyncRow>(new CommandDefinition(
+            @"SELECT TOP 1 TaskName, FinishedAt, RowsAffected, Message
+              FROM dbo.SyncLog
+              WHERE Status = 'SUCCESS'
+                AND FinishedAt IS NOT NULL
+                AND TaskName IN (N'job:cards-daily', N'cards:manual')
+              ORDER BY FinishedAt DESC, LogId DESC",
+            cancellationToken: ct));
+    }
+
+    /// <summary>
+    /// <paramref name="before"/> 之前最近一次成功的 cards 采集完成时刻（no-sale 旁证：cap 应对齐它）。
+    /// </summary>
+    public async Task<DateTime?> GetPreviousCardsFinishedAsync(DateTime before, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        return await conn.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
+            @"SELECT TOP 1 FinishedAt
+              FROM dbo.SyncLog
+              WHERE Status = 'SUCCESS'
+                AND FinishedAt IS NOT NULL
+                AND FinishedAt < @before
+                AND TaskName IN (N'job:cards-daily', N'cards:manual')
+              ORDER BY FinishedAt DESC, LogId DESC",
+            new { before }, cancellationToken: ct));
+    }
+
+    public sealed class CardsSyncRow
+    {
+        public string TaskName { get; set; } = "";
+        public DateTime FinishedAt { get; set; }
+        public int? RowsAffected { get; set; }
+        public string? Message { get; set; }
+    }
 }

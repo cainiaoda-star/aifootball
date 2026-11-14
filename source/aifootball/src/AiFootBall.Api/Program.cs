@@ -83,7 +83,8 @@ builder.Services.AddSingleton(sp => new RecommendationService(
     sp.GetRequiredService<TicketRepository>(),
     sp.GetRequiredService<MilkPickRepository>(),
     sp.GetRequiredService<OddsCaptureRepository>(),
-    sp.GetRequiredService<StandingRepository>()));
+    sp.GetRequiredService<StandingRepository>(),
+    sp.GetRequiredService<SyncLogRepository>()));
 builder.Services.AddSingleton<UserRepository>();
 builder.Services.AddSingleton<BettingRepository>();
 builder.Services.AddSingleton<AnalysisRepository>();
@@ -1191,23 +1192,78 @@ app.MapDelete("/api/skills/{id}", (string id, HttpRequest request, AuthService a
     return SkillBoard.Delete(id) ? Results.Ok(new { ok = true }) : Results.NotFound();
 });
 
-// 采集受注场次（内部触发）
-app.MapPost("/api/recommend/collect", async (RecommendationService svc, CancellationToken ct) =>
+// 采集受注场次（内部触发）。2026-11-14：写 SyncLog cards:manual，返回三态。
+app.MapPost("/api/recommend/collect", async (
+    RecommendationService svc, SyncLogRepository sync, CancellationToken ct) =>
 {
-    var (jc, bd, sfc) = await svc.CollectCardsAsync(ct);
-    return Results.Ok(new { jc, bd, sfc });
+    var started = DateTime.Now;
+    var logId = await sync.BeginAsync(MilkBatchGate.ManualTask, "manual", started, ct);
+    try
+    {
+        var cards = await svc.CollectCardsAsync(ct);
+        var status = cards.SyncSuccess ? "SUCCESS" : "FAILED";
+        await sync.CompleteAsync(logId, MilkBatchGate.ManualTask, "manual", status,
+            cards.TotalRows, cards.SyncMessage, ct, started);
+        return Results.Ok(new
+        {
+            jc = cards.JcCount,
+            bd = cards.BdCount,
+            sfc = cards.SfcCount,
+            status,
+            message = cards.SyncMessage,
+            logId,
+            containers = new
+            {
+                jc = cards.Jc.ContainerPresent ? 1 : 0,
+                bd = cards.Bd.ContainerPresent ? 1 : 0,
+                sfc = cards.Sfc.ContainerPresent ? 1 : 0
+            }
+        });
+    }
+    catch (Exception ex)
+    {
+        await sync.CompleteAsync(logId, MilkBatchGate.ManualTask, "manual", "FAILED",
+            0, $"[fetch-failed] {ex.GetType().Name}: {ex.Message}", ct, started);
+        throw;
+    }
 });
 
 // 保存今日推荐（落库，供开奖后复盘）
 app.MapPost("/api/recommend/save", async (RecommendationService svc, CancellationToken ct) =>
 {
-    var all = await svc.RecommendAllAndSaveAsync(ct);
+    var save = await svc.RecommendAllAndSaveAsync(ct);
     return Results.Ok(new
     {
-        saved = all.Values.Sum(v => v.Count),
-        jc = all.GetValueOrDefault(Boards.Jc)?.Count ?? 0,
-        bd = all.GetValueOrDefault(Boards.Bd)?.Count ?? 0,
-        sfc = all.GetValueOrDefault(Boards.Sfc)?.Count ?? 0
+        published = save.Published,
+        outcome = save.Outcome,
+        verdict = save.Verdict,
+        message = save.Message,
+        runId = save.RunId,
+        boardPublishedAt = save.BoardPublishedAt,
+        boardStatusError = save.BoardStatusError,
+        saved = save.SavedCount,
+        jc = save.Boards.GetValueOrDefault(Boards.Jc)?.Count ?? 0,
+        bd = save.Boards.GetValueOrDefault(Boards.Bd)?.Count ?? 0,
+        sfc = save.Boards.GetValueOrDefault(Boards.Sfc)?.Count ?? 0
+    });
+});
+
+// 榜面发布时间 + 最近一次出榜尝试（按受注日，不得用全局最新成功轮冒充当前页）
+app.MapGet("/api/milk/board-status", async (MilkPickRepository repo, string? date, CancellationToken ct) =>
+{
+    var d = DateTime.TryParse(date, out var dv) ? dv.Date : DateTime.Today;
+    var s = await repo.GetBoardStatusAsync(d, ct);
+    return Results.Ok(new
+    {
+        salesDate = s.SalesDate.ToString("yyyy-MM-dd"),
+        publishedAt = s.PublishedAt,
+        publishedRunId = s.PublishedRunId,
+        lastAttemptAt = s.LastAttemptAt,
+        lastStatus = s.LastStatus,
+        lastFailReason = s.LastFailReason,
+        lastNote = s.LastNote,
+        lastAttemptFailed = s.LastAttemptFailed,
+        lastAttemptSkipped = s.LastAttemptSkipped
     });
 });
 

@@ -19,7 +19,7 @@ namespace AiFootBall.Sources;
 /// 判定是纯函数（<see cref="Judge"/>），数据获取由调用方（RecommendationService）注入，
 /// 便于单测，也便于事后拿历史盘口回测「当时的告警该不该响」。
 /// </summary>
-public static class TurnGuard
+public static partial class TurnGuard
 {
     /// <summary>期望净胜球从开盘到现在的下修幅度超过这个值，才算「主队信心流失」（球）。</summary>
     public const decimal GdShrinkThreshold = 0.10m;
@@ -334,8 +334,7 @@ public static class TurnGuard
 
 /// <summary>
 /// 一轮临场哨兵的执行结果（2026-11-08 加）。
-/// 除了「喊了几声」，还要报「喊完之后榜面变了什么」——<see cref="Voided"/> 是
-/// 已从主榜撤下的注数，<see cref="Recalculated"/> 表示本轮是否因新高危触发了全量重算。
+/// 风险撤注 / 闸拒重算 / 重算异常三者分开呈现，互不冒充。
 /// </summary>
 public sealed class TurnGuardRunResult
 {
@@ -344,9 +343,38 @@ public sealed class TurnGuardRunResult
     public int NewHigh { get; set; }
     /// <summary>被打上红标的注数（含 mid）。</summary>
     public int Marked { get; set; }
-    /// <summary>当前处于「已撤注」状态的注数。</summary>
+    /// <summary>风险撤注已生效的注数（先于闸；闸拒/异常均不回滚）。</summary>
     public int Voided { get; set; }
     public bool Recalculated { get; set; }
+    /// <summary>新高危触发重算，但批次闸未放行（非异常）。</summary>
+    public bool GateBlockedRecalc { get; set; }
+    /// <summary>重算过程抛错（非闸拒绝）。</summary>
+    public bool RecalcFaulted { get; set; }
+    /// <summary>重算异常的真实原因；闸拒绝时为空。</summary>
+    public string? RecalcError { get; set; }
+}
+
+public static partial class TurnGuard
+{
+    /// <summary>
+    /// 组装哨兵结果（可单测）。闸拒与异常互斥：异常不得标成 GateBlockedRecalc。
+    /// </summary>
+    public static TurnGuardRunResult ComposeRunResult(
+        int alertCount, int highCount, int newHigh,
+        int marked, int voided, bool recalculated,
+        bool gateBlockedRecalc, bool recalcFaulted = false, string? recalcError = null)
+        => new()
+        {
+            Alerts = alertCount,
+            High = highCount,
+            NewHigh = newHigh,
+            Marked = marked,
+            Voided = voided,
+            Recalculated = recalculated,
+            GateBlockedRecalc = gateBlockedRecalc && !recalculated && !recalcFaulted,
+            RecalcFaulted = recalcFaulted && !recalculated,
+            RecalcError = recalcFaulted ? recalcError : null
+        };
 }
 
 /// <summary>

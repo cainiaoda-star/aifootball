@@ -21,21 +21,105 @@ public sealed class BettingCardSource
     public BettingCardSource(HttpClient http) => _http = http;
 
     public async Task<List<BettingCardRecord>> FetchJcAsync(CancellationToken ct = default)
-    {
-        var html = await GetGbkAsync("https://trade.500.com/jczq/", "https://trade.500.com/", ct);
-        return html is null ? new() : ParseJc(html);
-    }
+        => (await FetchJcDetailedAsync(ct)).Records.ToList();
 
     public async Task<List<BettingCardRecord>> FetchBdAsync(CancellationToken ct = default)
-    {
-        var html = await GetGbkAsync("https://trade.500.com/bjdc/", "https://trade.500.com/", ct);
-        return html is null ? new() : ParseBd(html);
-    }
+        => (await FetchBdDetailedAsync(ct)).Records.ToList();
 
     public async Task<List<BettingCardRecord>> FetchSfcAsync(CancellationToken ct = default)
+        => (await FetchSfcDetailedAsync(ct)).Records.ToList();
+
+    /// <summary>竞彩受注三态。容器依据 <see cref="ParseJc"/> 的 XPath 反推；无法确认 → FetchFailed，不猜 NoSale。</summary>
+    public async Task<BoardFetchResult> FetchJcDetailedAsync(CancellationToken ct = default)
     {
-        var html = await GetGbkAsync("https://trade.500.com/sfc/", "https://trade.500.com/", ct);
-        return html is null ? new() : ParseSfc(html, out _);
+        var (html, reason) = await GetGbkDetailedAsync(
+            "https://trade.500.com/jczq/", "https://trade.500.com/", ct);
+        return ClassifyJc(html, reason);
+    }
+
+    public async Task<BoardFetchResult> FetchBdDetailedAsync(CancellationToken ct = default)
+    {
+        var (html, reason) = await GetGbkDetailedAsync(
+            "https://trade.500.com/bjdc/", "https://trade.500.com/", ct);
+        return ClassifyBd(html, reason);
+    }
+
+    public async Task<BoardFetchResult> FetchSfcDetailedAsync(CancellationToken ct = default)
+    {
+        var (html, reason) = await GetGbkDetailedAsync(
+            "https://trade.500.com/sfc/", "https://trade.500.com/", ct);
+        return ClassifySfc(html, reason);
+    }
+
+    /// <summary>本地 HTML 样本可测：竞彩容器 = 解析行 XPath 或同页投注壳（td-betbtn / betbtn-row）。</summary>
+    public static bool HasJcContainer(string? html)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return false;
+        var doc = new HtmlDocument();
+        doc.LoadHtml(html);
+        if (doc.DocumentNode.SelectSingleNode("//tr[@data-matchnum]") is not null) return true;
+        // 空在售日：行不在，但投注表壳仍在（与 JcCardParseTests 样本同一套 class）
+        return doc.DocumentNode.SelectSingleNode(
+                   "//*[contains(@class,'td-betbtn') or contains(@class,'betbtn-row') or contains(@class,'bet-tb')]")
+               is not null;
+    }
+
+    /// <summary>北单容器 = <c>tr[@fid]</c>（与 <see cref="ParseBd"/> 一致）或空表壳。</summary>
+    public static bool HasBdContainer(string? html)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return false;
+        var doc = new HtmlDocument();
+        doc.LoadHtml(html);
+        if (doc.DocumentNode.SelectSingleNode("//tr[@fid]") is not null) return true;
+        return doc.DocumentNode.SelectSingleNode(
+                   "//*[contains(@class,'bet-tb') or contains(@class,'td-betbtn') or contains(@id,'bjdc')]")
+               is not null;
+    }
+
+    /// <summary>胜负彩容器 = <c>tr[@data-cid]</c>（与 ParseSfc 一致）或 expect 壳。</summary>
+    public static bool HasSfcContainer(string? html)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return false;
+        var doc = new HtmlDocument();
+        doc.LoadHtml(html);
+        if (doc.DocumentNode.SelectSingleNode("//tr[@data-cid]") is not null) return true;
+        if (ExpectRegex.IsMatch(html)) return true;
+        return doc.DocumentNode.SelectSingleNode(
+                   "//*[contains(@class,'bet-tb') or contains(@class,'td-no')]")
+               is not null;
+    }
+
+    public static BoardFetchResult ClassifyJc(string? html, string reason = "")
+    {
+        if (string.IsNullOrWhiteSpace(html))
+            return BoardFetchResult.Failed(string.IsNullOrWhiteSpace(reason) ? "empty-html" : reason);
+        var container = HasJcContainer(html);
+        var rows = ParseJc(html);
+        if (rows.Count > 0) return BoardFetchResult.Ok(rows, $"jc={rows.Count}");
+        if (container) return BoardFetchResult.NoSale("jc-container-empty");
+        return BoardFetchResult.Failed(string.IsNullOrWhiteSpace(reason) ? "no-jc-container" : reason);
+    }
+
+    public static BoardFetchResult ClassifyBd(string? html, string reason = "")
+    {
+        if (string.IsNullOrWhiteSpace(html))
+            return BoardFetchResult.Failed(string.IsNullOrWhiteSpace(reason) ? "empty-html" : reason);
+        var container = HasBdContainer(html);
+        var rows = ParseBd(html);
+        if (rows.Count > 0) return BoardFetchResult.Ok(rows, $"bd={rows.Count}");
+        if (container) return BoardFetchResult.NoSale("bd-container-empty");
+        return BoardFetchResult.Failed(string.IsNullOrWhiteSpace(reason) ? "no-bd-container" : reason);
+    }
+
+    public static BoardFetchResult ClassifySfc(string? html, string reason = "")
+    {
+        if (string.IsNullOrWhiteSpace(html))
+            return BoardFetchResult.Failed(string.IsNullOrWhiteSpace(reason) ? "empty-html" : reason);
+        var container = HasSfcContainer(html);
+        var rows = ParseSfc(html, out _);
+        if (rows.Count > 0) return BoardFetchResult.Ok(rows, $"sfc={rows.Count}");
+        if (container) return BoardFetchResult.NoSale("sfc-container-empty");
+        return BoardFetchResult.Failed(string.IsNullOrWhiteSpace(reason) ? "no-sfc-container" : reason);
     }
 
     /// <summary>胜负彩开奖页。打不开或还没开出 14 个 3/1/0 时返回 null，不猜奖金。</summary>
@@ -681,8 +765,15 @@ public sealed class BettingCardSource
 
     private async Task<string?> GetGbkAsync(string url, string referer, CancellationToken ct)
     {
-        // 复用 OddsHttp 的反爬通道：自动处理 428/429 限流与 TencentEdgeOne JS 挑战页
-        var (html, reason) = await OddsHttp.GetAsync(_http, url, referer, ct);
+        var (html, _) = await GetGbkDetailedAsync(url, referer, ct);
         return html;
+    }
+
+    private async Task<(string? Html, string Reason)> GetGbkDetailedAsync(
+        string url, string referer, CancellationToken ct)
+    {
+        // 复用 OddsHttp 的反爬通道：自动处理 428/429 限流与 TencentEdgeOne JS 挑战页
+        // reason 不再丢弃——三态判定要把「打不开」和「真空」分开。
+        return await OddsHttp.GetAsync(_http, url, referer, ct);
     }
 }

@@ -750,6 +750,51 @@ public sealed class MilkPickRepository
     }
 
     /// <summary>
+    /// 榜面状态（给页面告警）：按<strong>受注日</strong>取该日最新成功发布轮，
+    /// 不得用全局最新成功轮冒充当前页面。last attempt 也限定同一 RunDate。
+    /// </summary>
+    public Task<MilkBoardStatus> GetBoardStatusAsync(CancellationToken ct = default)
+        => GetBoardStatusAsync(DateTime.Today, ct);
+
+    public async Task<MilkBoardStatus> GetBoardStatusAsync(DateTime salesDate, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        await EnsureRunSchemaAsync(conn, ct);
+        var d = salesDate.Date;
+
+        // 与 PublishedRunSql 同口径：FbMilkRunDate.SalesDate + Status=success
+        var published = await conn.QuerySingleOrDefaultAsync<(DateTime? PublishedAt, string? RunId)>(
+            new CommandDefinition(
+                @"SELECT TOP 1 r.PublishedAt, r.RunId
+                  FROM dbo.FbMilkRunDate rd
+                  JOIN dbo.FbMilkRun r ON r.RunId = rd.RunId
+                  WHERE rd.SalesDate = @d AND r.Status = 'success' AND r.PublishedAt IS NOT NULL
+                  ORDER BY r.StartedAt DESC, rd.RunId DESC",
+                new { d }, cancellationToken: ct));
+
+        var last = await conn.QuerySingleOrDefaultAsync<(
+            DateTime? StartedAt, string? Status, string? FailReason, string? Note, string? RunId)>(
+            new CommandDefinition(
+                @"SELECT TOP 1 StartedAt, Status, FailReason, Note, RunId
+                  FROM dbo.FbMilkRun
+                  WHERE RunDate = @d
+                  ORDER BY StartedAt DESC",
+                new { d }, cancellationToken: ct));
+
+        return new MilkBoardStatus
+        {
+            SalesDate = d,
+            PublishedAt = published.PublishedAt,
+            PublishedRunId = published.RunId,
+            LastAttemptAt = last.StartedAt,
+            LastStatus = last.Status,
+            LastFailReason = last.FailReason,
+            LastNote = last.Note,
+            LastRunId = last.RunId
+        };
+    }
+
+    /// <summary>
     /// 读回本轮四类落库的**实际账本**（2026-11-13 第四轮）：按业务键分组计数。
     ///
     /// 键的格式与 <c>MilkRunLedger.Keys</c> 逐字对齐（`yyyy-MM-dd|MatchId|Play|Option`），
@@ -1998,6 +2043,32 @@ public sealed class TurnAlertRow
     public decimal? ExpGdNow { get; set; }
     public decimal? ExpGdMove { get; set; }
     public DateTime? CreatedAt { get; set; }
+}
+
+/// <summary>当前榜面发布时间与最近一次出榜尝试（闸拒绝时页面据此提示，不得假装已刷新）。</summary>
+public sealed class MilkBoardStatus
+{
+    /// <summary>查询所用的受注日（与页面一致）。</summary>
+    public DateTime SalesDate { get; init; }
+    public DateTime? PublishedAt { get; init; }
+    public string? PublishedRunId { get; init; }
+    public DateTime? LastAttemptAt { get; init; }
+    public string? LastStatus { get; init; }
+    public string? LastFailReason { get; init; }
+    public string? LastNote { get; init; }
+    public string? LastRunId { get; init; }
+
+    /// <summary>跨日跳过：不发布成功，也不算失败告警。</summary>
+    public bool LastAttemptSkipped =>
+        string.Equals(LastStatus, "skipped", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>最近一次尝试是失败/partial（不含 skipped / success）。</summary>
+    public bool LastAttemptFailed =>
+        LastStatus is "failed" or "partial"
+        || (!string.IsNullOrWhiteSpace(LastFailReason)
+            && !LastAttemptSkipped
+            && !string.Equals(LastStatus, "success", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(LastStatus, "running", StringComparison.OrdinalIgnoreCase));
 }
 
 /// <summary>
