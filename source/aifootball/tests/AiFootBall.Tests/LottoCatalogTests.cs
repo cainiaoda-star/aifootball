@@ -56,9 +56,11 @@ public class LottoCatalogTests
     [Fact]
     public void 未知彩种的显示名回落到代码本身()
     {
-        Assert.Equal("qlc", LottoCodes.DisplayName("qlc"));
-        Assert.Equal("qxc", LottoCodes.DisplayName("qxc"));
-        // 不抛异常很重要：老推荐记录里可能挂着这些 code，复盘时要能显示
+        Assert.Equal("七乐彩", LottoCodes.DisplayName("qlc"));
+        Assert.Equal("七星彩", LottoCodes.DisplayName("qxc"));
+        Assert.False(LottoCodes.IsDigitGame("qxc"));
+        Assert.False(LottoCodes.SupportsFrequencyAnalysis("qxc"));
+        Assert.Equal(0, LottoHitMath.OfficialDigitCount("qxc"));
         Assert.Equal("双色球", LottoCodes.DisplayName("ssq"));
     }
 

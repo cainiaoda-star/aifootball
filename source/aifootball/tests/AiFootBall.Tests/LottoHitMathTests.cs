@@ -6,83 +6,95 @@ namespace AiFootBall.Tests;
 public class LottoHitMathTests
 {
     [Fact]
-    public void Single_Marks_Reds_And_Blue_That_Came_Up()
+    public void Ssq_Partial_Or_Full_Match_Is_PrizeUndetermined_Not_Lost_Or_Won()
     {
-        var g = LottoHitMath.Mark(
+        var partial = LottoHitMath.Mark(
             "单式",
             [1, 5, 9, 12, 18, 33],
             [7],
             [5, 9, 12, 20, 21, 33],
             [16]);
+        Assert.Equal(LottoHitStatus.PrizeUndetermined, partial.Status);
+        Assert.Equal(4, partial.RedHits);
+        Assert.True(partial.HasMatchDetail);
+        Assert.False(LottoHitStatusRules.CountsInHitRate(partial.Status));
+        Assert.False(LottoHitStatusRules.ShowAsWin(partial.Status));
+        Assert.Contains("奖级未判定", partial.Note);
 
-        Assert.Equal([false, true, true, true, false, true], g.RedHit);
-        Assert.Equal([false], g.BlueHit);
-        Assert.Equal(4, g.RedHits);
-        Assert.Equal("红球中 4/6，蓝球中 0/1", g.Note);
-        Assert.Equal([true, true, true, false, false, true], g.DrawRedHit);
+        var full = LottoHitMath.Mark(
+            "单式",
+            [1, 5, 9, 12, 18, 33],
+            [16],
+            [1, 5, 9, 12, 18, 33],
+            [16]);
+        Assert.Equal(LottoHitStatus.PrizeUndetermined, full.Status);
+        Assert.False(LottoHitStatusRules.ShowAsWin(full.Status));
     }
 
     [Fact]
-    public void Direct_Marks_The_Same_Position()
+    public void Fushi_And_Dantuo_And_Kl8_Are_PrizeUndetermined()
     {
-        var g = LottoHitMath.Mark("直选", [3, 5, 8], [], [3, 9, 8], []);
+        var fushi = LottoHitMath.Mark(
+            "复式",
+            [1, 2, 3, 4, 5, 6, 7],
+            [8],
+            [1, 2, 3, 4, 5, 6],
+            [8]);
+        Assert.Equal(LottoHitStatus.PrizeUndetermined, fushi.Status);
+        Assert.Equal(6, fushi.RedHits);
 
-        Assert.Equal([true, false, true], g.RedHit);
-        Assert.Equal([true, false, true], g.DrawRedHit);
-        Assert.Equal("位置中 2/3", g.Note);
+        var dan = LottoHitMath.Mark("四胆全拖", [1, 2, 3, 4], [5, 6], [1, 2, 3, 4, 9], [5, 6]);
+        Assert.Equal(LottoHitStatus.PrizeUndetermined, dan.Status);
+
+        var kl8 = LottoHitMath.Mark("选十", Enumerable.Range(1, 10).ToList(), [], Enumerable.Range(1, 20).ToArray(), []);
+        Assert.Equal(LottoHitStatus.PrizeUndetermined, kl8.Status);
+        Assert.Equal(10, kl8.RedHits);
     }
 
     [Fact]
-    public void Group_Ignores_Order_And_Does_Not_Reuse_A_Digit()
+    public void Digit_Direct_And_Group_Keep_Won_Lost()
     {
-        var all = LottoHitMath.Mark("组选六", [1, 2, 3], [], [3, 1, 2], []);
-        Assert.Equal([true, true, true], all.RedHit);
-        Assert.Equal("号码中 3/3", all.Note);
+        var won = LottoHitMath.Mark("直选", [7, 3, 5], [], [7, 3, 5, 6, 9, 0], [], LottoCodes.Fc3d);
+        Assert.Equal(LottoHitStatus.Won, won.Status);
 
-        var pair = LottoHitMath.Mark("组选三", [1, 1, 2], [], [1, 2, 2], []);
-        Assert.Equal([true, false, true], pair.RedHit);
-        Assert.Equal([true, true, false], pair.DrawRedHit);
-        Assert.Equal("号码中 2/3", pair.Note);
+        var lost = LottoHitMath.Mark("直选", [7, 3, 0], [], [7, 3, 5], [], LottoCodes.Fc3d);
+        Assert.Equal(LottoHitStatus.Lost, lost.Status);
+
+        var g6 = LottoHitMath.Mark("组选六", [1, 2, 3], [], [3, 1, 2], [], LottoCodes.Fc3d);
+        Assert.Equal(LottoHitStatus.Won, g6.Status);
     }
 
     [Fact]
-    public void DanTuo_Marks_Dan_And_Back_Only()
+    public void GroupThree_AAB_Does_Not_Hit_ABB()
     {
-        var g = LottoHitMath.Mark(
-            "四胆全拖",
-            [1, 2, 3, 4],
-            [5, 6],
-            [2, 3, 10, 11, 12],
-            [6, 11]);
-
-        Assert.Equal([false, true, true, false], g.RedHit);
-        Assert.Equal([false, true], g.BlueHit);
-        Assert.Equal("胆中 2/4，后区中 1/2", g.Note);
-        Assert.Equal([true, true, false, false, false], g.DrawRedHit);
+        var g = LottoHitMath.Mark("组选三", [1, 1, 2], [], [1, 2, 2], [], LottoCodes.Fc3d);
+        Assert.Equal(LottoHitStatus.Lost, g.Status);
+        Assert.False(LottoHitStatusRules.ShowAsWin(g.Status));
     }
 
     [Fact]
-    public void Digit_Games_Match_Place_And_Ignore_The_Extra_Numbers()
+    public void GroupThree_Two_Digit_AB_Rejected_Illegal()
     {
-        // 2026290 福彩3D 开奖 7 3 5，库里后面还有 6 9 0。组选也不能拿后面的号算中。
-        var g = LottoHitMath.Mark("组选六", [7, 9, 0], [], [7, 3, 5, 6, 9, 0], [], LottoCodes.Fc3d);
-
-        Assert.Equal([true, false, false], g.RedHit);
-        Assert.Equal([true, false, false], g.DrawRedHit);
-        Assert.Equal("百位中", g.Note);
-
-        var pl5 = LottoHitMath.Mark("直选", [0, 3, 1, 3, 6], [], [0, 3, 9, 3, 6], [], LottoCodes.Pl5);
-        Assert.Equal([true, true, false, true, true], pl5.RedHit);
-        Assert.Equal("万位、千位、十位、个位中", pl5.Note);
+        var g = LottoHitMath.Mark("组选三", [1, 2], [], [1, 1, 2], [], LottoCodes.Fc3d);
+        Assert.Equal(LottoHitStatus.Illegal, g.Status);
+        Assert.False(LottoHitStatusRules.CountsInHitRate(g.Status));
     }
 
     [Fact]
-    public void SelectTen_Counts_How_Many_Of_The_Ten_Were_Drawn()
+    public void Note_With_Zhong_But_Not_Won_Must_Not_Show_As_Win()
     {
-        var draw = Enumerable.Range(1, 20).ToArray();
-        var g = LottoHitMath.Mark("选十", [1, 2, 3, 4, 30, 31, 32, 33, 34, 35], [], draw, []);
+        var g = LottoHitMath.Mark("组选六", [1, 2, 4], [], [1, 2, 3], [], LottoCodes.Fc3d);
+        Assert.Equal(LottoHitStatus.Lost, g.Status);
+        Assert.Contains("未中", g.Note);
+        Assert.Contains("中", g.Note);
+        Assert.False(LottoHitStatusRules.ShowAsWin(g.Status));
+    }
 
-        Assert.Equal(4, g.RedHits);
-        Assert.Equal("中 4/10", g.Note);
+    [Fact]
+    public void Unknown_Play_Undetermined()
+    {
+        var g = LottoHitMath.Mark("神秘玩法", [1, 2, 3], [], [1, 2, 3], [], LottoCodes.Fc3d);
+        Assert.Equal(LottoHitStatus.Undetermined, g.Status);
+        Assert.False(LottoHitStatusRules.CountsInHitRate(g.Status));
     }
 }

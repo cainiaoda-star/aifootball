@@ -22,11 +22,12 @@ public sealed class LottoUserTicketRepository
             targetIssue,
             RedNumbers = string.Join(",", t.Reds.Select(x => x.ToString("D2"))),
             BlueNumbers = t.Blues.Count == 0 ? null : string.Join(",", t.Blues.Select(x => x.ToString("D2"))),
-            PlayType = string.IsNullOrWhiteSpace(t.PlayType) ? "单式" : t.PlayType,
+            // PlayType / BetAmount 须由服务端校验后写入，禁止此处默默改成「单式」或覆盖金额。
+            PlayType = t.PlayType,
             t.CoolScore,
             LevelName = t.LevelName,
             Source = string.IsNullOrWhiteSpace(t.Source) ? "pick" : t.Source,
-            BetAmount = t.BetAmount <= 0 ? 2m : t.BetAmount,
+            BetAmount = t.BetAmount,
             recDate
         }).ToList();
         return await conn.ExecuteAsync(new CommandDefinition(
@@ -55,7 +56,10 @@ public sealed class LottoUserTicketIn
 {
     public List<int> Reds { get; set; } = new();
     public List<int> Blues { get; set; } = new();
-    public string PlayType { get; set; } = "单式";
+    /// <summary>玩法；缺省由服务端按彩种规范化（快乐8→选十），勿默认写成单式。</summary>
+    public string PlayType { get; set; } = "";
+    /// <summary>胆拖拖码。本轮用户票不落库；若客户端传入非空则校验拒绝，禁止静默丢弃。</summary>
+    public List<int>? TuoReds { get; set; }
     public decimal? CoolScore { get; set; }
     public string? LevelName { get; set; }
     public string? Source { get; set; }
@@ -66,7 +70,7 @@ public sealed class LottoUserTicketIn
 public sealed class LottoUserTicketSaveRequest
 {
     public string Code { get; set; } = "";
-    /// <summary>目标期号。缺省由服务端取最新开奖期号 +1。</summary>
+    /// <summary>目标期号。必填；服务端不做最新开奖 +1 猜测。</summary>
     public string? TargetIssue { get; set; }
     public List<LottoUserTicketIn> Tickets { get; set; } = new();
 }

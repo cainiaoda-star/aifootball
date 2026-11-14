@@ -830,10 +830,9 @@ public sealed class JobScheduler
                 {
                     try
                     {
-                        var plans = await _lottoRec.GenerateAllAndSaveAsync(ct);
-                        var n = plans.Sum(p => p.Picks.Count);
-                        result = CollectionResult.Ok(result.Rows + n,
-                            $"{result.Message}；数字彩选号 {n} 注");
+                        var save = await _lottoRec.GenerateAllAndSaveAsync(ct);
+                        result = CollectionResult.Ok(result.Rows + save.SavedPickCount,
+                            $"{result.Message}；{save.Message}");
                     }
                     catch (Exception ex)
                     {
@@ -850,9 +849,8 @@ public sealed class JobScheduler
                     result = CollectionResult.Fail("未配置数字彩选号服务");
                     break;
                 }
-                var plans = await _lottoRec.GenerateAllAndSaveAsync(ct);
-                result = CollectionResult.Ok(plans.Sum(p => p.Picks.Count),
-                    string.Join("；", plans.Select(p => $"{p.LotteryName} {p.Picks.Count}注")));
+                var save = await _lottoRec.GenerateAllAndSaveAsync(ct);
+                result = CollectionResult.Ok(save.SavedPickCount, save.Message);
                 break;
             }
 

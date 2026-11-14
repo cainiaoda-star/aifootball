@@ -36,7 +36,8 @@ public class LottoRecommendEngineTests
         Assert.Equal(Enumerable.Range(1, 35), dan.Reds.Concat(dan.TuoReds).OrderBy(x => x));
         Assert.All(dan.Blues, n => Assert.InRange(n, 1, 12));
         Assert.Contains("31 注", dan.SignalDesc);
-        Assert.Contains("四胆全拖", plan.Summary);
+        Assert.False(plan.IssueBound);
+        Assert.Contains("未绑定期号", plan.Summary);
     }
 
     [Fact]
@@ -70,8 +71,10 @@ public class LottoRecommendEngineTests
         var plan = LottoRecommendEngine.Recommend(lt, draws);
         Assert.Equal(4, plan.Picks.Count);
         Assert.Single(plan.Picks.Where(p => p.IsPrimary));
-        Assert.Contains("选十", plan.Summary);
-        Assert.Equal("2026081", plan.TargetIssue);
+        Assert.Contains(plan.Picks, p => p.PlayType == "选十");
+        Assert.False(plan.IssueBound);
+        Assert.True(string.IsNullOrEmpty(plan.TargetIssue));
+        Assert.Contains("未绑定期号", plan.Summary);
         Assert.All(plan.Picks, p =>
         {
             Assert.Equal("选十", p.PlayType);
@@ -101,9 +104,18 @@ public class LottoRecommendEngineTests
     }
 
     [Fact]
-    public void NextIssue_Increments()
+    public void Recommend_Does_Not_Bind_Guessed_Target_Issue()
     {
-        Assert.Equal("2026123", LottoRecommendEngine.NextIssue("2026122"));
+        var lt = new LotteryTypeInfo
+        {
+            Code = LottoCodes.Ssq, Name = "双色球",
+            RedCount = 6, RedMax = 33, BlueCount = 1, BlueMax = 16
+        };
+        var plan = LottoRecommendEngine.Recommend(lt, FakeComboDraws(lt, 80));
+        Assert.False(plan.IssueBound);
+        Assert.True(string.IsNullOrEmpty(plan.TargetIssue));
+        Assert.False(string.IsNullOrEmpty(plan.BasedOnIssue));
+        Assert.True(plan.Picks.Count >= 1);
     }
 
     private static List<LotteryDrawRecord> FakeComboDraws(LotteryTypeInfo lt, int n)

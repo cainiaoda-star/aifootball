@@ -221,6 +221,7 @@ app.MapGet("/api/lotto/recommend", async (LottoRecommendationService svc, Cancel
 
 app.MapGet("/api/lotto/recommend/{code}", async (string code, LottoRecommendationService svc, CancellationToken ct) =>
 {
+    code = LottoCodes.Normalize(code);
     if (!LottoCodes.All.Contains(code, StringComparer.OrdinalIgnoreCase))
         return Results.BadRequest(new { message = UnsupportedLottoMessage() });
     return Results.Ok(await svc.GetByCodeAsync(code, ct));
@@ -228,6 +229,7 @@ app.MapGet("/api/lotto/recommend/{code}", async (string code, LottoRecommendatio
 
 app.MapGet("/api/lotto/review/{code}", async (string code, LottoRecommendationService svc, CancellationToken ct) =>
 {
+    code = LottoCodes.Normalize(code);
     if (!LottoCodes.All.Contains(code, StringComparer.OrdinalIgnoreCase))
         return Results.BadRequest(new { message = UnsupportedLottoMessage() });
     return Results.Ok(await svc.ReviewAsync(code, ct));
@@ -235,11 +237,24 @@ app.MapGet("/api/lotto/review/{code}", async (string code, LottoRecommendationSe
 
 app.MapPost("/api/lotto/recommend/save", async (LottoRecommendationService svc, CancellationToken ct) =>
 {
-    var all = await svc.GenerateAllAndSaveAsync(ct);
+    var result = await svc.GenerateAllAndSaveAsync(ct);
     return Results.Ok(new
     {
-        saved = all.Sum(x => x.Picks.Count),
-        boards = all.Select(x => new { x.LotteryCode, x.TargetIssue, picks = x.Picks.Count, x.Summary })
+        saved = result.SavedPickCount,
+        generated = result.GeneratedPickCount,
+        savedBoards = result.SavedBoardCount,
+        skippedBoards = result.SkippedBoardCount,
+        skipReasons = result.SkipReasons,
+        message = result.Message,
+        boards = result.Plans.Select(x => new
+        {
+            x.LotteryCode,
+            targetIssue = x.IssueBound ? x.TargetIssue : null,
+            issueBound = x.IssueBound,
+            picks = x.Picks.Count,
+            saved = x.IssueBound && x.Picks.Count > 0,
+            x.Summary
+        })
     });
 });
 
@@ -253,7 +268,7 @@ app.MapPost("/api/lotto/tickets", async (HttpRequest req, LottoRecommendationSer
         return Results.BadRequest(new { message = "tickets 不能为空" });
     try
     {
-        var result = await svc.SaveUserTicketsAsync(body.Code.ToLowerInvariant(), body.Tickets, body.TargetIssue, ct);
+        var result = await svc.SaveUserTicketsAsync(LottoCodes.Normalize(body.Code), body.Tickets, body.TargetIssue, ct);
         return Results.Ok(result);
     }
     catch (InvalidOperationException ex)
@@ -264,9 +279,10 @@ app.MapPost("/api/lotto/tickets", async (HttpRequest req, LottoRecommendationSer
 
 app.MapGet("/api/lotto/tickets", async (string? code, int? days, LottoRecommendationService svc, CancellationToken ct) =>
 {
+    code = LottoCodes.Normalize(code);
     if (string.IsNullOrWhiteSpace(code) || !LottoCodes.All.Contains(code, StringComparer.OrdinalIgnoreCase))
         return Results.BadRequest(new { message = "code 应为 " + string.Join('/', LottoCodes.All) });
-    return Results.Ok(await svc.GetUserTicketsAsync(code.ToLowerInvariant(), days ?? 30, ct));
+    return Results.Ok(await svc.GetUserTicketsAsync(code, days ?? 30, ct));
 });
 
 // 彩种列表
@@ -278,55 +294,100 @@ app.MapGet("/api/lottery/overview", async (LotteryRepository repo) => Results.Ok
 // 最近开奖
 app.MapGet("/api/lottery/{code}/draws", async (string code, int? take, LotteryRepository repo) =>
 {
+    code = LottoCodes.Normalize(code);
     var draws = await repo.GetDrawsAsync(code, take ?? 30);
+    // 原始开奖展示：已核实数字型截断脏尾；七星彩等未核实规则的彩种原样返回，不做错误投影。
+    var takeN = LottoHitMath.OfficialDigitCount(code);
     return draws.Count == 0
         ? Results.NotFound(new { message = $"彩种 {code} 无数据" })
-        : Results.Ok(draws.Select(d => new
+        : Results.Ok(draws.Select(d =>
         {
-            d.Issue, DrawDate = d.DrawDate.ToString("yyyy-MM-dd"), d.Reds, d.Blues,
-            Sum = d.Reds.Sum(), d.SalesAmount, d.PoolAmount, d.Source
+            var reds = takeN > 0 ? LotteryMath.ProjectReds(d.Reds, takeN) : d.Reds;
+            return new
+            {
+                d.Issue, DrawDate = d.DrawDate.ToString("yyyy-MM-dd"),
+                Reds = reds, d.Blues,
+                Sum = reds.Sum(), d.SalesAmount, d.PoolAmount, d.Source
+            };
         }));
 });
 
 // 号码频率（含近 30/100 期热度、当前遗漏、最大遗漏、平均间隔）
 app.MapGet("/api/lottery/{code}/frequency", async (string code, string? ball, int? take, LotteryRepository repo) =>
 {
+    code = LottoCodes.Normalize(code);
     var lt = await repo.GetLotteryTypeAsync(code);
     if (lt is null) return Results.NotFound(new { message = $"彩种 {code} 不存在" });
+    if (!LottoCodes.SupportsFrequencyAnalysis(code))
+        return Results.Ok(new
+        {
+            code,
+            name = lt.Name,
+            supported = false,
+            message = "暂不支持：该彩种号码/位置规则未在本仓库核实，避免输出错误频率（不影响原始开奖展示）"
+        });
 
     var draws = await repo.GetDrawsAsync(code, take ?? 500);
     var ballType = string.Equals(ball, "B", StringComparison.OrdinalIgnoreCase) ? 'B' : 'R';
-    var max = ballType == 'B' ? lt.BlueMax : lt.RedMax;
-    var list = LotteryMath.ComputeFrequency(draws, ballType, max);
-    return Results.Ok(new { code, name = lt.Name, ball = ballType.ToString(), sampleSize = draws.Count, numbers = list });
+    var (numberMin, numberMax, officialTake, countDefinition) = LotteryMath.FrequencyParams(code, lt, ballType);
+    var list = LotteryMath.ComputeFrequency(draws, ballType, numberMax, numberMin, officialTake);
+    return Results.Ok(new
+    {
+        code,
+        name = lt.Name,
+        supported = true,
+        ball = ballType.ToString(),
+        sampleSize = draws.Count,
+        numberMin,
+        numberMax,
+        officialRedTake = officialTake,
+        countDefinition,
+        numbers = list
+    });
 });
 
-// 综合走势分析：和值/奇偶/连号/重号
+// 综合走势分析：和值/奇偶/连号/重号（数字型统一截取合法开奖位）
 app.MapGet("/api/lottery/{code}/analysis", async (string code, int? take, LotteryRepository repo) =>
 {
+    code = LottoCodes.Normalize(code);
     var lt = await repo.GetLotteryTypeAsync(code);
     if (lt is null) return Results.NotFound(new { message = $"彩种 {code} 不存在" });
+    if (!LottoCodes.SupportsFrequencyAnalysis(code))
+        return Results.Ok(new
+        {
+            code,
+            name = lt.Name,
+            supported = false,
+            message = "暂不支持：该彩种号码/位置规则未在本仓库核实，避免输出错误走势（不影响原始开奖展示）"
+        });
 
     var draws = await repo.GetDrawsAsync(code, take ?? 200);
     if (draws.Count == 0) return Results.NotFound(new { message = $"彩种 {code} 无数据" });
 
-    var sums = draws.Select(d => d.Reds.Sum()).ToList();
-    var freq = LotteryMath.ComputeFrequency(draws, 'R', lt.RedMax);
-    var repeat = LotteryMath.RepeatCountSeries(draws);
+    var (numberMin, numberMax, officialTake, countDefinition) = LotteryMath.FrequencyParams(code, lt, 'R');
+    var projected = LotteryMath.ProjectDraws(draws, officialTake);
+    var sums = projected.Select(d => d.Reds.Sum()).ToList();
+    var freq = LotteryMath.ComputeFrequency(draws, 'R', numberMax, numberMin, officialTake);
+    var repeat = LotteryMath.RepeatCountSeries(projected);
 
     return Results.Ok(new
     {
         code,
         name = lt.Name,
+        supported = true,
         sampleSize = draws.Count,
+        numberMin,
+        numberMax,
+        officialRedTake = officialTake,
+        countDefinition,
         dateRange = new { from = draws.Min(d => d.DrawDate).ToString("yyyy-MM-dd"), to = draws.Max(d => d.DrawDate).ToString("yyyy-MM-dd") },
         sum = new
         {
             min = sums.Min(), max = sums.Max(), avg = Math.Round(sums.Average(), 2),
-            distribution = LotteryMath.ComputeSumDistribution(draws)
+            distribution = LotteryMath.ComputeSumDistribution(projected)
         },
-        oddEven = LotteryMath.ComputeOddEvenDistribution(draws),
-        consecutiveRate = LotteryMath.ConsecutiveRate(draws),
+        oddEven = LotteryMath.ComputeOddEvenDistribution(projected),
+        consecutiveRate = LotteryMath.ConsecutiveRate(projected),
         repeat = new { avg = repeat.Count > 0 ? Math.Round(repeat.Average(), 2) : 0, series = repeat.Take(20) },
         hot = freq.OrderByDescending(x => x.CountLast100).ThenByDescending(x => x.TotalCount).Take(10)
             .Select(x => new { x.Number, x.TotalCount, x.CountLast100, x.CurrentOmission }),

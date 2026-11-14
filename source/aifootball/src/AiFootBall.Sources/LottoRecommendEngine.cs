@@ -25,7 +25,8 @@ public static class LottoRecommendEngine
         }
 
         var based = drawsDesc[0].Issue;
-        var target = NextIssue(based);
+        // 官方下一销售期规则未核实前不自动绑定期号（禁止 +1 / 跨年猜测）。
+        LottoIssue.TryResolveNextSalesIssue(lt.Code, based, out var target, out var issueReason);
         var set = new LottoPlanSet
         {
             LotteryCode = lt.Code,
@@ -52,6 +53,9 @@ public static class LottoRecommendEngine
 
         if (set.Picks.Count == 0)
             set.Summary = "未能生成有效方案";
+        else if (!set.IssueBound)
+            set.Summary =
+                $"未绑定期号的号码示例（基于第 {based} 期开奖统计）。{issueReason} 不保存、不进入正式推荐或复盘。";
         else if (LottoCodes.IsKl8(lt.Code))
             set.Summary = $"基于第 {based} 期，为第 {target} 期生成 {set.Picks.Count} 注选十（主推 {set.Picks.Count(p => p.IsPrimary)} 注）。每天开奖，只供参考";
         else if (danTuo is not null)
@@ -466,9 +470,12 @@ public static class LottoRecommendEngine
         return dist.Keys.Max();
     }
 
+    /// <summary>已废弃：禁止用最新开奖 +1 猜测目标期。请用 <see cref="LottoIssue.TryResolveNextSalesIssue"/>。</summary>
+    [Obsolete("Do not invent next issue by +1; official sales-issue rules are unverified in-repo.")]
     public static string NextIssue(string issue)
     {
-        if (long.TryParse(issue, out var n)) return (n + 1).ToString();
-        return issue;
+        if (LottoIssue.TryResolveNextSalesIssue("", issue, out var next, out _))
+            return next;
+        return "";
     }
 }

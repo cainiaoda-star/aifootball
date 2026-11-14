@@ -23,8 +23,8 @@ public sealed class LotteryTypeInfo
     /// </summary>
     public bool SupportsRecommend => LottoCodes.All.Contains(Code, StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>数字型彩票（3D/排列三/七星彩等），号码为有序个位号</summary>
-    public bool IsDigitGame => RedMax <= 9 && BlueCount == 0;
+    /// <summary>数字型：以 LottoCodes.IsDigitGame(Code) 为准，不靠 RedMax 猜测。</summary>
+    public bool IsDigitGame => LottoCodes.IsDigitGame(Code);
 }
 
 /// <summary>单个奖级中奖信息</summary>

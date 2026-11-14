@@ -948,12 +948,13 @@
                   font-size:13px;font-weight:500;text-decoration:none;display:inline-block">避热门号选号</a>
         <span class="date" id="lottoStatus"></span>
       </div>
-      <p class="lotto-note">选号仅供参考，不构成投注建议。乐透主推 1 注 + 备选 3 注；3D/排三主推直选 + 备选；排五同理。大乐透另附四胆全拖：前区 4 个胆，其余 31 个号全是拖码，共 31 注，后区只定 2 个。快乐8每天开奖，推可买的选十（10 个号），主推 1 注 + 备选 3 注。开奖是 20 个号，不把 20 个号当成一注。</p>
+      <p class="lotto-note">选号仅供参考，不构成投注建议。<b>评分是冷热加权排序分，不是中奖概率</b>；现有策略未证明在同预算下优于均匀随机选号。同彩种、同玩法下，每个合法单式组合的相应中奖概率相同（不要把不同玩法、复式或胆拖混为一谈）。未核实官方下一销售期规则前，新生成号码可能是「未绑定期号的示例」，不保存、不进复盘。乐透主推 1 注 + 备选 3 注；3D/排三主推直选 + 备选；排五同理。大乐透另附四胆全拖：前区 4 个胆，其余 31 个号全是拖码，共 31 注，后区只定 2 个。快乐8每天开奖，推可买的选十（10 个号），主推 1 注 + 备选 3 注。开奖是 20 个号，不把 20 个号当成一注。</p>
       <div id="lottoBoard"></div>
     </div>
   </main>
 </div>
 
+<script src="/lotto-hit-ui.js"></script>
 <script>
 const API = '';
 const $ = s => document.querySelector(s);
@@ -4324,9 +4325,10 @@ $('#lottoSave').onclick = async () => {
   const st = $('#lottoStatus');
   if(st) st.textContent = '正在重新生成…';
   try{
-    await api('/api/lotto/recommend/save', { method:'POST' });
+    const res = await api('/api/lotto/recommend/save', { method:'POST' });
     await loadLotto();
-    if(st) st.textContent = '已重新生成并保存';
+    const saved = res && res.saved != null ? Number(res.saved) : 0;
+    if(st) st.textContent = (res && res.message) ? res.message : (`实际保存 ${saved} 注`);
   }catch(e){ if(st) st.textContent = '生成失败：' + e.message; }
 };
 
@@ -4337,7 +4339,8 @@ async function loadLotto(){
   try{
     _lottoData = await api('/api/lotto/recommend');
     renderLotto();
-    if(st) st.textContent = (_lottoData.source === 'saved' ? '已保存方案' : '即时计算') + ' · ' + (_lottoData.date || '');
+    if(st) st.textContent = (_lottoData.source === 'saved-historical' ? '历史已保存方案' : '未绑定期号示例') +
+      ' · ' + (_lottoData.responseAt || '');
   }catch(e){
     $('#lottoBoard').innerHTML = `<div class="empty">数字彩加载失败：${esc(e.message)}<br>恢复后点「刷新」重新读取</div>`;
     if(st) st.textContent = '';
@@ -4445,7 +4448,7 @@ function lottoIssueHtml(issue, isDigit){
       <div class="lc-head">
         <span class="lc-rank">${p.isPrimary ? '<span class="feat-tag strong-tag">主推</span>' : ((p.playType || '') === '四胆全拖' ? '<span class="feat-tag">四胆全拖</span>' : '备选 ' + p.rankNo)}</span>
         <span class="lc-play">${esc(p.playType || '')}</span>
-        <span class="lc-score">${esc(p.note || '')}</span>
+        <span class="lc-score">${esc(lottoStatusLabel(p))}</span>
       </div>
       ${isDigit ? placeRow(issue.draw && issue.draw.places) : ''}
       <div class="lotto-balls">${markedBalls(p.reds, p.blues, isDigit)}</div>
@@ -4456,14 +4459,19 @@ function lottoIssueHtml(issue, isDigit){
   return html;
 }
 
+/* 对奖展示走 /lotto-hit-ui.js（与 lotto.html 同一实现，禁止本地重写假逻辑） */
+function lottoStatusLabel(p){ return LottoHitUi.statusLabel(p); }
+function lottoShowAsWin(p){ return LottoHitUi.showAsWin(p); }
+
 /* 选号器保存的票：来源 + 玩法 + 对奖说明 */
 function userTicketCard(t, issue, isDigit){
   const src = t.source === 'pick' ? '避热门选号器' : (t.source === 'user' ? '手输' : (t.source || '我的票'));
+  const win = lottoShowAsWin(t);
   return `<div class="lotto-card userticket">
     <div class="lc-head">
       <span class="lc-rank"><span class="feat-tag">${esc(src)}</span></span>
       <span class="lc-play">${esc(t.playType || '')}${t.betAmount ? ` · ${Number(t.betAmount).toFixed(0)} 元` : ''}</span>
-      <span class="lc-score">${esc(t.note || '')}</span>
+      <span class="lc-score${win ? ' win' : ''}">${esc(lottoStatusLabel(t))}</span>
     </div>
     ${isDigit ? placeRow(issue.draw && issue.draw.places) : ''}
     <div class="lotto-balls">${markedBalls(t.reds, t.blues, isDigit)}</div>
@@ -4505,8 +4513,11 @@ function renderLotto(){
   if(!board){ box.innerHTML = `<div class="empty">暂无数据</div>`; return; }
 
   const isDigit = ['fc3d','pl3','pl5'].includes((board.lotteryCode || '').toLowerCase());
+  const unbound = board.boardKind === 'preview' || board.preview === true || board.issueBound === false;
   let html = `<div class="lotto-meta"><b>${esc(board.lotteryName || '')}</b>
-    · 目标期 <b>${esc(board.targetIssue || '—')}</b>
+    · ${esc(board.boardStatusLabel || (unbound
+        ? '未绑定期号的号码示例（不入正式推荐/复盘）'
+        : `历史推荐 · 目标期 ${board.targetIssue || '—'} · 生成于 ${board.generatedAt || board.recDate || '—'}`))}
     · 基于 <b>${esc(board.basedOnIssue || '—')}</b> 期
     · ${esc(board.summary || '')}</div>`;
 
@@ -4523,7 +4534,7 @@ function renderLotto(){
       <div class="lc-head">
         <span class="lc-rank">${p.isPrimary ? '<span class="feat-tag strong-tag">主推</span>' : '备选 ' + p.rankNo}</span>
         <span class="lc-play">${esc(p.playType || '')}</span>
-        <span class="lc-score">评分 ${p.score != null ? Number(p.score).toFixed(1) : '—'}</span>
+        <span class="lc-score" title="冷热加权排序分，不是中奖概率">评分 ${p.score != null ? Number(p.score).toFixed(1) : '—'}<i style="font-style:normal;opacity:.7;margin-left:4px;font-size:11px">非中奖概率</i></span>
       </div>
       <div class="lotto-balls">${lottoBallsHtml(p.reds, p.blues, isDigit)}</div>
       <div class="lotto-desc">${esc(p.signalDesc || '')}</div>
@@ -4552,7 +4563,7 @@ function renderDanTuo(p){
     <div class="lc-head">
       <span class="lc-rank"><span class="feat-tag">四胆全拖</span></span>
       <span class="lc-play">前区 4 胆 + ${tuo.length} 拖，后区定 2 个</span>
-      <span class="lc-score">${bets} 注 · 评分 ${p.score != null ? Number(p.score).toFixed(1) : '—'}</span>
+      <span class="lc-score" title="冷热加权排序分，不是中奖概率；胆拖为多注，勿与单式概率混谈">${bets} 注 · 评分 ${p.score != null ? Number(p.score).toFixed(1) : '—'}<i style="font-style:normal;opacity:.7;margin-left:4px;font-size:11px">非中奖概率</i></span>
     </div>
     <div class="lotto-sub">前区胆，每注都带</div>
     <div class="lotto-balls">${lottoBallsHtml(p.reds, [], false)}</div>
@@ -4561,6 +4572,7 @@ function renderDanTuo(p){
     <div class="lotto-sub">后区定码</div>
     <div class="lotto-balls">${lottoBallsHtml([], p.blues, false)}</div>
     <div class="lotto-desc">${esc(p.signalDesc || '')}</div>
+    <div class="lotto-desc" style="color:var(--amber,#f0a04b)">仅展示参考：本轮用户票不支持复式/胆拖保存（拖码无法落库、多注金额不能按 2 元/注冒充）。请拆成单式后再记票。</div>
   </div>`;
 }
 
