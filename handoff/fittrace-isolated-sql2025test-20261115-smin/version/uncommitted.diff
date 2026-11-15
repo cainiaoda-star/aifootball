@@ -1,0 +1,240 @@
+﻿diff --git a/source/aifootball/src/AiFootBall.Data/AiFootBall.Data.csproj b/source/aifootball/src/AiFootBall.Data/AiFootBall.Data.csproj
+index 21b8fe4..0dcb65d 100644
+--- a/source/aifootball/src/AiFootBall.Data/AiFootBall.Data.csproj
++++ b/source/aifootball/src/AiFootBall.Data/AiFootBall.Data.csproj
+@@ -2,6 +2,7 @@
+ 
+   <ItemGroup>
+     <ProjectReference Include="..\AiFootBall.Core\AiFootBall.Core.csproj" />
++    <InternalsVisibleTo Include="AiFootBall.Tests" />
+   </ItemGroup>
+ 
+   <ItemGroup>
+diff --git a/source/aifootball/src/AiFootBall.Data/MilkModelFitStore.cs b/source/aifootball/src/AiFootBall.Data/MilkModelFitStore.cs
+index 0249087..e8448d4 100644
+--- a/source/aifootball/src/AiFootBall.Data/MilkModelFitStore.cs
++++ b/source/aifootball/src/AiFootBall.Data/MilkModelFitStore.cs
+@@ -110,6 +110,7 @@ public class MilkModelFitStore
+                 if (reuseOnly)
+                     throw new InvalidOperationException("相同内容尚未形成可引用的 ready 记录");
+                 contentId = await InsertContentAsync(conn, tx, trace, sha, ct);
++                await AfterContentInsertedAsync(ct);
+                 await BulkAsync(conn, tx, "dbo.FbMilkModelFitSample", SampleTable(contentId.Value, trace), ct);
+                 await BulkAsync(conn, tx, "dbo.FbMilkModelFitLeague", LeagueTable(contentId.Value, trace), ct);
+                 await BulkAsync(conn, tx, "dbo.FbMilkModelFitTeamLeague", TeamLeagueTable(contentId.Value, trace), ct);
+@@ -168,33 +169,51 @@ public class MilkModelFitStore
+                  @rho, @half, @cross, @months, @dur, @smin, @smax,
+                  @prior, @own, @lprior, @lmin, @lmax, @rmin, @rmax,
+                  @scmin, @scmax, @halfGoal, @maxHalf)",
+-            new SqlParameter("@sha", sha),
+-            new SqlParameter("@n", trace.Samples.Count),
+-            new SqlParameter("@from", (object?)from ?? DBNull.Value),
+-            new SqlParameter("@to", (object?)to ?? DBNull.Value),
+-            new SqlParameter("@gh", trace.GlobalHome),
+-            new SqlParameter("@ga", trace.GlobalAway),
+-            new SqlParameter("@rho", trace.Rho),
+-            new SqlParameter("@half", (object?)trace.HalfLifeDays ?? DBNull.Value),
+-            new SqlParameter("@cross", trace.CrossLeague),
+-            new SqlParameter("@months", FitContentCodec.WindowMonths),
+-            new SqlParameter("@dur", ScorelineModel.MatchDurationMinutes),
+-            new SqlParameter("@smin", FitContentCodec.ScoreMin),
+-            new SqlParameter("@smax", FitContentCodec.ScoreMax),
+-            new SqlParameter("@prior", FitContentCodec.PriorGames),
+-            new SqlParameter("@own", FitContentCodec.MinOwnGames),
+-            new SqlParameter("@lprior", FitContentCodec.LeaguePrior),
+-            new SqlParameter("@lmin", FitContentCodec.LambdaMin),
+-            new SqlParameter("@lmax", FitContentCodec.LambdaMax),
+-            new SqlParameter("@rmin", FitContentCodec.RateMin),
+-            new SqlParameter("@rmax", FitContentCodec.RateMax),
+-            new SqlParameter("@scmin", FitContentCodec.ScaleMin),
+-            new SqlParameter("@scmax", FitContentCodec.ScaleMax),
+-            new SqlParameter("@halfGoal", FitContentCodec.HalfGoalShare),
+-            new SqlParameter("@maxHalf", FitContentCodec.MaxHalfGoals));
++            new SqlParameter("@sha", SqlDbType.Char, 64) { Value = sha },
++            IntParameter("@n", trace.Samples.Count),
++            new SqlParameter("@from", SqlDbType.DateTime2) { Value = (object?)from ?? DBNull.Value },
++            new SqlParameter("@to", SqlDbType.DateTime2) { Value = (object?)to ?? DBNull.Value },
++            FloatParameter("@gh", trace.GlobalHome),
++            FloatParameter("@ga", trace.GlobalAway),
++            FloatParameter("@rho", trace.Rho),
++            FloatParameter("@half", trace.HalfLifeDays),
++            BitParameter("@cross", trace.CrossLeague),
++            IntParameter("@months", FitContentCodec.WindowMonths),
++            IntParameter("@dur", ScorelineModel.MatchDurationMinutes),
++            IntParameter("@smin", FitContentCodec.ScoreMin),
++            IntParameter("@smax", FitContentCodec.ScoreMax),
++            IntParameter("@prior", FitContentCodec.PriorGames),
++            IntParameter("@own", FitContentCodec.MinOwnGames),
++            IntParameter("@lprior", FitContentCodec.LeaguePrior),
++            FloatParameter("@lmin", FitContentCodec.LambdaMin),
++            FloatParameter("@lmax", FitContentCodec.LambdaMax),
++            FloatParameter("@rmin", FitContentCodec.RateMin),
++            FloatParameter("@rmax", FitContentCodec.RateMax),
++            FloatParameter("@scmin", FitContentCodec.ScaleMin),
++            FloatParameter("@scmax", FitContentCodec.ScaleMax),
++            FloatParameter("@halfGoal", FitContentCodec.HalfGoalShare),
++            IntParameter("@maxHalf", FitContentCodec.MaxHalfGoals));
+         return id ?? throw new InvalidOperationException("内容行没有返回编号");
+     }
+ 
++    /// <summary>
++    /// 内容行已经写入当前事务、子表还没写。测试在这里取消，用来证明取消发生在插入之后。
++    /// </summary>
++    protected virtual Task AfterContentInsertedAsync(CancellationToken ct) => Task.CompletedTask;
++
++    /// <summary>
++    /// 整数常量 0 会匹配 <see cref="SqlParameter(string, SqlDbType)"/>，Value 保持空，执行时报参数未提供。
++    /// 数值一律先指定类型，再写入 Value。
++    /// </summary>
++    internal static SqlParameter IntParameter(string name, int value)
++        => new SqlParameter(name, SqlDbType.Int) { Value = value };
++
++    internal static SqlParameter FloatParameter(string name, double? value)
++        => new SqlParameter(name, SqlDbType.Float) { Value = (object?)value ?? DBNull.Value };
++
++    internal static SqlParameter BitParameter(string name, bool value)
++        => new SqlParameter(name, SqlDbType.Bit) { Value = value };
++
+     private static string InsertInstanceSql()
+         => @"INSERT INTO dbo.FbMilkModelFitInstance
+                 (ContentId, Status, FitCutoff, QueryClock, UsableCut, CodeVersion, ConfigVersion,
+diff --git a/source/aifootball/src/AiFootBall.Sources/OptionBaseline.cs b/source/aifootball/src/AiFootBall.Sources/OptionBaseline.cs
+index de957d1..e339b9d 100644
+--- a/source/aifootball/src/AiFootBall.Sources/OptionBaseline.cs
++++ b/source/aifootball/src/AiFootBall.Sources/OptionBaseline.cs
+@@ -290,7 +290,12 @@ public static class OptionBaseline
+     //
+     // 样本量（2024-08-01 起，真半场，合计 7895 场）：
+     //   主胜赔率五档 1553/1309/1289/1304/2440；客胜赔率五档 1905/1100/1003/798/3089。
+-    private static readonly decimal[] BqHomeOddsEdges = { 1.60m, 1.90m, 2.20m, 2.60m };
++    /// <summary>
++    /// 主胜欧赔分档边界。半全场顺风档和总进球实验共用这一组，实验不再另切边界。
++    /// </summary>
++    public static readonly decimal[] HomeOddsEdges = { 1.60m, 1.90m, 2.20m, 2.60m };
++
++    private static decimal[] BqHomeOddsEdges => HomeOddsEdges;
+     private static readonly decimal[] BqAwayOddsEdges = { 2.20m, 2.60m, 3.00m, 3.40m };
+ 
+     /// <summary>胜胜（半场主胜→全场主胜），按该场主胜欧赔分档。样本 1553/1309/1289/1304/2440。</summary>
+diff --git a/source/aifootball/tests/AiFootBall.Tests/FitTraceDbTests.cs b/source/aifootball/tests/AiFootBall.Tests/FitTraceDbTests.cs
+index 227c107..ddffdfb 100644
+--- a/source/aifootball/tests/AiFootBall.Tests/FitTraceDbTests.cs
++++ b/source/aifootball/tests/AiFootBall.Tests/FitTraceDbTests.cs
+@@ -382,13 +382,14 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
+     {
+         await ResetAsync();
+         using var cts = new CancellationTokenSource();
+-        var store = new MilkModelFitStore(_db.Factory);
++        var store = new CancelAfterContentInsert(_db.Factory, cts);
+         var started = store.SaveReadyInstanceAsync(
+-            BulkTrace(180_000), new DateTime(2026, 11, 15, 13, 0, 0), new DateTime(2026, 11, 15, 13, 0, 1),
++            Trace(0), new DateTime(2026, 11, 15, 13, 0, 0), new DateTime(2026, 11, 15, 13, 0, 1),
+             "w=70/70/50/80/30|bf=off", cts.Token);
+-        cts.CancelAfter(50);
+         var thrown = await Record.ExceptionAsync(() => started);
++        Assert.True(store.ContentInserted);
+         Assert.NotNull(thrown);
++        Assert.IsAssignableFrom<OperationCanceledException>(thrown);
+         Assert.IsNotType<AggregateException>(thrown);
+         await using var conn = await _db.Factory.OpenAsync();
+         Assert.Equal(0, await FitTraceDbFixture.Scalar(conn,
+@@ -396,6 +397,62 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
+         _output.WriteLine("cancel exception={0}", thrown.GetType().Name);
+     }
+ 
++    /// <summary>
++    /// 内容插入成功后才取消。参数没绑上时到不了这里，SqlException 不能算作中途取消。
++    /// </summary>
++    private sealed class CancelAfterContentInsert : MilkModelFitStore
++    {
++        private readonly CancellationTokenSource _cts;
++
++        public CancelAfterContentInsert(SqlConnectionFactory factory, CancellationTokenSource cts)
++            : base(factory) => _cts = cts;
++
++        public bool ContentInserted { get; private set; }
++
++        protected override Task AfterContentInsertedAsync(CancellationToken ct)
++        {
++            ContentInserted = true;
++            _cts.Cancel();
++            return Task.CompletedTask;
++        }
++    }
++
++    [FitTraceDbFact]
++    public async Task ZeroScoreMin_AndZeroGlobalAway_RoundTripThroughSql()
++    {
++        await ResetAsync();
++        var trace = BulkTrace(2);
++        var store = new MilkModelFitStore(_db.Factory);
++        var instanceId = await store.SaveReadyInstanceAsync(
++            trace, new DateTime(2026, 11, 15, 14, 0, 0), new DateTime(2026, 11, 15, 14, 0, 1),
++            "w=70/70/50/80/30|bf=off", default);
++        Assert.True(instanceId > 0);
++
++        await using var conn = await _db.Factory.OpenAsync();
++        Assert.Equal(0L, await FitTraceDbFixture.Scalar(conn,
++            "SELECT ScoreMin FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
++        Assert.Equal((long)FitContentCodec.ScoreMax, await FitTraceDbFixture.Scalar(conn,
++            "SELECT ScoreMax FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
++        Assert.Equal((long)FitContentCodec.WindowMonths, await FitTraceDbFixture.Scalar(conn,
++            "SELECT WindowMonths FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
++        Assert.Equal((long)ScorelineModel.MatchDurationMinutes, await FitTraceDbFixture.Scalar(conn,
++            "SELECT DurationMinutes FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
++        Assert.Equal((long)FitContentCodec.PriorGames, await FitTraceDbFixture.Scalar(conn,
++            "SELECT PriorGames FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
++        Assert.Equal((long)FitContentCodec.MinOwnGames, await FitTraceDbFixture.Scalar(conn,
++            "SELECT MinOwnGames FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
++        Assert.Equal((long)FitContentCodec.LeaguePrior, await FitTraceDbFixture.Scalar(conn,
++            "SELECT LeaguePrior FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
++        Assert.Equal((long)FitContentCodec.MaxHalfGoals, await FitTraceDbFixture.Scalar(conn,
++            "SELECT MaxHalfGoals FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
++        Assert.Equal(2L, await FitTraceDbFixture.Scalar(conn,
++            "SELECT SampleCount FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
++        Assert.Equal(1L, await FitTraceDbFixture.Scalar(conn,
++            "SELECT CASE WHEN CrossLeague = 0 AND GlobalAway = 0 AND HalfLifeDays IS NULL THEN 1 ELSE 0 END FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
++        Assert.Equal(1L, await FitTraceDbFixture.Scalar(conn,
++            "SELECT CASE WHEN ABS(LambdaMin - 0.15) < 0.0000001 AND ABS(HalfGoalShare - 0.45) < 0.0000001 THEN 1 ELSE 0 END FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
++    }
++
+     [FitTraceDbFact]
+     public async Task Refresh_PersistFailure_StillUpdatesCache()
+     {
+diff --git a/source/aifootball/tests/AiFootBall.Tests/FitTraceTests.cs b/source/aifootball/tests/AiFootBall.Tests/FitTraceTests.cs
+index 819a674..e7a8511 100644
+--- a/source/aifootball/tests/AiFootBall.Tests/FitTraceTests.cs
++++ b/source/aifootball/tests/AiFootBall.Tests/FitTraceTests.cs
+@@ -1,6 +1,8 @@
++using System.Data;
+ using AiFootBall.Core.Models;
+ using AiFootBall.Data;
+ using AiFootBall.Sources;
++using Microsoft.Data.SqlClient;
+ using Xunit;
+ 
+ namespace AiFootBall.Tests;
+@@ -10,6 +12,23 @@ namespace AiFootBall.Tests;
+ /// </summary>
+ public class FitTraceTests
+ {
++    [Fact]
++    public void ConstantZero_BindsAsSqlDbType_UnlessTheValueIsSetExplicitly()
++    {
++        var ambiguous = new SqlParameter("@smin", FitContentCodec.ScoreMin);
++        Assert.Equal(0, FitContentCodec.ScoreMin);
++        Assert.Equal(SqlDbType.BigInt, ambiguous.SqlDbType);
++        Assert.Null(ambiguous.Value);
++
++        var bound = MilkModelFitStore.IntParameter("@smin", FitContentCodec.ScoreMin);
++        Assert.Equal(SqlDbType.Int, bound.SqlDbType);
++        Assert.Equal(0, bound.Value);
++
++        var away = MilkModelFitStore.FloatParameter("@ga", 0d);
++        Assert.Equal(SqlDbType.Float, away.SqlDbType);
++        Assert.Equal(0d, (double)away.Value);
++    }
++
+     [Fact]
+     public void SameSamples_DifferentFitMoment_KeepTheSameContentHash()
+     {

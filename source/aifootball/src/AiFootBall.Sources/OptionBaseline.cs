@@ -290,7 +290,12 @@ public static class OptionBaseline
     //
     // 样本量（2024-08-01 起，真半场，合计 7895 场）：
     //   主胜赔率五档 1553/1309/1289/1304/2440；客胜赔率五档 1905/1100/1003/798/3089。
-    private static readonly decimal[] BqHomeOddsEdges = { 1.60m, 1.90m, 2.20m, 2.60m };
+    /// <summary>
+    /// 主胜欧赔分档边界。半全场顺风档和总进球实验共用这一组，实验不再另切边界。
+    /// </summary>
+    public static readonly decimal[] HomeOddsEdges = { 1.60m, 1.90m, 2.20m, 2.60m };
+
+    private static decimal[] BqHomeOddsEdges => HomeOddsEdges;
     private static readonly decimal[] BqAwayOddsEdges = { 2.20m, 2.60m, 3.00m, 3.40m };
 
     /// <summary>胜胜（半场主胜→全场主胜），按该场主胜欧赔分档。样本 1553/1309/1289/1304/2440。</summary>

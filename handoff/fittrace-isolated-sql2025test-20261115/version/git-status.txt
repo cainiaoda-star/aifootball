@@ -1,0 +1,10 @@
+﻿ M .workbuddy/memory/automations/b22bc17f-e8ce-46a0-b0b5-7e1966ea27a4/memory.md
+ M source/aifootball/src/AiFootBall.Sources/OptionBaseline.cs
+?? handoff/
+?? source/aifootball/src/AiFootBall.Sources/JqFrequencyExperiment.cs
+?? source/aifootball/tests/AiFootBall.Tests/JqFrequencyExperimentTests.cs
+?? 复盘/2026-11-15_三周历史覆盖.md
+?? 复盘/2026-11-15_总进球条件频率实验.md
+?? 复盘/2026-11-15_总进球条件频率实验_对照公平.sql
+?? 复盘/2026-11-15_竞彩大奶策略审查.md
+?? 复盘/2026-11-15_竞彩大奶策略审查.sql
