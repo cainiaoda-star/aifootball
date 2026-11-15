@@ -1,0 +1,220 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="6a717675-dae5-479f-8262-4c6051b5ad65" name="Administrator@WINSEV25DATA 2026-11-15 15:45:32" runUser="WINSEV25DATA\Administrator" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-11-15T15:45:32.4200174+08:00" queuing="2026-11-15T15:45:32.4200186+08:00" start="2026-11-15T15:45:31.1202283+08:00" finish="2026-11-15T15:45:32.4674088+08:00" />
+  <TestSettings name="default" id="2a01c928-bd11-40d4-9dea-8809c132bb11">
+    <Deployment runDeploymentRoot="Administrator_WINSEV25DATA_2026-11-15_15_45_32" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="c59fd549-5fca-431c-95da-6d0826e27d52" testId="30948ce7-533c-9f85-afea-18d9ca7c3258" testName="AiFootBall.Tests.FitTraceDbTests.SameContent_IsReused_AndClocksStayOnEachInstance" computerName="WINSEV25DATA" duration="00:00:00.0010000" startTime="2026-11-15T15:45:32.3145963+08:00" endTime="2026-11-15T15:45:32.3145965+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="c59fd549-5fca-431c-95da-6d0826e27d52">
+      <Output>
+        <ErrorInfo>
+          <Message>System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。</Message>
+          <StackTrace>   at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync() in D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs:line 127</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="970765b9-e03a-4738-b461-54c6658229f5" testId="eaa9698f-5a2b-2af6-b5e6-8257dc5f9649" testName="AiFootBall.Tests.FitTraceDbTests.Refresh_PersistFailure_StillUpdatesCache" computerName="WINSEV25DATA" duration="00:00:00.0010000" startTime="2026-11-15T15:45:32.3162349+08:00" endTime="2026-11-15T15:45:32.3162352+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="970765b9-e03a-4738-b461-54c6658229f5">
+      <Output>
+        <ErrorInfo>
+          <Message>System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。</Message>
+          <StackTrace>   at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync() in D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs:line 127</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="cc09038f-8894-47ba-a7ef-aeadc43b604b" testId="f171caa3-4351-1aaa-5236-74e719921af2" testName="AiFootBall.Tests.FitTraceDbTests.LegacyRun_SurvivesDdl_AndRollbackRemovesOnlyTheNewShape" computerName="WINSEV25DATA" duration="00:00:00.0010000" startTime="2026-11-15T15:45:32.3167885+08:00" endTime="2026-11-15T15:45:32.3167886+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="cc09038f-8894-47ba-a7ef-aeadc43b604b">
+      <Output>
+        <ErrorInfo>
+          <Message>System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。</Message>
+          <StackTrace>   at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync() in D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs:line 127</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="6d411a47-05d6-4068-b5e3-06a7771ad172" testId="e0151670-bd4e-afae-78e5-4e667cdaec95" testName="AiFootBall.Tests.FitTraceDbTests.ConcurrentSameContent_Dedupes_AndFailedCallerHasNoPartial" computerName="WINSEV25DATA" duration="00:00:00.0010000" startTime="2026-11-15T15:45:32.3154081+08:00" endTime="2026-11-15T15:45:32.3154082+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="6d411a47-05d6-4068-b5e3-06a7771ad172">
+      <Output>
+        <ErrorInfo>
+          <Message>System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。</Message>
+          <StackTrace>   at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync() in D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs:line 127</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="cf1a59f5-1597-4c2a-8a76-9a146e182787" testId="a242df7a-6871-18df-4c87-5d84f02d3b92" testName="AiFootBall.Tests.FitTraceDbTests.CancelledWrite_RollsBackWithAnIndependentToken" computerName="WINSEV25DATA" duration="00:00:00.0010000" startTime="2026-11-15T15:45:32.3170496+08:00" endTime="2026-11-15T15:45:32.3170497+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="cf1a59f5-1597-4c2a-8a76-9a146e182787">
+      <Output>
+        <ErrorInfo>
+          <Message>System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。</Message>
+          <StackTrace>   at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync() in D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs:line 127</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="1b4c1522-ddb1-43af-b14e-a6e952860912" testId="4aad5100-26a0-ee01-8a76-0030759d16a3" testName="AiFootBall.Tests.FitTraceDbTests.PendingDdl_HasTheReviewedTablesColumnsAndReadyIndex" computerName="WINSEV25DATA" duration="00:00:00.0010000" startTime="2026-11-15T15:45:32.3159350+08:00" endTime="2026-11-15T15:45:32.3159351+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="1b4c1522-ddb1-43af-b14e-a6e952860912">
+      <Output>
+        <ErrorInfo>
+          <Message>System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。</Message>
+          <StackTrace>   at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync() in D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs:line 127</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="d7cf7722-030d-4bae-aaa3-87e4d5d51ec2" testId="e82b928a-5155-f3eb-817c-a3ebe854de5f" testName="AiFootBall.Tests.FitTraceDbTests.ChangedScore_InsertsASecondReadyContent" computerName="WINSEV25DATA" duration="00:00:00.0010000" startTime="2026-11-15T15:45:32.3092277+08:00" endTime="2026-11-15T15:45:32.3092635+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="d7cf7722-030d-4bae-aaa3-87e4d5d51ec2">
+      <Output>
+        <ErrorInfo>
+          <Message>System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。</Message>
+          <StackTrace>   at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync() in D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs:line 127</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="c3e92049-9a85-424f-8761-1ffb54432ee8" testId="d1afcf77-5656-17fd-800b-32b7198fce72" testName="AiFootBall.Tests.FitTraceDbTests.MidWriteFailure_RollsBack_AndWritingRowIsNotReferenced" computerName="WINSEV25DATA" duration="00:00:00.0010000" startTime="2026-11-15T15:45:32.3165210+08:00" endTime="2026-11-15T15:45:32.3165211+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="c3e92049-9a85-424f-8761-1ffb54432ee8">
+      <Output>
+        <ErrorInfo>
+          <Message>System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。</Message>
+          <StackTrace>   at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync() in D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs:line 127</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="2ab93251-9a64-474e-89c8-fbad6ad384ea" testId="17771396-d30e-fe70-b3be-6762a5a90c86" testName="AiFootBall.Tests.FitTraceDbTests.BulkWrite_AndRollback_AreMeasuredOnTheIsolatedDatabase" computerName="WINSEV25DATA" duration="00:00:00.0010000" startTime="2026-11-15T15:45:32.3156875+08:00" endTime="2026-11-15T15:45:32.3156876+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="2ab93251-9a64-474e-89c8-fbad6ad384ea">
+      <Output>
+        <ErrorInfo>
+          <Message>System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。</Message>
+          <StackTrace>   at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync() in D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs:line 127</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="cec5e9b1-ddec-4ed8-bd01-0f7970a12f57" testId="f6886423-2fe6-8f61-af2f-2a2328001abe" testName="AiFootBall.Tests.FitTraceDbTests.SaveMilk_PublishesWhenBindCommits_AndBlocksWhenInstanceIsNotReady" computerName="WINSEV25DATA" duration="00:00:00.0010000" startTime="2026-11-15T15:45:32.3670211+08:00" endTime="2026-11-15T15:45:32.3670213+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="cec5e9b1-ddec-4ed8-bd01-0f7970a12f57">
+      <Output>
+        <ErrorInfo>
+          <Message>System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。</Message>
+          <StackTrace>   at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync() in D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs:line 127</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="AiFootBall.Tests.FitTraceDbTests.SameContent_IsReused_AndClocksStayOnEachInstance" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="30948ce7-533c-9f85-afea-18d9ca7c3258">
+      <Execution id="c59fd549-5fca-431c-95da-6d0826e27d52" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.FitTraceDbTests" name="SameContent_IsReused_AndClocksStayOnEachInstance" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.FitTraceDbTests.LegacyRun_SurvivesDdl_AndRollbackRemovesOnlyTheNewShape" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="f171caa3-4351-1aaa-5236-74e719921af2">
+      <Execution id="cc09038f-8894-47ba-a7ef-aeadc43b604b" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.FitTraceDbTests" name="LegacyRun_SurvivesDdl_AndRollbackRemovesOnlyTheNewShape" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.FitTraceDbTests.PendingDdl_HasTheReviewedTablesColumnsAndReadyIndex" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="4aad5100-26a0-ee01-8a76-0030759d16a3">
+      <Execution id="1b4c1522-ddb1-43af-b14e-a6e952860912" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.FitTraceDbTests" name="PendingDdl_HasTheReviewedTablesColumnsAndReadyIndex" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.FitTraceDbTests.SaveMilk_PublishesWhenBindCommits_AndBlocksWhenInstanceIsNotReady" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="f6886423-2fe6-8f61-af2f-2a2328001abe">
+      <Execution id="cec5e9b1-ddec-4ed8-bd01-0f7970a12f57" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.FitTraceDbTests" name="SaveMilk_PublishesWhenBindCommits_AndBlocksWhenInstanceIsNotReady" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.FitTraceDbTests.CancelledWrite_RollsBackWithAnIndependentToken" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="a242df7a-6871-18df-4c87-5d84f02d3b92">
+      <Execution id="cf1a59f5-1597-4c2a-8a76-9a146e182787" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.FitTraceDbTests" name="CancelledWrite_RollsBackWithAnIndependentToken" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.FitTraceDbTests.ChangedScore_InsertsASecondReadyContent" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="e82b928a-5155-f3eb-817c-a3ebe854de5f">
+      <Execution id="d7cf7722-030d-4bae-aaa3-87e4d5d51ec2" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.FitTraceDbTests" name="ChangedScore_InsertsASecondReadyContent" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.FitTraceDbTests.BulkWrite_AndRollback_AreMeasuredOnTheIsolatedDatabase" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="17771396-d30e-fe70-b3be-6762a5a90c86">
+      <Execution id="2ab93251-9a64-474e-89c8-fbad6ad384ea" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.FitTraceDbTests" name="BulkWrite_AndRollback_AreMeasuredOnTheIsolatedDatabase" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.FitTraceDbTests.ConcurrentSameContent_Dedupes_AndFailedCallerHasNoPartial" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="e0151670-bd4e-afae-78e5-4e667cdaec95">
+      <Execution id="6d411a47-05d6-4068-b5e3-06a7771ad172" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.FitTraceDbTests" name="ConcurrentSameContent_Dedupes_AndFailedCallerHasNoPartial" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.FitTraceDbTests.Refresh_PersistFailure_StillUpdatesCache" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="eaa9698f-5a2b-2af6-b5e6-8257dc5f9649">
+      <Execution id="970765b9-e03a-4738-b461-54c6658229f5" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.FitTraceDbTests" name="Refresh_PersistFailure_StillUpdatesCache" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.FitTraceDbTests.MidWriteFailure_RollsBack_AndWritingRowIsNotReferenced" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="d1afcf77-5656-17fd-800b-32b7198fce72">
+      <Execution id="c3e92049-9a85-424f-8761-1ffb54432ee8" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.FitTraceDbTests" name="MidWriteFailure_RollsBack_AndWritingRowIsNotReferenced" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="30948ce7-533c-9f85-afea-18d9ca7c3258" executionId="c59fd549-5fca-431c-95da-6d0826e27d52" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="eaa9698f-5a2b-2af6-b5e6-8257dc5f9649" executionId="970765b9-e03a-4738-b461-54c6658229f5" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="f171caa3-4351-1aaa-5236-74e719921af2" executionId="cc09038f-8894-47ba-a7ef-aeadc43b604b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="e0151670-bd4e-afae-78e5-4e667cdaec95" executionId="6d411a47-05d6-4068-b5e3-06a7771ad172" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="a242df7a-6871-18df-4c87-5d84f02d3b92" executionId="cf1a59f5-1597-4c2a-8a76-9a146e182787" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="4aad5100-26a0-ee01-8a76-0030759d16a3" executionId="1b4c1522-ddb1-43af-b14e-a6e952860912" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="e82b928a-5155-f3eb-817c-a3ebe854de5f" executionId="d7cf7722-030d-4bae-aaa3-87e4d5d51ec2" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="d1afcf77-5656-17fd-800b-32b7198fce72" executionId="c3e92049-9a85-424f-8761-1ffb54432ee8" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="17771396-d30e-fe70-b3be-6762a5a90c86" executionId="2ab93251-9a64-474e-89c8-fbad6ad384ea" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="f6886423-2fe6-8f61-af2f-2a2328001abe" executionId="cec5e9b1-ddec-4ed8-bd01-0f7970a12f57" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="列表中未列出的结果" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="所有已加载的结果" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Failed">
+    <Counters total="10" executed="10" passed="0" failed="10" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v2.8.2+699d445a1a (64-bit .NET 8.0.33)&#xD;
+[xUnit.net 00:00:00.12]   Discovering: AiFootBall.Tests&#xD;
+[xUnit.net 00:00:00.40]   Discovered:  AiFootBall.Tests&#xD;
+[xUnit.net 00:00:00.41]   Starting:    AiFootBall.Tests&#xD;
+[xUnit.net 00:00:00.49]       System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。&#xD;
+[xUnit.net 00:00:00.50]       Stack Trace:&#xD;
+[xUnit.net 00:00:00.50]         D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs(127,0): at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync()&#xD;
+[xUnit.net 00:00:00.50]       System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。&#xD;
+[xUnit.net 00:00:00.50]       Stack Trace:&#xD;
+[xUnit.net 00:00:00.50]         D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs(127,0): at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync()&#xD;
+[xUnit.net 00:00:00.50]       System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。&#xD;
+[xUnit.net 00:00:00.51]       Stack Trace:&#xD;
+[xUnit.net 00:00:00.51]         D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs(127,0): at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync()&#xD;
+[xUnit.net 00:00:00.51]       System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。&#xD;
+[xUnit.net 00:00:00.51]       Stack Trace:&#xD;
+[xUnit.net 00:00:00.51]         D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs(127,0): at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync()&#xD;
+[xUnit.net 00:00:00.51]       System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。&#xD;
+[xUnit.net 00:00:00.51]       Stack Trace:&#xD;
+[xUnit.net 00:00:00.51]         D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs(127,0): at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync()&#xD;
+[xUnit.net 00:00:00.51]       System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。&#xD;
+[xUnit.net 00:00:00.51]       Stack Trace:&#xD;
+[xUnit.net 00:00:00.51]         D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs(127,0): at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync()&#xD;
+[xUnit.net 00:00:00.51]       System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。&#xD;
+[xUnit.net 00:00:00.51]       Stack Trace:&#xD;
+[xUnit.net 00:00:00.51]         D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs(127,0): at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync()&#xD;
+[xUnit.net 00:00:00.51]       System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。&#xD;
+[xUnit.net 00:00:00.51]       Stack Trace:&#xD;
+[xUnit.net 00:00:00.51]         D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs(127,0): at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync()&#xD;
+[xUnit.net 00:00:00.51]       System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。&#xD;
+[xUnit.net 00:00:00.51]       Stack Trace:&#xD;
+[xUnit.net 00:00:00.51]         D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs(127,0): at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync()&#xD;
+[xUnit.net 00:00:00.56]       System.InvalidOperationException : 阻塞：当前进程在生产机 WINSEV25DATA 上。不连接任何实例，也不读取生产连接配置。 阻塞：DDL、批量写入、回滚、并发、内容复用、内容变化、SaveMilkAsync 真入口、RefreshAsync 留痕失败、旧版兼容都没有在隔离库执行。未连接生产机默认实例。&#xD;
+[xUnit.net 00:00:00.56]       Stack Trace:&#xD;
+[xUnit.net 00:00:00.56]         D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\FitTraceDbTests.cs(127,0): at AiFootBall.Tests.FitTraceDbFixture.InitializeAsync()&#xD;
+[xUnit.net 00:00:00.56]   Finished:    AiFootBall.Tests&#xD;
+</StdOut>
+    </Output>
+    <RunInfos>
+      <RunInfo computerName="WINSEV25DATA" outcome="Error" timestamp="2026-11-15T15:45:32.3045870+08:00">
+        <Text>[xUnit.net 00:00:00.49]     AiFootBall.Tests.FitTraceDbTests.ChangedScore_InsertsASecondReadyContent [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="WINSEV25DATA" outcome="Error" timestamp="2026-11-15T15:45:32.3146430+08:00">
+        <Text>[xUnit.net 00:00:00.50]     AiFootBall.Tests.FitTraceDbTests.SameContent_IsReused_AndClocksStayOnEachInstance [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="WINSEV25DATA" outcome="Error" timestamp="2026-11-15T15:45:32.3153900+08:00">
+        <Text>[xUnit.net 00:00:00.50]     AiFootBall.Tests.FitTraceDbTests.ConcurrentSameContent_Dedupes_AndFailedCallerHasNoPartial [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="WINSEV25DATA" outcome="Error" timestamp="2026-11-15T15:45:32.3157815+08:00">
+        <Text>[xUnit.net 00:00:00.51]     AiFootBall.Tests.FitTraceDbTests.BulkWrite_AndRollback_AreMeasuredOnTheIsolatedDatabase [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="WINSEV25DATA" outcome="Error" timestamp="2026-11-15T15:45:32.3159716+08:00">
+        <Text>[xUnit.net 00:00:00.51]     AiFootBall.Tests.FitTraceDbTests.PendingDdl_HasTheReviewedTablesColumnsAndReadyIndex [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="WINSEV25DATA" outcome="Error" timestamp="2026-11-15T15:45:32.3162586+08:00">
+        <Text>[xUnit.net 00:00:00.51]     AiFootBall.Tests.FitTraceDbTests.Refresh_PersistFailure_StillUpdatesCache [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="WINSEV25DATA" outcome="Error" timestamp="2026-11-15T15:45:32.3165213+08:00">
+        <Text>[xUnit.net 00:00:00.51]     AiFootBall.Tests.FitTraceDbTests.MidWriteFailure_RollsBack_AndWritingRowIsNotReferenced [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="WINSEV25DATA" outcome="Error" timestamp="2026-11-15T15:45:32.3168766+08:00">
+        <Text>[xUnit.net 00:00:00.51]     AiFootBall.Tests.FitTraceDbTests.LegacyRun_SurvivesDdl_AndRollbackRemovesOnlyTheNewShape [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="WINSEV25DATA" outcome="Error" timestamp="2026-11-15T15:45:32.3171838+08:00">
+        <Text>[xUnit.net 00:00:00.51]     AiFootBall.Tests.FitTraceDbTests.CancelledWrite_RollsBackWithAnIndependentToken [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="WINSEV25DATA" outcome="Error" timestamp="2026-11-15T15:45:32.4347500+08:00">
+        <Text>[xUnit.net 00:00:00.56]     AiFootBall.Tests.FitTraceDbTests.SaveMilk_PublishesWhenBindCommits_AndBlocksWhenInstanceIsNotReady [FAIL]</Text>
+      </RunInfo>
+    </RunInfos>
+  </ResultSummary>
+</TestRun>

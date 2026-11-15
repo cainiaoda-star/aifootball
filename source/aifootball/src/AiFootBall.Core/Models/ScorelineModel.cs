@@ -52,6 +52,9 @@ public sealed class ScoreSample
     /// <see cref="ScorelineModel.Fit"/> 在 <c>halfLifeDays</c> 为 null 时也根本不看它。
     /// </summary>
     public DateTime? MatchTime { get; init; }
+
+    /// <summary>完场主键。拟合公式不读它；留痕用它标出当时那一行。</summary>
+    public long MatchId { get; init; }
 }
 
 /// <summary>
@@ -202,6 +205,12 @@ public sealed class ScorelineModel
 
     /// <summary>实际参与拟合的场次（已按 asOf 截断之后，不再是「传进来多少」）。</summary>
     public int FitGames { get; }
+
+    /// <summary>
+    /// 这次拟合实际用过的样本和已算字典。空模型没有。
+    /// 字典是构造时那几份的副本，不是事后重算。
+    /// </summary>
+    public FitModelTrace? Trace { get; private set; }
 
     /// <summary>Dixon-Coles 的 ρ（低比分相关性修正）。审计时它一变，概率就会变。</summary>
     public double Rho => _rho;
@@ -550,7 +559,8 @@ public sealed class ScorelineModel
         Dictionary<string, double>? leagueStrength = null,
         double? halfLifeDays = null, DateTime? asOf = null)
     {
-        var usable = samples.Where(s =>
+        // 留痕行与拟合行一起滤。拟合行的数值与原来的 Select 相同，并带上 MatchId（公式不读它）。
+        var paired = samples.Where(s =>
             !string.IsNullOrWhiteSpace(s.HomeTeam)
             && !string.IsNullOrWhiteSpace(s.AwayTeam)
             && s.HomeScore >= 0 && s.AwayScore >= 0
@@ -559,17 +569,21 @@ public sealed class ScorelineModel
             // 不归一就会各算各的攻防样本：一支 176 场的瑞典超球队被拆成 55 + 121 场，
             // 两队样本都被噪声主导，λ 会随机抖动。归一放在这里而不是 Resolve 里，是因为
             // Resolve 只能解决「查询时找不到」，解决不了「训练时被拆开」。
-            .Select(s => new ScoreSample
-            {
-                LeagueName = s.LeagueName,
-                HomeTeam = TeamAliases.Canonical(s.HomeTeam),
-                AwayTeam = TeamAliases.Canonical(s.AwayTeam),
-                HomeScore = s.HomeScore,
-                AwayScore = s.AwayScore,
-                MatchTime = s.MatchTime
-            })
+            .Select(s => (
+                trace: FitSampleRow.From(s),
+                fit: new ScoreSample
+                {
+                    MatchId = s.MatchId,
+                    LeagueName = s.LeagueName,
+                    HomeTeam = TeamAliases.Canonical(s.HomeTeam),
+                    AwayTeam = TeamAliases.Canonical(s.AwayTeam),
+                    HomeScore = s.HomeScore,
+                    AwayScore = s.AwayScore,
+                    MatchTime = s.MatchTime
+                }))
             .ToList();
-        if (usable.Count < 30) return Empty;
+        if (paired.Count < 30) return Empty;
+        var usable = paired.Select(p => p.fit).ToList();
 
         // ---- 截止日过滤（2026-11-12 加，第三方校验方案 3.1 点名的「无未来信息」）----
         //
@@ -589,9 +603,10 @@ public sealed class ScorelineModel
         if (asOf is DateTime cut)
         {
             var usableCut = cut.AddMinutes(-MatchDurationMinutes);
-            usable = usable
-                .Where(s => s.MatchTime is DateTime t && t <= usableCut)
+            paired = paired
+                .Where(p => p.fit.MatchTime is DateTime t && t <= usableCut)
                 .ToList();
+            usable = paired.Select(p => p.fit).ToList();
         }
         if (usable.Count < 30) return Empty;
 
@@ -686,8 +701,13 @@ public sealed class ScorelineModel
         var namesByLeague = BuildNameIndex(teams);
         // ρ 固定（2026-11-13 用户拍板选项 B，见 DefaultRho 的注释）：不再调 FitRho 估计。
         // 官方理由是可复现，不是「更准」——拟合出的 −0.060 在前向测试集上 1X2 显著更差。
-        return new ScorelineModel(true, globalHome, globalAway, leagues, teams, teamTotals, namesByLeague,
+        var model = new ScorelineModel(true, globalHome, globalAway, leagues, teams, teamTotals, namesByLeague,
             DefaultRho, crossLeague, strength, fitFrom, fitTo, fitGames);
+        model.Trace = FitModelTrace.Capture(
+            paired.Select(p => p.trace).ToList(),
+            leagues, teams, teamTotals, globalHome, globalAway,
+            DefaultRho, halfLifeDays, crossLeague);
+        return model;
     }
 
     /// <summary>

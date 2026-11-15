@@ -55,6 +55,10 @@ public static class LeagueNames
         return Map.TryGetValue(key, out var mapped) ? mapped : key;
     }
 
+    /// <summary>按键的序数排序，供留痕哈希。不改变 <see cref="Resolve"/>。</summary>
+    public static IEnumerable<(string From, string To)> FingerprintPairs()
+        => Map.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => (kv.Key, kv.Value));
+
     /// <summary>这个竞彩联赛名是否需要改名（诊断/页面提示用）。</summary>
     public static bool IsMapped(string? name)
         => !string.IsNullOrWhiteSpace(name) && Map.ContainsKey(name.Trim());

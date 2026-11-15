@@ -251,6 +251,15 @@ public sealed class MilkBuildResult
     /// </summary>
     public List<MilkInputRejection> Rejections { get; init; } = new();
 
+    /// <summary>
+    /// 本轮计算实际使用的那份快照上的拟合实例。空表示留痕未就绪。
+    /// 计算仍可用；发布只接受已提交的 ready 实例。
+    /// </summary>
+    public long? FitInstanceId { get; set; }
+
+    /// <summary>这次计算拿到的那份快照自己的留痕失败原因。不是服务上的全局最后一次错误。</summary>
+    public string? TraceError { get; set; }
+
     /// <summary>被方向闸挡下的场次数。</summary>
     public int DivergedMatches => Gates.Count(g => g.Verdict == MilkGateVerdicts.Diverge);
 
@@ -283,6 +292,18 @@ public sealed class MilkInputMatch
     /// 只存内存，不落库（`FbMilkInput` 仍是场级一行）。
     /// </summary>
     public IReadOnlyList<MilkInputOption> Options { get; init; } = Array.Empty<MilkInputOption>();
+
+    /// <summary>这场送进 Distribution 的联赛名（ResolveLeague 之后）。显示名仍是 <see cref="LeagueName"/>。</summary>
+    public string? ResolvedLeague { get; init; }
+
+    /// <summary>当时的大小球盘。没有盘口就是 null，不是 0。</summary>
+    public decimal? TotalLine { get; init; }
+
+    /// <summary>同一次参数下 ExpectedGoals 的主队 λ（已按盘口缩放）。</summary>
+    public double? LambdaHome { get; init; }
+
+    /// <summary>同一次参数下 ExpectedGoals 的客队 λ（已按盘口缩放）。</summary>
+    public double? LambdaAway { get; init; }
 }
 
 /// <summary>

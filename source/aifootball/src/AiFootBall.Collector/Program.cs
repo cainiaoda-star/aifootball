@@ -29,8 +29,9 @@ internal static class Program
         var cardSource = new BettingCardSource(http);
         var jcOddsRepo = new JcOddsRepository(factory);
         var milkScan = new MilkScanService(new MilkRepository(factory), bettingRepo);
+        var fitStore = new MilkModelFitStore(factory);
         var recService = new RecommendationService(cardSource, bettingRepo, jcOddsRepo, milk: milkScan,
-            hit: new HitProbabilityService(bettingRepo),
+            hit: new HitProbabilityService(bettingRepo, fitStore),
             // 2026-11-07：CLI 以前没注入这两个仓库，SaveMilkAsync 一进门就 return，
             // 命令行跑 save-recommendations 只打印「已刷新」却一行都不写台账（落库全靠 Api 常驻进程）。
             // 端到端验证必须在同一进程里跑通「算 → 落库 → 读回」，否则改了等于没改。
@@ -44,7 +45,8 @@ internal static class Program
             standings: new StandingRepository(factory),
             // 2026-11-14 复审：批次闸读 SyncLog（cards-daily / cards:manual）。
             // 漏注则 rec 恒空 → 一律 batch-mismatch，CLI 出榜永久拒，和 Api 行为分叉。
-            sync: syncRepo);
+            sync: syncRepo,
+            fitStore: fitStore);
         var progress = new Progress<string>(Console.WriteLine);
 
         try

@@ -48,12 +48,13 @@ public sealed class RecommendationService
     private readonly StandingRepository? _standings;
     private readonly SyncLogRepository? _sync;
     private readonly RecommendSaveHooks? _hooks;
+    private readonly MilkModelFitStore? _fitStore;
 
     public RecommendationService(BettingCardSource cardSource, BettingRepository repo, JcOddsRepository jcOdds,
         HitProbabilityService? hit = null, MilkScanService? milk = null, TicketRepository? tickets = null,
         MilkPickRepository? milkPicks = null, OddsCaptureRepository? oddsCapture = null,
         StandingRepository? standings = null, SyncLogRepository? sync = null,
-        RecommendSaveHooks? hooks = null)
+        RecommendSaveHooks? hooks = null, MilkModelFitStore? fitStore = null)
     {
         _cardSource = cardSource;
         _repo = repo;
@@ -66,6 +67,7 @@ public sealed class RecommendationService
         _standings = standings;
         _sync = sync;
         _hooks = hooks;
+        _fitStore = fitStore;
     }
 
     /// <summary>构造点核对用：批次闸依赖 SyncLog；Api/Collector 都必须注入。</summary>
@@ -172,7 +174,9 @@ public sealed class RecommendationService
         // `asOf`（2026-11-14 第九轮）：落库说的那一轮只认该时刻及之前的采样，
         // 与 `GetJcSourceSnapshotAsync(runAt)` 同一时间点。不给（诊断/API 预览）就取此刻最新。
         // 两条链路各看一个时间点，等于核对器在验另一批数据——缺档、超龄都查不到真正被用的那份。
-        var points = await _jcOdds.GetLatestAsync(fids, ct, asOf);
+        var points = OddsReader is not null
+            ? await OddsReader(fids, ct, asOf)
+            : await _jcOdds.GetLatestAsync(fids, ct, asOf);
         var odds = points
             .Where(p => p.MatchId is > 0)
             .GroupBy(p => p.MatchId!.Value)
@@ -182,6 +186,7 @@ public sealed class RecommendationService
         try { snap = await _hit.GetSnapshotAsync(ct); }
         catch (OperationCanceledException) { throw; }
         catch { snap = HitProbabilityService.Snapshot.Empty; }
+        AfterMilkSnapshotCaptured?.Invoke();
 
         // 亚盘初/终盘只用于诱盘告警（亚盘不当方向用，它的历史方向命中率 47.7%）。
         // 取不到就算了，别让一个可选字段把整张榜拖死。
@@ -257,6 +262,9 @@ public sealed class RecommendationService
 
         var built = MilkPickEngine.BuildDetailed(
             recs, odds, snap.Scores, asian, scoreDiags, spfWater, teamProfiles, priceSpans, teamForms, perMatch);
+        // 编号和失败原因都来自这次拿到的 snap，不在保存时再取一次快照，也不读全局 LastTraceError。
+        built.FitInstanceId = snap.FitInstanceId;
+        built.TraceError = snap.TraceError;
         // 模型没跑起来的时候，空榜必须自己说出原因——否则「空榜」和「今天确实没注」长得一模一样。
         if (!built.Funnel.ScoresReady)
             built.Funnel.ScoresNote = _hit?.LastError ?? "比分模型样本不足（可用样本 < 30 场），本次不出榜";
@@ -1060,7 +1068,7 @@ public sealed class RecommendationService
     }
 
     /// <summary>大奶落库；返回真实 published/skipped/failed（含 RunId）。</summary>
-    private async Task<MilkSaveOutcome> SaveMilkAsync(List<MatchRecommendation>? jcRecs, CancellationToken ct)
+    internal async Task<MilkSaveOutcome> SaveMilkAsync(List<MatchRecommendation>? jcRecs, CancellationToken ct)
     {
         if (_milkPicks is null || _tickets is null)
             return MilkSaveOutcome.NotConfigured();
@@ -1356,6 +1364,13 @@ public sealed class RecommendationService
 
                 if (outcome.Kind == MilkSaveKind.Published)
                 {
+                    var traceBlock = await BindFitTraceAsync(run.RunId, build, ct);
+                    if (traceBlock is not null)
+                        outcome = MilkSaveOutcome.Fail(traceBlock, run.RunId, "rewrite", pickRows);
+                }
+
+                if (outcome.Kind == MilkSaveKind.Published)
+                {
                     var dates = plan.Writes
                         .Select(w => new MilkRunDateCount { SalesDate = w.SalesDate, PickCount = w.Picks.Count })
                         .ToList();
@@ -1442,6 +1457,37 @@ public sealed class RecommendationService
     /// 核对失败一律判 failed（不发布）：这几张表的行数完全由本轮输入决定，
     /// 「少写一半」与「写坏了」在榜面上的表现一模一样——都是榜上少了几注。
     /// </summary>
+    /// <summary>测试在快照已经取到、结果尚未抄编号时换缓存。生产为 null。</summary>
+    internal Action? AfterMilkSnapshotCaptured { get; set; }
+
+    /// <summary>测试替掉赔率读取。生产为 null，走仓库。</summary>
+    internal Func<IReadOnlyList<long>, CancellationToken, DateTime?, Task<List<JcOddsHistoryPoint>>>? OddsReader { get; set; }
+
+    /// <summary>
+    /// 发布前提只看存储层这次绑定是否提交。
+    /// 不在这里重新取快照，也不读 <see cref="HitProbabilityService.LastTraceError"/>。
+    /// </summary>
+    internal async Task<string?> BindFitTraceAsync(string runId, MilkBuildResult build, CancellationToken ct)
+    {
+        if (_fitStore is null)
+            return MilkFitTraceDiagnostics.WithSnapshot(
+                MilkFitTraceDiagnostics.BindRejected(runId, build.FitInstanceId, "留痕存储未接线"),
+                build.TraceError);
+        try
+        {
+            var bound = await _fitStore.BindRunAsync(runId, build.FitInstanceId, build.Inputs, ct);
+            if (MilkFitTraceGate.AllowsPublish(bound)) return null;
+            return MilkFitTraceDiagnostics.WithSnapshot(bound.Reason, build.TraceError);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            return MilkFitTraceDiagnostics.WithSnapshot(
+                MilkFitTraceDiagnostics.BindRejected(runId, build.FitInstanceId, MilkFitTraceDiagnostics.Describe(ex)),
+                build.TraceError);
+        }
+    }
+
     private async Task<MilkLedgerReport> VerifyRunLedgerAsync(
         string runId, MilkBoardPlan plan, MilkBuildResult build,
         IReadOnlyList<MilkSourceMatch> source, string? sourceError, DateTime runAt,

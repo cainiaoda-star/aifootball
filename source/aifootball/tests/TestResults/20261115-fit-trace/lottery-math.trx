@@ -1,0 +1,58 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="7c640658-a3b9-4175-a788-8cdd07f9b66d" name="Administrator@WINSEV25DATA 2026-11-15 14:38:38" runUser="WINSEV25DATA\Administrator" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-11-15T14:38:38.1830467+08:00" queuing="2026-11-15T14:38:38.1830470+08:00" start="2026-11-15T14:38:36.8223499+08:00" finish="2026-11-15T14:38:38.1989541+08:00" />
+  <TestSettings name="default" id="709e628c-220b-4439-b887-b8867a677d56">
+    <Deployment runDeploymentRoot="Administrator_WINSEV25DATA_2026-11-15_14_38_38" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="5d6fefa6-1146-4762-a18c-072e63fe3b3e" testId="a0abe543-a9b6-0b6d-c2c7-ac9a860a17fe" testName="AiFootBall.Tests.LotteryMathFrequencyTests.Qxc_Frequency_Analysis_Not_Supported" computerName="WINSEV25DATA" duration="00:00:00.0049270" startTime="2026-11-15T14:38:37.9173623+08:00" endTime="2026-11-15T14:38:37.9173868+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="5d6fefa6-1146-4762-a18c-072e63fe3b3e" />
+    <UnitTestResult executionId="caa084d1-9263-4672-ab07-5ec570fd3ddb" testId="6afd222a-e4aa-f4e4-6d5c-7fba9f8159b2" testName="AiFootBall.Tests.LotteryMathFrequencyTests.Digit_Frequency_Includes_Zero_And_Truncates_Junk" computerName="WINSEV25DATA" duration="00:00:00.0212795" startTime="2026-11-15T14:38:37.9760201+08:00" endTime="2026-11-15T14:38:37.9760208+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="caa084d1-9263-4672-ab07-5ec570fd3ddb" />
+    <UnitTestResult executionId="72fae6e5-c2a6-4e8d-b362-def960eb6858" testId="e89f52e3-142c-2ecf-0cff-e2c1d603e84c" testName="AiFootBall.Tests.LotteryMathFrequencyTests.Duplicate_In_Same_Draw_Counts_Once" computerName="WINSEV25DATA" duration="00:00:00.0036252" startTime="2026-11-15T14:38:37.9545243+08:00" endTime="2026-11-15T14:38:37.9545245+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="72fae6e5-c2a6-4e8d-b362-def960eb6858" />
+    <UnitTestResult executionId="f0279ae2-3b05-4873-ab0c-13337ba5eed5" testId="2cefb343-3a1e-4c3a-f430-b71581f9df22" testName="AiFootBall.Tests.LotteryMathFrequencyTests.Ssq_Frequency_Starts_At_One_Not_Zero" computerName="WINSEV25DATA" duration="00:00:00.0089630" startTime="2026-11-15T14:38:37.9258526+08:00" endTime="2026-11-15T14:38:37.9258530+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="f0279ae2-3b05-4873-ab0c-13337ba5eed5" />
+    <UnitTestResult executionId="b940ff72-9ec7-4acf-b9fe-90bb7dfbdecf" testId="aff8e193-9f2f-33ed-78be-527c4b6a0a52" testName="AiFootBall.Tests.LotteryMathFrequencyTests.Analysis_Projection_Same_As_Frequency_For_Digit_Junk" computerName="WINSEV25DATA" duration="00:00:00.0248116" startTime="2026-11-15T14:38:37.9508121+08:00" endTime="2026-11-15T14:38:37.9508128+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="b940ff72-9ec7-4acf-b9fe-90bb7dfbdecf" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="AiFootBall.Tests.LotteryMathFrequencyTests.Ssq_Frequency_Starts_At_One_Not_Zero" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="2cefb343-3a1e-4c3a-f430-b71581f9df22">
+      <Execution id="f0279ae2-3b05-4873-ab0c-13337ba5eed5" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.LotteryMathFrequencyTests" name="Ssq_Frequency_Starts_At_One_Not_Zero" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.LotteryMathFrequencyTests.Duplicate_In_Same_Draw_Counts_Once" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="e89f52e3-142c-2ecf-0cff-e2c1d603e84c">
+      <Execution id="72fae6e5-c2a6-4e8d-b362-def960eb6858" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.LotteryMathFrequencyTests" name="Duplicate_In_Same_Draw_Counts_Once" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.LotteryMathFrequencyTests.Qxc_Frequency_Analysis_Not_Supported" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="a0abe543-a9b6-0b6d-c2c7-ac9a860a17fe">
+      <Execution id="5d6fefa6-1146-4762-a18c-072e63fe3b3e" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.LotteryMathFrequencyTests" name="Qxc_Frequency_Analysis_Not_Supported" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.LotteryMathFrequencyTests.Digit_Frequency_Includes_Zero_And_Truncates_Junk" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="6afd222a-e4aa-f4e4-6d5c-7fba9f8159b2">
+      <Execution id="caa084d1-9263-4672-ab07-5ec570fd3ddb" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.LotteryMathFrequencyTests" name="Digit_Frequency_Includes_Zero_And_Truncates_Junk" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.LotteryMathFrequencyTests.Analysis_Projection_Same_As_Frequency_For_Digit_Junk" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="aff8e193-9f2f-33ed-78be-527c4b6a0a52">
+      <Execution id="b940ff72-9ec7-4acf-b9fe-90bb7dfbdecf" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.LotteryMathFrequencyTests" name="Analysis_Projection_Same_As_Frequency_For_Digit_Junk" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="a0abe543-a9b6-0b6d-c2c7-ac9a860a17fe" executionId="5d6fefa6-1146-4762-a18c-072e63fe3b3e" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="6afd222a-e4aa-f4e4-6d5c-7fba9f8159b2" executionId="caa084d1-9263-4672-ab07-5ec570fd3ddb" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="e89f52e3-142c-2ecf-0cff-e2c1d603e84c" executionId="72fae6e5-c2a6-4e8d-b362-def960eb6858" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="2cefb343-3a1e-4c3a-f430-b71581f9df22" executionId="f0279ae2-3b05-4873-ab0c-13337ba5eed5" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="aff8e193-9f2f-33ed-78be-527c4b6a0a52" executionId="b940ff72-9ec7-4acf-b9fe-90bb7dfbdecf" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="列表中未列出的结果" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="所有已加载的结果" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Completed">
+    <Counters total="5" executed="5" passed="5" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v2.8.2+699d445a1a (64-bit .NET 8.0.33)&#xD;
+[xUnit.net 00:00:00.12]   Discovering: AiFootBall.Tests&#xD;
+[xUnit.net 00:00:00.40]   Discovered:  AiFootBall.Tests&#xD;
+[xUnit.net 00:00:00.41]   Starting:    AiFootBall.Tests&#xD;
+[xUnit.net 00:00:00.54]   Finished:    AiFootBall.Tests&#xD;
+</StdOut>
+    </Output>
+  </ResultSummary>
+</TestRun>

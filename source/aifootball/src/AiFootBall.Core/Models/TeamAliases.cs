@@ -181,6 +181,10 @@ public static class TeamAliases
         return Forms.TryGetValue(canonical, out var forms) ? forms : new[] { canonical };
     }
 
+    /// <summary>按键的序数排序，供留痕哈希。不改变 <see cref="Canonical"/>。</summary>
+    public static IEnumerable<(string From, string To)> FingerprintPairs()
+        => Map.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => (kv.Key, kv.Value));
+
     /// <summary>是否登记在案（诊断/单测用）。</summary>
     public static bool IsKnown(string? name)
         => !string.IsNullOrWhiteSpace(name) && Map.ContainsKey(name.Trim());

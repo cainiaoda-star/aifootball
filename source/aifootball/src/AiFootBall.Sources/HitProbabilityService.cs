@@ -7,13 +7,12 @@ namespace AiFootBall.Sources;
 public sealed class HitProbabilityService
 {
     private readonly BettingRepository _repo;
+    private readonly MilkModelFitStore? _fitStore;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
     private Snapshot _cache = Snapshot.Empty;
     private DateTime _cachedAt = DateTime.MinValue;
     private int _refreshing;
-
-    public HitProbabilityService(BettingRepository repo) => _repo = repo;
 
     /// <summary>
     /// 上一次拟合失败的原因（成功时清空）。
@@ -23,6 +22,47 @@ public sealed class HitProbabilityService
     /// 实际是模型根本没跑起来。失败必须能说出来，而且不能被缓存住。
     /// </summary>
     public string? LastError { get; private set; }
+
+    /// <summary>
+    /// 最近一次刷新的留痕诊断。发布不得读它：下一次刷新会盖掉，和已经取出的快照不是同一轮。
+    /// </summary>
+    public string? LastTraceError { get; private set; }
+
+    /// <summary>测试可让诊断写入抛错。生产为 null。抛错不得阻止缓存更新。</summary>
+    internal Action<string>? TraceDiagnostic { get; set; }
+
+    internal void SeedCache(Snapshot snapshot)
+    {
+        _cache = snapshot;
+        _cachedAt = DateTime.UtcNow;
+    }
+
+    internal Snapshot Cached => _cache;
+
+    internal void WriteTraceDiagnostic(string reason)
+    {
+        try
+        {
+            LastTraceError = reason;
+            TraceDiagnostic?.Invoke(reason);
+        }
+        catch
+        {
+            // 诊断写失败也不换缓存。当次原因已经在快照的 TraceError 上。
+        }
+    }
+
+    internal void CommitComputedSnapshot(Snapshot snapshot)
+    {
+        _cache = snapshot;
+        _cachedAt = DateTime.UtcNow;
+    }
+
+    public HitProbabilityService(BettingRepository repo, MilkModelFitStore? fitStore = null)
+    {
+        _repo = repo;
+        _fitStore = fitStore;
+    }
 
     public async Task<Snapshot> GetSnapshotAsync(CancellationToken ct = default)
     {
@@ -78,15 +118,37 @@ public sealed class HitProbabilityService
                 var fitMoment = DateTime.Now;
                 var rows = await _repo.GetHitTrainingRowsAsync(ct);
                 var buckets = await _repo.GetHitBucketsAsync(ct);
-                var scores = await _repo.GetScoreSamplesAsync(ct, asOf: fitMoment);
+                var batch = await _repo.GetScoreSamplesWithClockAsync(ct, asOf: fitMoment);
                 var map = new Dictionary<(char Side, string Band), (int Hits, int Total)>();
                 foreach (var b in buckets)
                 {
                     if (string.IsNullOrEmpty(b.Side)) continue;
                     map[(b.Side[0], b.Band)] = (b.Hits, b.Total);
                 }
-                _cache = new Snapshot(HitProbabilityModel.Fit(rows), map, true,
-                    ScorelineModel.Fit(scores, asOf: fitMoment));
+                var scores = ScorelineModel.Fit(batch.Samples, asOf: fitMoment);
+                // 留痕失败只让实例编号空着。拟合结果照常换进缓存，其它调用方仍拿到新模型。
+                long? instanceId = null;
+                string? traceError = null;
+                LastTraceError = null;
+                if (scores.Ready && scores.Trace is not null && _fitStore is not null)
+                {
+                    try
+                    {
+                        instanceId = await _fitStore.SaveReadyInstanceAsync(
+                            scores.Trace, fitMoment, batch.QueryClock,
+                            MilkPickEngine.FitConfigVersion(), ct);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        instanceId = null;
+                        traceError = MilkFitTraceDiagnostics.DescribePersist(ex, fitMoment, batch.QueryClock);
+                        WriteTraceDiagnostic(traceError);
+                    }
+                }
+                var computed = new Snapshot(
+                    HitProbabilityModel.Fit(rows), map, true, scores, instanceId, traceError);
+                CommitComputedSnapshot(computed);
                 LastError = null;
             }
             catch (OperationCanceledException)
@@ -278,17 +340,30 @@ public sealed class HitProbabilityService
             HitProbabilityModel model,
             Dictionary<(char Side, string Band), (int Hits, int Total)> buckets,
             bool loaded,
-            ScorelineModel? scores = null)
+            ScorelineModel? scores = null,
+            long? fitInstanceId = null,
+            string? traceError = null)
         {
             Model = model;
             Buckets = buckets;
             Loaded = loaded;
             Scores = scores ?? ScorelineModel.Empty;
+            FitInstanceId = fitInstanceId is > 0 ? fitInstanceId : null;
+            TraceError = string.IsNullOrEmpty(traceError) ? null : traceError;
         }
 
         public HitProbabilityModel Model { get; }
         public Dictionary<(char Side, string Band), (int Hits, int Total)> Buckets { get; }
         public bool Loaded { get; }
         public ScorelineModel Scores { get; }
+
+        /// <summary>
+        /// 已提交的 ready 拟合实例。null 表示这份快照可以拿来算，但留痕还没就绪。
+        /// 轮次只能引用非空值，并且发布前还要再确认库里的状态是 ready。
+        /// </summary>
+        public long? FitInstanceId { get; }
+
+        /// <summary>这份快照自己的留痕失败原因。后续刷新不会改这个字符串。</summary>
+        public string? TraceError { get; }
     }
 }

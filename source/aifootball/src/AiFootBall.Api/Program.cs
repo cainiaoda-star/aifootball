@@ -73,6 +73,7 @@ builder.Services.AddSingleton(jobsOptions);
 builder.Services.AddSingleton(_ => HttpClients.Create(collectorOptions));
 builder.Services.AddSingleton<CollectionService>();
 builder.Services.AddSingleton(sp => new BettingCardSource(sp.GetRequiredService<HttpClient>()));
+builder.Services.AddSingleton<MilkModelFitStore>();
 builder.Services.AddSingleton<HitProbabilityService>();
 builder.Services.AddSingleton(sp => new RecommendationService(
     sp.GetRequiredService<BettingCardSource>(),
@@ -84,7 +85,8 @@ builder.Services.AddSingleton(sp => new RecommendationService(
     sp.GetRequiredService<MilkPickRepository>(),
     sp.GetRequiredService<OddsCaptureRepository>(),
     sp.GetRequiredService<StandingRepository>(),
-    sp.GetRequiredService<SyncLogRepository>()));
+    sp.GetRequiredService<SyncLogRepository>(),
+    fitStore: sp.GetRequiredService<MilkModelFitStore>()));
 builder.Services.AddSingleton<UserRepository>();
 builder.Services.AddSingleton<BettingRepository>();
 builder.Services.AddSingleton<AnalysisRepository>();

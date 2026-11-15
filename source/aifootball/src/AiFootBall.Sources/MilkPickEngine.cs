@@ -294,8 +294,11 @@ public static class MilkPickEngine
     /// 这个串会进数据库、会被拿来 grep，不能有一处依赖当前区域设置。
     /// </summary>
     public static string PickVersion(ScorelineModel scores)
-        => $"{scores.VersionTag}"
-           + $"|w={(int)(MarketWeightSpf * 100m)}/{(int)(MarketWeightNspf * 100m)}"
+        => $"{scores.VersionTag}|{FitConfigVersion()}";
+
+    /// <summary>权重和比分开关。不进内容指纹，写在拟合实例的配置版本上。</summary>
+    public static string FitConfigVersion()
+        => $"w={(int)(MarketWeightSpf * 100m)}/{(int)(MarketWeightNspf * 100m)}"
            + $"/{(int)(MarketWeightBq * 100m)}/{(int)(MarketWeightJq * 100m)}/{(int)(MarketWeightBf * 100m)}"
            + $"|bf={(EnableScorePicks ? "on" : "off")}";
 
@@ -1496,6 +1499,9 @@ public static class MilkPickEngine
             }
             funnel.Distributed++;
 
+            // 与 Distribution 同一组参数再读一次纯函数，记下缩放后的 λ。不改 Distribution 内部。
+            var goals = scores.ExpectedGoals(lg, r.HomeTeam!, r.AwayTeam!, r.TotalLine);
+
             // 输入凭证记在这里（2026-11-13 加）：**算出分布之后、方向闸之前**。
             // 再往前会有「模型不认识 / 样本不足」两类 continue，那些场其实没进模型；
             // 再往后就会被 EnforceDirectionVeto / MarketStrongReverse 整场撤掉，
@@ -1511,6 +1517,10 @@ public static class MilkPickEngine
                 AwayTeam = r.AwayTeam,
                 MatchTime = r.MatchTime,
                 VersionTag = versionTag,
+                ResolvedLeague = lg,
+                TotalLine = r.TotalLine,
+                LambdaHome = goals?.Home,
+                LambdaAway = goals?.Away,
                 // 该场的赔率档位清单（2026-11-13 第五轮）：发布前核对用它独立推出「该有几档」。
                 // 必须在这里取，而不是核对时回库查：核对发生在落库之后，那时报价可能已经变了。
                 Options = points
@@ -2816,7 +2826,7 @@ public static class MilkPickEngine
 
     private static int SideIndex(char c) => c switch { '3' => 0, '1' => 1, _ => 2 };
 
-    private const int MaxHalfGoals = 6;
+    internal const int MaxHalfGoals = 6;
 
     private static double Poisson(int k, double lambda)
     {

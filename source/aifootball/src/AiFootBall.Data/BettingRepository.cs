@@ -766,8 +766,37 @@ public sealed class BettingRepository
     /// （实测同一份 178177 场三次跑出 0.010 / 0.000 / -0.010）。ρ 现已固定（<see cref="ScorelineModel.DefaultRho"/>），
     /// 但排序键保留：浮点累加、拟合窗口、未来任何抽样都得有确定顺序，否则「同代码同数据出两张榜」会再来一次。
     /// </summary>
+    /// <summary>
+    /// 取样语句。WHERE 与排序保持原样；只多选了 MatchId，并在前面读一次 GETDATE() 作为查询时钟。
+    /// 谓词里的 GETDATE() 没有换成那个变量。
+    /// </summary>
+    public const string ScoreSampleSql =
+        @"SELECT CONVERT(datetime2(7), GETDATE()) AS QueryClock;
+          SELECT f.MatchId, f.LeagueName, f.HomeTeamName AS HomeTeam, f.AwayTeamName AS AwayTeam,
+                 f.MatchTime, f.HomeScore, f.AwayScore
+          FROM dbo.FbMatch f
+          WHERE f.Status = 3
+            AND f.HomeScore IS NOT NULL AND f.AwayScore IS NOT NULL
+            AND f.MatchTime >= DATEADD(month, -18, GETDATE())
+            AND (@before IS NULL OR f.MatchTime < @before)
+            AND (@asOf IS NULL OR f.MatchTime <= DATEADD(minute, -@dur, @asOf))
+            AND f.MatchTime <= DATEADD(minute, -@dur, GETDATE())
+          ORDER BY f.MatchTime, f.MatchId";
+
     public async Task<List<ScoreSample>> GetScoreSamplesAsync(
         CancellationToken ct = default, DateTime? before = null, DateTime? asOf = null)
+    {
+        var batch = await GetScoreSamplesCoreAsync(ct, before, asOf);
+        return batch.Samples;
+    }
+
+    /// <summary>与 <see cref="GetScoreSamplesAsync"/> 同一条语句，多带回取样时的 GETDATE()。</summary>
+    public Task<(List<ScoreSample> Samples, DateTime QueryClock)> GetScoreSamplesWithClockAsync(
+        CancellationToken ct = default, DateTime? before = null, DateTime? asOf = null)
+        => GetScoreSamplesCoreAsync(ct, before, asOf);
+
+    private async Task<(List<ScoreSample> Samples, DateTime QueryClock)> GetScoreSamplesCoreAsync(
+        CancellationToken ct, DateTime? before, DateTime? asOf)
     {
         await using var conn = await _factory.OpenAsync(ct);
         // ★ 2026-11-13 修：这里原来**没 SELECT f.MatchTime**，Dapper 映射到 ScoreSample 时
@@ -775,21 +804,14 @@ public sealed class BettingRepository
         //   · ScorelineModel.Fit 的窗口戳恒为 "?..?" —— 审计标准要求「版本戳含拟合窗口」永远读不到；
         //   · 衰减的 anchor 也拿 null，就算传了 halfLifeDays 也会被 WeightOf 当成「没有时间」退回等权，
         //     时间衰减形同虚设（当时恰好没启用，所以没炸）；
-        //   · 任何 Fit(samples, asOf: x) 走这条 repo，样本会被 475 行的截止日过滤**全部剔光**、直接返回 Empty。
-        // 补上这一列会顺带改变概率（多剔掉 2 场未来场次），所以不要再把它说成「零变化」。
-        var rows = await conn.QueryAsync<ScoreSample>(new CommandDefinition(
-            @"SELECT f.LeagueName, f.HomeTeamName AS HomeTeam, f.AwayTeamName AS AwayTeam,
-                     f.MatchTime, f.HomeScore, f.AwayScore
-              FROM dbo.FbMatch f
-              WHERE f.Status = 3
-                AND f.HomeScore IS NOT NULL AND f.AwayScore IS NOT NULL
-                AND f.MatchTime >= DATEADD(month, -18, GETDATE())
-                AND (@before IS NULL OR f.MatchTime < @before)
-                AND (@asOf IS NULL OR f.MatchTime <= DATEADD(minute, -@dur, @asOf))
-                AND f.MatchTime <= DATEADD(minute, -@dur, GETDATE())
-              ORDER BY f.MatchTime, f.MatchId",
+        //   · 任何 Fit(samples, asOf: x) 走这条 repo，样本会被截止日过滤**全部剔光**、直接返回 Empty。
+        // 补上这一列会顺带改变概率（多剔掉未来场次），所以不要再把它说成「零变化」。
+        using var grid = await conn.QueryMultipleAsync(new CommandDefinition(
+            ScoreSampleSql,
             new { before, asOf, dur = ScorelineModel.MatchDurationMinutes }, cancellationToken: ct));
-        return rows.ToList();
+        var clock = grid.Read<DateTime>().Single();
+        var rows = grid.Read<ScoreSample>().ToList();
+        return (rows, clock);
     }
 
     /// <summary>
