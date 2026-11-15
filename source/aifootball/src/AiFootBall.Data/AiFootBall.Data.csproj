@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AiFootBall.Core\AiFootBall.Core.csproj" />
+    <InternalsVisibleTo Include="AiFootBall.Tests" />
   </ItemGroup>
 
   <ItemGroup>

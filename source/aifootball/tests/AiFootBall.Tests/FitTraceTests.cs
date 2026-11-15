@@ -1,6 +1,8 @@
+using System.Data;
 using AiFootBall.Core.Models;
 using AiFootBall.Data;
 using AiFootBall.Sources;
+using Microsoft.Data.SqlClient;
 using Xunit;
 
 namespace AiFootBall.Tests;
@@ -10,6 +12,23 @@ namespace AiFootBall.Tests;
 /// </summary>
 public class FitTraceTests
 {
+    [Fact]
+    public void ConstantZero_BindsAsSqlDbType_UnlessTheValueIsSetExplicitly()
+    {
+        var ambiguous = new SqlParameter("@smin", FitContentCodec.ScoreMin);
+        Assert.Equal(0, FitContentCodec.ScoreMin);
+        Assert.Equal(SqlDbType.BigInt, ambiguous.SqlDbType);
+        Assert.Null(ambiguous.Value);
+
+        var bound = MilkModelFitStore.IntParameter("@smin", FitContentCodec.ScoreMin);
+        Assert.Equal(SqlDbType.Int, bound.SqlDbType);
+        Assert.Equal(0, bound.Value);
+
+        var away = MilkModelFitStore.FloatParameter("@ga", 0d);
+        Assert.Equal(SqlDbType.Float, away.SqlDbType);
+        Assert.Equal(0d, (double)away.Value);
+    }
+
     [Fact]
     public void SameSamples_DifferentFitMoment_KeepTheSameContentHash()
     {

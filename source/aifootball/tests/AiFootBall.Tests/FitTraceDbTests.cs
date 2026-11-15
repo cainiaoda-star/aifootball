@@ -382,18 +382,75 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
     {
         await ResetAsync();
         using var cts = new CancellationTokenSource();
-        var store = new MilkModelFitStore(_db.Factory);
+        var store = new CancelAfterContentInsert(_db.Factory, cts);
         var started = store.SaveReadyInstanceAsync(
-            BulkTrace(180_000), new DateTime(2026, 11, 15, 13, 0, 0), new DateTime(2026, 11, 15, 13, 0, 1),
+            Trace(0), new DateTime(2026, 11, 15, 13, 0, 0), new DateTime(2026, 11, 15, 13, 0, 1),
             "w=70/70/50/80/30|bf=off", cts.Token);
-        cts.CancelAfter(50);
         var thrown = await Record.ExceptionAsync(() => started);
+        Assert.True(store.ContentInserted);
         Assert.NotNull(thrown);
+        Assert.IsAssignableFrom<OperationCanceledException>(thrown);
         Assert.IsNotType<AggregateException>(thrown);
         await using var conn = await _db.Factory.OpenAsync();
         Assert.Equal(0, await FitTraceDbFixture.Scalar(conn,
             "SELECT COUNT(*) FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
         _output.WriteLine("cancel exception={0}", thrown.GetType().Name);
+    }
+
+    /// <summary>
+    /// 内容插入成功后才取消。参数没绑上时到不了这里，SqlException 不能算作中途取消。
+    /// </summary>
+    private sealed class CancelAfterContentInsert : MilkModelFitStore
+    {
+        private readonly CancellationTokenSource _cts;
+
+        public CancelAfterContentInsert(SqlConnectionFactory factory, CancellationTokenSource cts)
+            : base(factory) => _cts = cts;
+
+        public bool ContentInserted { get; private set; }
+
+        protected override Task AfterContentInsertedAsync(CancellationToken ct)
+        {
+            ContentInserted = true;
+            _cts.Cancel();
+            return Task.CompletedTask;
+        }
+    }
+
+    [FitTraceDbFact]
+    public async Task ZeroScoreMin_AndZeroGlobalAway_RoundTripThroughSql()
+    {
+        await ResetAsync();
+        var trace = BulkTrace(2);
+        var store = new MilkModelFitStore(_db.Factory);
+        var instanceId = await store.SaveReadyInstanceAsync(
+            trace, new DateTime(2026, 11, 15, 14, 0, 0), new DateTime(2026, 11, 15, 14, 0, 1),
+            "w=70/70/50/80/30|bf=off", default);
+        Assert.True(instanceId > 0);
+
+        await using var conn = await _db.Factory.OpenAsync();
+        Assert.Equal(0L, await FitTraceDbFixture.Scalar(conn,
+            "SELECT ScoreMin FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
+        Assert.Equal((long)FitContentCodec.ScoreMax, await FitTraceDbFixture.Scalar(conn,
+            "SELECT ScoreMax FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
+        Assert.Equal((long)FitContentCodec.WindowMonths, await FitTraceDbFixture.Scalar(conn,
+            "SELECT WindowMonths FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
+        Assert.Equal((long)ScorelineModel.MatchDurationMinutes, await FitTraceDbFixture.Scalar(conn,
+            "SELECT DurationMinutes FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
+        Assert.Equal((long)FitContentCodec.PriorGames, await FitTraceDbFixture.Scalar(conn,
+            "SELECT PriorGames FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
+        Assert.Equal((long)FitContentCodec.MinOwnGames, await FitTraceDbFixture.Scalar(conn,
+            "SELECT MinOwnGames FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
+        Assert.Equal((long)FitContentCodec.LeaguePrior, await FitTraceDbFixture.Scalar(conn,
+            "SELECT LeaguePrior FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
+        Assert.Equal((long)FitContentCodec.MaxHalfGoals, await FitTraceDbFixture.Scalar(conn,
+            "SELECT MaxHalfGoals FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
+        Assert.Equal(2L, await FitTraceDbFixture.Scalar(conn,
+            "SELECT SampleCount FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
+        Assert.Equal(1L, await FitTraceDbFixture.Scalar(conn,
+            "SELECT CASE WHEN CrossLeague = 0 AND GlobalAway = 0 AND HalfLifeDays IS NULL THEN 1 ELSE 0 END FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
+        Assert.Equal(1L, await FitTraceDbFixture.Scalar(conn,
+            "SELECT CASE WHEN ABS(LambdaMin - 0.15) < 0.0000001 AND ABS(HalfGoalShare - 0.45) < 0.0000001 THEN 1 ELSE 0 END FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
     }
 
     [FitTraceDbFact]
@@ -641,42 +698,135 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
     }
 
     [FitTraceDbFact]
-    public async Task SaveMilk_PublishesWhenBindCommits_AndBlocksWhenInstanceIsNotReady()
+    public async Task SaveMilk_NotReadyInstance_ReachesBindAndDoesNotPublish()
     {
-        await PreparePublishTablesAsync();
+        var arranged = await ArrangePublishAsync();
         try
         {
-            var (matchNo, kick) = SellableMatch();
-            await SeedCaptureAsync(matchNo, kick);
-            var store = new MilkModelFitStore(_db.Factory);
-            var ready = await store.SaveReadyInstanceAsync(
-                Trace(0), new DateTime(2026, 11, 15, 8, 0, 0), new DateTime(2026, 11, 15, 8, 0, 1),
-                "w=70/70/50/80/30|bf=off", default);
-
-            var blocked = await SaveMilkOnceAsync(ready + 1000, matchNo, kick);
-            Assert.Equal(MilkSaveKind.Failed, blocked.Kind);
+            var blocked = await SaveMilkOnceAsync(arranged.Ready + 1000, arranged.MatchNo, arranged.Kick);
+            Assert.True(blocked.Kind == MilkSaveKind.Failed,
+                "未 ready 实例应在绑定检查失败，实际 " + blocked.Kind + "：" + blocked.Reason);
             Assert.False(blocked.Published);
             Assert.Contains("模型留痕未提交", blocked.Reason, StringComparison.Ordinal);
-            await using (var conn = await _db.Factory.OpenAsync())
-            {
-                Assert.Equal(0, await FitTraceDbFixture.Scalar(conn,
-                    "SELECT COUNT(*) FROM dbo.FbMilkRun WHERE RunId=@run AND Status=N'success'",
-                    new SqlParameter("@run", blocked.RunId)));
-            }
-
-            var published = await SaveMilkOnceAsync(ready, matchNo, kick);
-            Assert.Equal(MilkSaveKind.Published, published.Kind);
-            await using (var conn = await _db.Factory.OpenAsync())
-            {
-                Assert.Equal(ready, await FitTraceDbFixture.Scalar(conn,
-                    "SELECT ModelFitInstanceId FROM dbo.FbMilkRun WHERE RunId=@run AND Status=N'success'",
-                    new SqlParameter("@run", published.RunId)));
-            }
+            await using var conn = await _db.Factory.OpenAsync();
+            Assert.Equal(0, await FitTraceDbFixture.Scalar(conn,
+                "SELECT COUNT(*) FROM dbo.FbMilkRun WHERE RunId=@run AND Status=N'success'",
+                new SqlParameter("@run", blocked.RunId)));
         }
         finally
         {
             await RestoreStubMilkTablesAsync();
         }
+    }
+
+    [FitTraceDbFact]
+    public async Task SaveMilk_ReadyInstance_PublishesWithItsModelFitInstanceId()
+    {
+        var arranged = await ArrangePublishAsync();
+        try
+        {
+            var published = await SaveMilkOnceAsync(arranged.Ready, arranged.MatchNo, arranged.Kick);
+            Assert.True(published.Kind == MilkSaveKind.Published,
+                "ready 实例绑定提交后应发布，实际 " + published.Kind + "：" + published.Reason);
+            await using var conn = await _db.Factory.OpenAsync();
+            Assert.Equal(arranged.Ready, await FitTraceDbFixture.Scalar(conn,
+                "SELECT ModelFitInstanceId FROM dbo.FbMilkRun WHERE RunId=@run AND Status=N'success'",
+                new SqlParameter("@run", published.RunId)));
+        }
+        finally
+        {
+            await RestoreStubMilkTablesAsync();
+        }
+    }
+
+    /// <summary>
+    /// 澳超空榜那两项保持原样。这一项单独用英超和配平后的合成赔率，
+    /// 让生产引擎自己算出注，再走真实的 SaveMilkAsync。不插入注单行，也不替绑定检查返回成功。
+    /// </summary>
+    [FitTraceDbFact]
+    public async Task SaveMilk_ReadyInstance_PublishesAtLeastOnePick()
+    {
+        await PreparePublishTablesAsync();
+        var (matchNo, kick) = SellableMatch();
+        var model = FittedBoardModel();
+        var ready = await new MilkModelFitStore(_db.Factory).SaveReadyInstanceAsync(
+            model.Trace!, new DateTime(2026, 11, 15, 8, 0, 0), new DateTime(2026, 11, 15, 8, 0, 1),
+            "w=70/70/50/80/30|bf=off", default);
+        await SeedQuotedCaptureAsync(matchNo, kick);
+        var points = SyntheticOddsBook(88002, matchNo, DateTime.Now.AddSeconds(-2));
+        await SeedOddsAsync(points);
+        try
+        {
+            var factory = _db.Factory;
+            var hit = new HitProbabilityService(new BettingRepository(factory));
+            hit.SeedCache(new HitProbabilityService.Snapshot(
+                HitProbabilityModel.DevigOnly, new(), true, model, ready));
+            var svc = new RecommendationService(
+                new BettingCardSource(new HttpClient()),
+                new BettingRepository(factory),
+                new JcOddsRepository(factory),
+                hit: hit,
+                tickets: new TicketRepository(factory),
+                milkPicks: new MilkPickRepository(factory),
+                fitStore: new MilkModelFitStore(factory))
+            {
+                OddsReader = (_, _, _) => Task.FromResult(points)
+            };
+            var published = await svc.SaveMilkAsync(new List<MatchRecommendation>
+            {
+                new()
+                {
+                    Board = Boards.Jc,
+                    MatchNo = matchNo,
+                    MatchId = 88002,
+                    LeagueName = "英超",
+                    HomeTeam = "合成主",
+                    AwayTeam = "合成客",
+                    MatchTime = kick
+                }
+            }, default);
+
+            await using var conn = await factory.OpenAsync();
+            SqlParameter Run() => new("@run", published.RunId);
+            var success = await FitTraceDbFixture.Scalar(conn,
+                "SELECT COUNT(*) FROM dbo.FbMilkRun WHERE RunId=@run AND Status=N'success'", Run());
+            var picks = await FitTraceDbFixture.Scalar(conn,
+                "SELECT COUNT(*) FROM dbo.FbMilkPick WHERE RunId=@run", Run());
+            var listed = await FitTraceDbFixture.Scalar(conn,
+                "SELECT COALESCE((SELECT SUM(PickCount) FROM dbo.FbMilkRunDate WHERE RunId=@run), 0)", Run());
+            var bound = await FitTraceDbFixture.Scalar(conn,
+                "SELECT COALESCE((SELECT ModelFitInstanceId FROM dbo.FbMilkRun WHERE RunId=@run AND Status=N'success'), 0)", Run());
+            var evidence =
+                $"run={published.RunId} kind={published.Kind} reason={published.Reason} "
+                + $"successRows={success} pickRows={picks} pickCount={listed} "
+                + $"modelFitInstanceId={bound} readyInstanceId={ready}";
+            _output.WriteLine(evidence);
+            var evidencePath = Path.Combine(Directory.GetCurrentDirectory(), "fittrace-pickrow-evidence.txt");
+            await File.WriteAllTextAsync(evidencePath, evidence + Environment.NewLine);
+
+            Assert.True(published.Kind == MilkSaveKind.Published,
+                "合成场应通过现有发布闸并发布。实际 " + published.Kind + "：" + published.Reason
+                + "。" + evidence);
+            Assert.True(success == 1, evidence);
+            Assert.True(picks > 0, evidence);
+            Assert.Equal(picks, listed);
+            Assert.Equal(ready, bound);
+        }
+        finally
+        {
+            await RestoreStubMilkTablesAsync();
+        }
+    }
+
+    private async Task<(long Ready, string MatchNo, DateTime Kick)> ArrangePublishAsync()
+    {
+        await PreparePublishTablesAsync();
+        var (matchNo, kick) = SellableMatch();
+        await SeedCaptureAsync(matchNo, kick);
+        var ready = await new MilkModelFitStore(_db.Factory).SaveReadyInstanceAsync(
+            Trace(0), new DateTime(2026, 11, 15, 8, 0, 0), new DateTime(2026, 11, 15, 8, 0, 1),
+            "w=70/70/50/80/30|bf=off", default);
+        return (ready, matchNo, kick);
     }
 
     private async Task<MilkSaveOutcome> SaveMilkOnceAsync(long instanceId, string matchNo, DateTime kick)
@@ -732,12 +882,110 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
     private async Task SeedCaptureAsync(string matchNo, DateTime kick)
     {
         await using var conn = await _db.Factory.OpenAsync();
+        // 正式表 CapturedAt 是 datetime2(0)。采集完整性用读回的 MAX(CapturedAt) 做等值，
+        // 源侧快照则要求 CapturedAt <= 本轮 runAt。datetime2(0) 会把半秒及以上进到下一秒，
+        // 这一秒可以晚于随后取到的 runAt：完整性仍判本批完整，源侧却看不到这场。
+        // 拒绝因此对不上源场次，联赛核对拿到的源行是空的。提前两秒，仍是整秒。
         await FitTraceDbFixture.Exec(conn,
             @"INSERT INTO dbo.BettingCard
                 (Board, MatchNo, MatchId, LeagueName, HomeTeam, AwayTeam, MatchTime, CapturedAt)
-              VALUES (N'jc', @no, 88001, N'澳超', N'甲队', N'乙队', @kick, SYSDATETIME())",
+              VALUES (N'jc', @no, 88001, N'澳超', N'甲队', N'乙队', @kick,
+                      DATEADD(second, -2, CONVERT(datetime2(0), SYSDATETIME())))",
             new SqlParameter("@no", matchNo),
             new SqlParameter("@kick", kick));
+    }
+
+    private async Task SeedQuotedCaptureAsync(string matchNo, DateTime kick)
+    {
+        await using var conn = await _db.Factory.OpenAsync();
+        await FitTraceDbFixture.Exec(conn,
+            @"INSERT INTO dbo.BettingCard
+                (Board, MatchNo, MatchId, LeagueName, HomeTeam, AwayTeam, MatchTime, CapturedAt)
+              VALUES (N'jc', @no, 88002, N'英超', N'合成主', N'合成客', @kick,
+                      DATEADD(second, -2, CONVERT(datetime2(0), SYSDATETIME())))",
+            new SqlParameter("@no", matchNo),
+            new SqlParameter("@kick", kick));
+        await FitTraceDbFixture.Exec(conn,
+            "INSERT INTO dbo.FbMatch (MatchId, MatchTime) VALUES (88002, @kick)",
+            new SqlParameter("@kick", kick));
+    }
+
+    private async Task SeedOddsAsync(IReadOnlyList<JcOddsHistoryPoint> points)
+    {
+        await using var conn = await _db.Factory.OpenAsync();
+        foreach (var point in points)
+        {
+            await FitTraceDbFixture.Exec(conn,
+                @"INSERT INTO dbo.FbJcOddsHistory (MatchId, PlayType, OptionCode, Odds, CapturedAt)
+                  VALUES (@mid, @play, @code, @odds, @at)",
+                new SqlParameter("@mid", point.MatchId ?? 0L),
+                new SqlParameter("@play", point.PlayType),
+                new SqlParameter("@code", point.OptionCode),
+                new SqlParameter("@odds", point.Odds),
+                new SqlParameter("@at", point.CapturedAt));
+        }
+    }
+
+    private static ScorelineModel FittedBoardModel()
+    {
+        var samples = new List<ScoreSample>();
+        var start = new DateTime(2026, 1, 1, 15, 0, 0);
+        for (var i = 0; i < 30; i++)
+        {
+            samples.Add(new ScoreSample
+            {
+                MatchId = 7000 + i,
+                LeagueName = "英超",
+                HomeTeam = i < 3 ? "合成主" : "主" + i,
+                AwayTeam = i is >= 3 and < 6 ? "合成客" : "客" + i,
+                HomeScore = 1,
+                AwayScore = 1,
+                MatchTime = start.AddDays(i)
+            });
+        }
+        var model = ScorelineModel.Fit(samples);
+        if (!model.Ready || model.Trace is null)
+            throw new InvalidOperationException("合成样本没有得到可提交的模型");
+        if (model.TeamGames("英超", "合成主") < MilkThresholds.MinTeamGames
+            || model.TeamGames("英超", "合成客") < MilkThresholds.MinTeamGames)
+            throw new InvalidOperationException("合成样本没有达到出票样本门槛");
+        return model;
+    }
+
+    private static List<JcOddsHistoryPoint> SyntheticOddsBook(long matchId, string matchNo, DateTime captured)
+    {
+        var points = new List<JcOddsHistoryPoint>();
+        AddBook(points, matchId, matchNo, captured, JcPlayTypes.Jq, JcPlayDomain.Jq, 1.254m,
+            new Dictionary<string, decimal> { ["2"] = 4.50m });
+        // 胜平、负平低于 4 倍，不进入半全场提级。提级会改两档概率且不重新归一，发布核对会看到合计偏离 100。
+        AddBook(points, matchId, matchNo, captured, JcPlayTypes.Bq, JcPlayDomain.Bq, 1.254m,
+            new Dictionary<string, decimal> { ["3-1"] = 3.50m, ["0-1"] = 3.50m });
+        AddBook(points, matchId, matchNo, captured, JcPlayTypes.Bf, JcPlayDomain.Bf, 1.410m, null);
+        AddBook(points, matchId, matchNo, captured, JcPlayTypes.Spf, JcPlayDomain.Spf, 1.139m, null);
+        AddBook(points, matchId, matchNo, captured, JcPlayTypes.Nspf, JcPlayDomain.Nspf, 1.139m, null);
+        return points;
+    }
+
+    private static void AddBook(
+        List<JcOddsHistoryPoint> points, long matchId, string matchNo, DateTime captured,
+        string play, IReadOnlyList<string> codes, decimal over, Dictionary<string, decimal>? pinned)
+    {
+        pinned ??= new Dictionary<string, decimal>();
+        var rest = codes.Where(c => !pinned.ContainsKey(c)).ToList();
+        var share = (over - pinned.Values.Sum(odds => 1m / odds)) / rest.Count;
+        foreach (var code in codes)
+        {
+            points.Add(new JcOddsHistoryPoint
+            {
+                MatchId = matchId,
+                MatchNo = matchNo,
+                PlayType = play,
+                OptionCode = code,
+                OptionName = code,
+                Odds = pinned.TryGetValue(code, out var fixedOdds) ? fixedOdds : 1m / share,
+                CapturedAt = captured
+            });
+        }
     }
 
     private async Task PreparePublishTablesAsync()
@@ -752,8 +1000,8 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
                 LeagueName nvarchar(128) NULL,
                 HomeTeam nvarchar(128) NULL,
                 AwayTeam nvarchar(128) NULL,
-                MatchTime datetime2 NULL,
-                CapturedAt datetime2 NOT NULL
+                MatchTime datetime2(0) NULL,
+                CapturedAt datetime2(0) NOT NULL
             );
             CREATE TABLE dbo.FbJcOddsHistory (
                 MatchId bigint NOT NULL,
@@ -767,19 +1015,110 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
                 MatchTime datetime2 NULL
             );
             CREATE TABLE dbo.FbMilkPick (
+                PickId bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_FbMilkPick PRIMARY KEY,
                 PickDate date NOT NULL,
                 MatchId bigint NOT NULL,
-                PlayType varchar(10) NOT NULL,
-                OptionCode varchar(20) NOT NULL,
+                MatchNo nvarchar(16) NOT NULL,
+                LeagueName nvarchar(64) NULL,
+                HomeTeam nvarchar(64) NULL,
+                AwayTeam nvarchar(64) NULL,
+                MatchTime datetime2 NULL,
+                PlayType varchar(8) NOT NULL,
+                OptionCode varchar(16) NOT NULL,
+                OptionName nvarchar(32) NOT NULL,
+                Odds decimal(8,2) NOT NULL,
+                ModelProbability decimal(6,2) NULL,
+                Ev decimal(8,3) NULL,
+                ActualScore varchar(8) NULL,
+                ActualHalfScore varchar(8) NULL,
+                ActualGoals int NULL,
                 Hit bit NULL,
                 SettledAt datetime2 NULL,
-                Voided bit NULL,
-                MatchTime datetime2 NULL,
+                CreatedAt datetime2 NOT NULL CONSTRAINT DF_FbMilkPick_CreatedAt DEFAULT SYSDATETIME(),
+                CounterHigh bit NOT NULL CONSTRAINT DF_FbMilkPick_CounterHigh DEFAULT(0),
+                BaselineProbability decimal(6,2) NULL,
+                BaselineEv decimal(8,3) NULL,
+                ModelLowConfidence bit NOT NULL CONSTRAINT DF_FbMilkPick_LowConf DEFAULT(0),
+                ModelOverconfident bit NOT NULL CONSTRAINT DF_FbMilkPick_OverConf DEFAULT(0),
+                DivergenceTag nvarchar(40) NULL,
+                DivergenceNote nvarchar(400) NULL,
+                ModelVsMarketRatio decimal(8,4) NULL,
+                HalfDrawRefined bit NOT NULL CONSTRAINT DF_FbMilkPick_HalfDrawRefined DEFAULT(0),
+                FatigueTag nvarchar(60) NULL,
+                HomePriceRich bit NOT NULL CONSTRAINT DF_FbMilkPick_HomePriceRich DEFAULT(0),
+                ModelPctPure decimal(6,2) NULL,
+                AlertSeverity nvarchar(8) NULL,
+                AlertReason nvarchar(400) NULL,
+                Voided bit NOT NULL CONSTRAINT DF_FbMilkPick_Voided DEFAULT(0),
+                VoidedAt datetime2 NULL,
+                Handicap decimal(6,2) NULL,
+                ModelVersion nvarchar(160) NULL,
                 RunId nvarchar(40) NULL
             );
+            CREATE UNIQUE INDEX UX_FbMilkPick
+                ON dbo.FbMilkPick (PickDate, MatchId, PlayType, OptionCode);
             CREATE TABLE dbo.FbMilkGate (
+                GateId bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_FbMilkGate PRIMARY KEY,
+                GateDate date NOT NULL,
                 MatchId bigint NOT NULL,
+                MatchNo nvarchar(16) NOT NULL,
+                LeagueName nvarchar(64) NULL,
+                HomeTeam nvarchar(64) NULL,
+                AwayTeam nvarchar(64) NULL,
+                MatchTime datetime2 NULL,
+                ModelDirection char(1) NULL,
+                ModelHomePct decimal(6,2) NOT NULL,
+                ModelDrawPct decimal(6,2) NOT NULL,
+                ModelAwayPct decimal(6,2) NOT NULL,
+                PickDirection char(1) NULL,
+                MarketDirection char(1) NULL,
+                MarketSource varchar(8) NOT NULL,
+                MarketHomePct decimal(6,2) NULL,
+                MarketDrawPct decimal(6,2) NULL,
+                MarketAwayPct decimal(6,2) NULL,
+                AsianDirection char(1) NULL,
+                AsianOpen decimal(6,2) NULL,
+                AsianClose decimal(6,2) NULL,
+                ExchangeDirection char(1) NULL,
+                RatioHome decimal(6,2) NULL,
+                RatioAway decimal(6,2) NULL,
+                Verdict varchar(16) NOT NULL,
+                AlertCode varchar(24) NULL,
+                AlertNote nvarchar(256) NULL,
+                BlockedPicks int NOT NULL CONSTRAINT DF_FbMilkGate_BlockedPicks DEFAULT 0,
+                BlockedBest nvarchar(64) NULL,
+                BlockedBestProbability decimal(6,2) NULL,
+                CreatedAt datetime2 NOT NULL CONSTRAINT DF_FbMilkGate_CreatedAt DEFAULT SYSDATETIME(),
                 RunId nvarchar(40) NULL
+            );
+            CREATE UNIQUE INDEX UX_FbMilkGate ON dbo.FbMilkGate (GateDate, MatchId);
+            -- SaveDay 的补列批把 COL_LENGTH('dbo.FbTurnAlert', ...) 当成「列不存在」。
+            -- 表本身不存在时 COL_LENGTH 也返回 NULL，下一条 ALTER 报 4902，注单步骤失败，
+            -- 绑定检查不会执行。建表脚本不在仓库里；列类型按 2026-11-14 目录预检里
+            -- 已核对的 6 个补列，其余列按 SaveTurnAlerts 的插入清单。
+            CREATE TABLE dbo.FbTurnAlert (
+                AlertId bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_FbTurnAlert PRIMARY KEY,
+                AlertDate date NOT NULL,
+                MatchId bigint NOT NULL,
+                MatchNo nvarchar(32) NULL,
+                LeagueName nvarchar(128) NULL,
+                HomeTeam nvarchar(128) NULL,
+                AwayTeam nvarchar(128) NULL,
+                MatchTime datetime2 NULL,
+                PickOption nvarchar(64) NULL,
+                Reason nvarchar(400) NULL,
+                Severity varchar(8) NULL,
+                ScoreDiagTag nvarchar(80) NULL,
+                ExpGdOpen decimal(8,3) NULL,
+                ExpGdNow decimal(8,3) NULL,
+                ExpGdMove decimal(8,3) NULL,
+                CreatedAt datetime2 NULL,
+                PickId bigint NULL,
+                PlayType varchar(10) NULL,
+                OptionCode varchar(20) NULL,
+                SignalCode nvarchar(80) NULL,
+                LastSeenAt datetime2 NULL,
+                ClearedAt datetime2 NULL
             );
             """);
         var picks = new MilkPickRepository(_db.Factory);
@@ -811,6 +1150,7 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
             IF OBJECT_ID(N'FK_FbMilkRun_ModelFitInstance', N'F') IS NOT NULL
                 ALTER TABLE dbo.FbMilkRun DROP CONSTRAINT FK_FbMilkRun_ModelFitInstance;
             DROP TABLE IF EXISTS dbo.FbMilkPick;
+            DROP TABLE IF EXISTS dbo.FbTurnAlert;
             DROP TABLE IF EXISTS dbo.FbMilkGate;
             DROP TABLE IF EXISTS dbo.FbMilkProbSnapshot;
             DROP TABLE IF EXISTS dbo.FbMilkSourceMatch;

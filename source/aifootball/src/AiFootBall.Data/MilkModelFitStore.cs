@@ -110,6 +110,7 @@ public class MilkModelFitStore
                 if (reuseOnly)
                     throw new InvalidOperationException("相同内容尚未形成可引用的 ready 记录");
                 contentId = await InsertContentAsync(conn, tx, trace, sha, ct);
+                await AfterContentInsertedAsync(ct);
                 await BulkAsync(conn, tx, "dbo.FbMilkModelFitSample", SampleTable(contentId.Value, trace), ct);
                 await BulkAsync(conn, tx, "dbo.FbMilkModelFitLeague", LeagueTable(contentId.Value, trace), ct);
                 await BulkAsync(conn, tx, "dbo.FbMilkModelFitTeamLeague", TeamLeagueTable(contentId.Value, trace), ct);
@@ -168,32 +169,50 @@ public class MilkModelFitStore
                  @rho, @half, @cross, @months, @dur, @smin, @smax,
                  @prior, @own, @lprior, @lmin, @lmax, @rmin, @rmax,
                  @scmin, @scmax, @halfGoal, @maxHalf)",
-            new SqlParameter("@sha", sha),
-            new SqlParameter("@n", trace.Samples.Count),
-            new SqlParameter("@from", (object?)from ?? DBNull.Value),
-            new SqlParameter("@to", (object?)to ?? DBNull.Value),
-            new SqlParameter("@gh", trace.GlobalHome),
-            new SqlParameter("@ga", trace.GlobalAway),
-            new SqlParameter("@rho", trace.Rho),
-            new SqlParameter("@half", (object?)trace.HalfLifeDays ?? DBNull.Value),
-            new SqlParameter("@cross", trace.CrossLeague),
-            new SqlParameter("@months", FitContentCodec.WindowMonths),
-            new SqlParameter("@dur", ScorelineModel.MatchDurationMinutes),
-            new SqlParameter("@smin", FitContentCodec.ScoreMin),
-            new SqlParameter("@smax", FitContentCodec.ScoreMax),
-            new SqlParameter("@prior", FitContentCodec.PriorGames),
-            new SqlParameter("@own", FitContentCodec.MinOwnGames),
-            new SqlParameter("@lprior", FitContentCodec.LeaguePrior),
-            new SqlParameter("@lmin", FitContentCodec.LambdaMin),
-            new SqlParameter("@lmax", FitContentCodec.LambdaMax),
-            new SqlParameter("@rmin", FitContentCodec.RateMin),
-            new SqlParameter("@rmax", FitContentCodec.RateMax),
-            new SqlParameter("@scmin", FitContentCodec.ScaleMin),
-            new SqlParameter("@scmax", FitContentCodec.ScaleMax),
-            new SqlParameter("@halfGoal", FitContentCodec.HalfGoalShare),
-            new SqlParameter("@maxHalf", FitContentCodec.MaxHalfGoals));
+            new SqlParameter("@sha", SqlDbType.Char, 64) { Value = sha },
+            IntParameter("@n", trace.Samples.Count),
+            new SqlParameter("@from", SqlDbType.DateTime2) { Value = (object?)from ?? DBNull.Value },
+            new SqlParameter("@to", SqlDbType.DateTime2) { Value = (object?)to ?? DBNull.Value },
+            FloatParameter("@gh", trace.GlobalHome),
+            FloatParameter("@ga", trace.GlobalAway),
+            FloatParameter("@rho", trace.Rho),
+            FloatParameter("@half", trace.HalfLifeDays),
+            BitParameter("@cross", trace.CrossLeague),
+            IntParameter("@months", FitContentCodec.WindowMonths),
+            IntParameter("@dur", ScorelineModel.MatchDurationMinutes),
+            IntParameter("@smin", FitContentCodec.ScoreMin),
+            IntParameter("@smax", FitContentCodec.ScoreMax),
+            IntParameter("@prior", FitContentCodec.PriorGames),
+            IntParameter("@own", FitContentCodec.MinOwnGames),
+            IntParameter("@lprior", FitContentCodec.LeaguePrior),
+            FloatParameter("@lmin", FitContentCodec.LambdaMin),
+            FloatParameter("@lmax", FitContentCodec.LambdaMax),
+            FloatParameter("@rmin", FitContentCodec.RateMin),
+            FloatParameter("@rmax", FitContentCodec.RateMax),
+            FloatParameter("@scmin", FitContentCodec.ScaleMin),
+            FloatParameter("@scmax", FitContentCodec.ScaleMax),
+            FloatParameter("@halfGoal", FitContentCodec.HalfGoalShare),
+            IntParameter("@maxHalf", FitContentCodec.MaxHalfGoals));
         return id ?? throw new InvalidOperationException("内容行没有返回编号");
     }
+
+    /// <summary>
+    /// 内容行已经写入当前事务、子表还没写。测试在这里取消，用来证明取消发生在插入之后。
+    /// </summary>
+    protected virtual Task AfterContentInsertedAsync(CancellationToken ct) => Task.CompletedTask;
+
+    /// <summary>
+    /// 整数常量 0 会匹配 <see cref="SqlParameter(string, SqlDbType)"/>，Value 保持空，执行时报参数未提供。
+    /// 数值一律先指定类型，再写入 Value。
+    /// </summary>
+    internal static SqlParameter IntParameter(string name, int value)
+        => new SqlParameter(name, SqlDbType.Int) { Value = value };
+
+    internal static SqlParameter FloatParameter(string name, double? value)
+        => new SqlParameter(name, SqlDbType.Float) { Value = (object?)value ?? DBNull.Value };
+
+    internal static SqlParameter BitParameter(string name, bool value)
+        => new SqlParameter(name, SqlDbType.Bit) { Value = value };
 
     private static string InsertInstanceSql()
         => @"INSERT INTO dbo.FbMilkModelFitInstance
