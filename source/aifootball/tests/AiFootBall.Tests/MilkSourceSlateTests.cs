@@ -24,12 +24,12 @@ public class MilkSourceSlateTests
             .ToList();
 
     private static MilkSourceMatch Src(long id, string no, string home, string away, int options = 54,
-        DateTime? sampleAt = null, IEnumerable<string>? keys = null)
+        DateTime? sampleAt = null, IEnumerable<string>? keys = null, string league = "日职乙")
         => new()
         {
             MatchId = id,
             MatchNo = no,
-            LeagueName = "日职乙",
+            LeagueName = league,
             HomeTeam = home,
             AwayTeam = away,
             MatchTime = RunAt.AddHours(4),
@@ -512,5 +512,191 @@ public class MilkSourceSlateTests
         Assert.Equal("unavailable", MilkSourceSlate.SaleBasis);
         Assert.DoesNotContain(r.Issues, i => i.Kind == "missing-option");
         Assert.False(r.Ok);
+    }
+
+    // ─────────── 明确联赛排除：只豁免该场 source-option-gap ───────────
+
+    private static List<string> Without(string key)
+    {
+        var keys = FullKeys();
+        Assert.True(keys.Remove(key));
+        return keys;
+    }
+
+    [Fact]
+    public void ConfirmedLeagueExclusion_IncompleteOptions_DoesNotBlock_AndKeepsRecords()
+    {
+        // 1398695 的形态：已被名单排除，源侧档位不满。豁免只少报这一场的缺档。
+        var keys = Without("BF|1:0");
+        const string evidence = "list=NoPickLeagues;league=欧国联";
+        var source = new[] { Src(1398695, "周日001", "A", "B", keys: keys, league: "欧国联") };
+        var rejects = new[] { Rej(1398695, "周日001", MilkInputRejection.ReasonLeagueExcluded, evidence) };
+
+        var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt);
+
+        Assert.True(r.Ok, r.Detail);
+        Assert.Equal(1398695, Assert.Single(r.Source).MatchId);
+        var kept = Assert.Single(r.Rejections);
+        Assert.Equal(MilkInputRejection.ReasonLeagueExcluded, kept.Reason);
+        Assert.Equal(evidence, kept.Evidence);
+        Assert.True(kept.Accepted);
+        Assert.DoesNotContain(r.Issues, i => i.Kind == "source-option-gap");
+    }
+
+    [Fact]
+    public void ConfirmedNoParlayExclusion_IncompleteOptions_DoesNotBlock()
+    {
+        const string evidence = "list=NoParlayLeagues;league=澳超";
+        var r = MilkSourceSlate.Verify(
+            new[] { Src(2, "周日002", "A", "B", keys: Without("JQ|5"), league: "澳超") },
+            Array.Empty<MilkInputMatch>(),
+            new[] { Rej(2, "周日002", MilkInputRejection.ReasonLeagueExcluded, evidence) },
+            RunAt);
+
+        Assert.True(r.Ok, r.Detail);
+        Assert.Equal(evidence, Assert.Single(r.Rejections).Evidence);
+        Assert.True(Assert.Single(r.Rejections).Accepted);
+    }
+
+    [Fact]
+    public void ForgedLeagueExclusion_OnFullBook_StillRejectsTheReason()
+    {
+        // 54 档齐全也不能用错误的 league-excluded 把一场本该计算的比赛放过去。
+        const string evidence = "list=NoPickLeagues;league=欧国联";
+        var source = new[] { Src(3, "周六003", "A", "B", league: "日职乙") };
+        var rejects = new[] { Rej(3, "周六003", MilkInputRejection.ReasonLeagueExcluded, evidence) };
+
+        var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt);
+
+        Assert.False(r.Ok);
+        Assert.Contains(r.Issues, i => i.Kind == "rejected-rejection" && i.Key.Contains("联赛不一致"));
+        Assert.DoesNotContain(r.Issues, i => i.Kind == "source-option-gap");
+        Assert.Equal(evidence, Assert.Single(r.Rejections).Evidence);
+        Assert.False(Assert.Single(r.Rejections).Accepted);
+        Assert.Equal(3, Assert.Single(r.Source).MatchId);
+    }
+
+    [Fact]
+    public void LeagueLabel_DoesNotMatchSourceLeague_StillGaps()
+    {
+        // 「女欧国联」含子串所以在禁推名单里，但证据写的是「欧国联」，精确比对失败。
+        const string evidence = "list=NoPickLeagues;league=欧国联";
+        var r = MilkSourceSlate.Verify(
+            new[] { Src(4, "周六004", "A", "B", keys: Without("BF|1:0"), league: "女欧国联") },
+            Array.Empty<MilkInputMatch>(),
+            new[] { Rej(4, "周六004", MilkInputRejection.ReasonLeagueExcluded, evidence) },
+            RunAt);
+
+        Assert.False(r.Ok);
+        Assert.Contains(r.Issues, i => i.Kind == "rejected-rejection" && i.Key.Contains("联赛不一致"));
+        Assert.Contains(r.Issues, i => i.Kind == "source-option-gap" && i.Key.StartsWith("4|"));
+    }
+
+    [Fact]
+    public void WrongListName_ForExcludedLeague_StillGaps()
+    {
+        const string evidence = "list=NoPickLeagues;league=澳超";
+        var r = MilkSourceSlate.Verify(
+            new[] { Src(5, "周六005", "A", "B", keys: Without("SPF|3"), league: "澳超") },
+            Array.Empty<MilkInputMatch>(),
+            new[] { Rej(5, "周六005", MilkInputRejection.ReasonLeagueExcluded, evidence) },
+            RunAt);
+
+        Assert.False(r.Ok);
+        Assert.Contains(r.Issues, i => i.Kind == "rejected-rejection" && i.Key.Contains("联赛不一致"));
+        Assert.Contains(r.Issues, i => i.Kind == "source-option-gap" && i.Key.Contains("SPF") && i.Key.StartsWith("5|"));
+    }
+
+    [Theory]
+    [InlineData("list=NoPickLeagues;list=NoParlayLeagues;league=欧国联", "重复冲突字段")]
+    [InlineData("list=NoPickLeagues;list=NoPickLeagues;league=欧国联", "重复冲突字段")]
+    [InlineData("list=NoPickLeagues", "缺字段")]
+    [InlineData("list=Banned;league=欧国联", "未知list")]
+    [InlineData("list=NoPickLeagues;league=欧国联;", "证据字段无法解析")]
+    public void MalformedLeagueEvidence_DoesNotExempt(string evidence, string defect)
+    {
+        var r = MilkSourceSlate.Verify(
+            new[] { Src(6, "周六006", "A", "B", keys: Without("BQ|3-3"), league: "欧国联") },
+            Array.Empty<MilkInputMatch>(),
+            new[] { Rej(6, "周六006", MilkInputRejection.ReasonLeagueExcluded, evidence) },
+            RunAt);
+
+        Assert.False(r.Ok);
+        Assert.Contains(r.Issues, i => i.Kind == "rejected-rejection" && i.Key.Contains(defect));
+        Assert.Contains(r.Issues, i => i.Kind == "source-option-gap" && i.Key.StartsWith("6|"));
+        Assert.Equal(evidence, Assert.Single(r.Rejections).Evidence);
+    }
+
+    [Fact]
+    public void NameUnresolved_IncompleteOptions_StillGaps()
+    {
+        var keys = Without("BF|2:1");
+        var source = new[] { Src(7, "周六007", "首次出现FC", "山形山神", keys: keys) };
+        var rejects = new[]
+        {
+            Rej(7, "周六007", MilkInputRejection.ReasonNameUnresolved,
+                "team=首次出现FC;league=日职乙;games=0;min=3",
+                home: "首次出现FC", away: "山形山神")
+        };
+
+        var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt,
+            _ => 0, nameVariants: _ => Array.Empty<string>());
+
+        Assert.False(r.Ok);
+        Assert.Contains(r.Issues, i => i.Kind == "rejected-rejection" && i.Key.Contains("不能作为新队证明"));
+        Assert.Contains(r.Issues, i => i.Kind == "source-option-gap" && i.Key.StartsWith("7|") && i.Key.Contains("2:1"));
+    }
+
+    [Fact]
+    public void NoOdds_OnExcludedLeagueName_StillGaps()
+    {
+        // 原因不是 league-excluded，就不能借名单把缺档放过去。
+        var keys = FullKeys().Where(k => !k.StartsWith("SPF|", StringComparison.Ordinal)).ToList();
+        var source = new[] { Src(8, "周六008", "A", "B", keys: keys, league: "欧国联") };
+        var rejects = new[] { Rej(8, "周六008", MilkInputRejection.ReasonNoOdds, "options=0;source=0") };
+
+        var r = MilkSourceSlate.Verify(source, Array.Empty<MilkInputMatch>(), rejects, RunAt);
+
+        Assert.False(r.Ok);
+        Assert.Contains(r.Issues, i => i.Kind == "source-option-gap" && i.Key.Contains("SPF") && i.Key.StartsWith("8|"));
+        Assert.Contains(r.Issues, i => i.Kind == "contradicted-rejection");
+        Assert.DoesNotContain(r.Rejections, x => x.Accepted);
+    }
+
+    [Fact]
+    public void ComputedMatch_OnExcludedLeague_IncompleteOptions_StillGaps()
+    {
+        const string evidence = "list=NoPickLeagues;league=欧国联";
+        var keys = Without("JQ|0");
+        var source = new[] { Src(9, "周六009", "A", "B", keys: keys, league: "欧国联") };
+        var inputs = new[] { InpFrom(9, "周六009", "A", "B", keys) };
+        var rejects = new[] { Rej(9, "周六009", MilkInputRejection.ReasonLeagueExcluded, evidence) };
+
+        var r = MilkSourceSlate.Verify(source, inputs, rejects, RunAt);
+
+        Assert.False(r.Ok);
+        Assert.Contains(r.Issues, i => i.Kind == "duplicate-input" && i.Key == "9");
+        Assert.Contains(r.Issues, i => i.Kind == "source-option-gap" && i.Key.StartsWith("9|") && i.Key.Contains("JQ"));
+        Assert.Equal(evidence, Assert.Single(r.Rejections).Evidence);
+    }
+
+    [Fact]
+    public void ConfirmedExclusion_DoesNotClearAnotherMatchsGap()
+    {
+        var excluded = Src(1398695, "周日001", "A", "B", keys: Without("BF|1:0"), league: "欧国联");
+        var ordinary = Src(10, "周六010", "C", "D", keys: Without("BQ|0-0"));
+        var rejects = new[]
+        {
+            Rej(1398695, "周日001", MilkInputRejection.ReasonLeagueExcluded, "list=NoPickLeagues;league=欧国联")
+        };
+        var inputs = new[] { InpFrom(10, "周六010", "C", "D", ordinary.OptionKeys) };
+
+        var r = MilkSourceSlate.Verify(new[] { excluded, ordinary }, inputs, rejects, RunAt);
+
+        Assert.False(r.Ok);
+        Assert.Contains(r.Issues, i => i.Kind == "source-option-gap" && i.Key.StartsWith("10|") && i.Key.Contains("0-0"));
+        Assert.DoesNotContain(r.Issues, i => i.Kind == "source-option-gap" && i.Key.StartsWith("1398695|"));
+        Assert.Contains(r.Source, m => m.MatchId == 1398695);
+        Assert.True(Assert.Single(r.Rejections).Accepted);
     }
 }

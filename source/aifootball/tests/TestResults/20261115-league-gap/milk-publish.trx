@@ -1,0 +1,148 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="6b381f8f-f8a5-4c92-9b9b-24aff292ceba" name="Administrator@WINSEV25DATA 2026-11-15 11:57:10" runUser="WINSEV25DATA\Administrator" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-11-15T11:57:10.6996681+08:00" queuing="2026-11-15T11:57:10.6996688+08:00" start="2026-11-15T11:57:09.4527232+08:00" finish="2026-11-15T11:57:10.7592642+08:00" />
+  <TestSettings name="default" id="a6266514-7417-4783-8255-cdcea51fd82f">
+    <Deployment runDeploymentRoot="Administrator_WINSEV25DATA_2026-11-15_11_57_10" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="8395bef6-5575-418f-8ae4-6452365d783c" testId="a229a5e6-3987-cc65-bfd3-7f60c48fea4a" testName="AiFootBall.Tests.MilkBoardPlanTests.MissingCapture_Skips" computerName="WINSEV25DATA" duration="00:00:00.0001820" startTime="2026-11-15T11:57:10.6752947+08:00" endTime="2026-11-15T11:57:10.6752948+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="8395bef6-5575-418f-8ae4-6452365d783c" />
+    <UnitTestResult executionId="331aeee9-e3d9-47f7-a136-143a7fc86c71" testId="89709a82-af88-5a0b-437d-0224ca4bd10b" testName="AiFootBall.Tests.MilkPublishPropagationTests.BoardStatus_Read_Failure_Does_Not_Block_Gate_Reject" computerName="WINSEV25DATA" duration="00:00:00.0028802" startTime="2026-11-15T11:57:10.6427595+08:00" endTime="2026-11-15T11:57:10.6427596+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="331aeee9-e3d9-47f7-a136-143a7fc86c71" />
+    <UnitTestResult executionId="747aea1b-5d97-4c75-bc49-2b5a47410a4b" testId="9252bb1e-b067-4abf-5ffa-209ca109dda6" testName="AiFootBall.Tests.MilkBoardPlanTests.StaleBatch_Skips" computerName="WINSEV25DATA" duration="00:00:00.0026145" startTime="2026-11-15T11:57:10.6027698+08:00" endTime="2026-11-15T11:57:10.6027700+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="747aea1b-5d97-4c75-bc49-2b5a47410a4b" />
+    <UnitTestResult executionId="d7c9c478-1172-4212-acf5-81d2cf205969" testId="ad4af37d-8026-e250-99d7-a15042f11d66" testName="AiFootBall.Tests.MilkPublishPropagationTests.FromMilk_BoardStatusError_Does_Not_Fabricate_PublishedAt" computerName="WINSEV25DATA" duration="00:00:00.0481975" startTime="2026-11-15T11:57:10.5961367+08:00" endTime="2026-11-15T11:57:10.5961370+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="d7c9c478-1172-4212-acf5-81d2cf205969" />
+    <UnitTestResult executionId="1cbcb966-251c-4ee5-a3f0-01ca4a809ca5" testId="72d76d0c-b73f-0b39-4d39-a56f12923a95" testName="AiFootBall.Tests.MilkBoardPlanTests.Picks_Outside_Scope_Are_Still_Written" computerName="WINSEV25DATA" duration="00:00:00.0333059" startTime="2026-11-15T11:57:10.5876727+08:00" endTime="2026-11-15T11:57:10.5877379+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="1cbcb966-251c-4ee5-a3f0-01ca4a809ca5" />
+    <UnitTestResult executionId="53990f17-9836-42d7-8756-84079fa8fd88" testId="0f278637-ac22-0a5a-b3f9-0b830c55f8d1" testName="AiFootBall.Tests.MilkBoardPlanTests.NoInput_DoesNotTouchBoard" computerName="WINSEV25DATA" duration="00:00:00.0003191" startTime="2026-11-15T11:57:10.6723909+08:00" endTime="2026-11-15T11:57:10.6723911+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="53990f17-9836-42d7-8756-84079fa8fd88" />
+    <UnitTestResult executionId="89d01470-b221-4d4d-ab9d-b4fd4ab8517b" testId="45be0703-0fe5-91ea-2af8-4a7e57a2aa81" testName="AiFootBall.Tests.MilkPublishPropagationTests.Conclude_Partial_Is_Failed_Not_Published" computerName="WINSEV25DATA" duration="00:00:00.0035506" startTime="2026-11-15T11:57:10.5997514+08:00" endTime="2026-11-15T11:57:10.5997516+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="89d01470-b221-4d4d-ab9d-b4fd4ab8517b" />
+    <UnitTestResult executionId="a34d5eb3-97fc-404a-9289-ef2df68ca83f" testId="3eedbf85-3fc0-b980-d70b-e807665235fb" testName="AiFootBall.Tests.MilkBoardPlanTests.PartialCapture_Ignores_NewPicks_Too" computerName="WINSEV25DATA" duration="00:00:00.0007360" startTime="2026-11-15T11:57:10.6000894+08:00" endTime="2026-11-15T11:57:10.6000897+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="a34d5eb3-97fc-404a-9289-ef2df68ca83f" />
+    <UnitTestResult executionId="6c05e614-f93a-4da1-a1ea-e0d8760915d7" testId="f28f020e-841d-4bd1-6821-fa7a96e665ea" testName="AiFootBall.Tests.MilkBoardPlanTests.Banned_League_All_Filtered_Still_Rewrites" computerName="WINSEV25DATA" duration="00:00:00.0672024" startTime="2026-11-15T11:57:10.6720297+08:00" endTime="2026-11-15T11:57:10.6720301+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="6c05e614-f93a-4da1-a1ea-e0d8760915d7" />
+    <UnitTestResult executionId="6dde46b2-4592-48b5-a752-c75b8386340c" testId="b224c249-490d-81ca-32b0-38cd70a3057b" testName="AiFootBall.Tests.MilkPublishPropagationTests.Conclude_StepFailure_Does_Not_Publish" computerName="WINSEV25DATA" duration="00:00:00.0038525" startTime="2026-11-15T11:57:10.6422909+08:00" endTime="2026-11-15T11:57:10.6422912+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="6dde46b2-4592-48b5-a752-c75b8386340c" />
+    <UnitTestResult executionId="f286711f-043a-449b-b22e-568ca0a04865" testId="7573ba0d-981c-8d87-cbb3-b211d06e581a" testName="AiFootBall.Tests.MilkBoardPlanTests.RawMatchesPositive_ButNoSalesDates_Skips" computerName="WINSEV25DATA" duration="00:00:00.0001893" startTime="2026-11-15T11:57:10.6751961+08:00" endTime="2026-11-15T11:57:10.6751962+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="f286711f-043a-449b-b22e-568ca0a04865" />
+    <UnitTestResult executionId="d8a0d0f7-df77-4d06-a6ff-ba8c7f11555c" testId="30021177-a305-dd96-1aa3-9c082d39948a" testName="AiFootBall.Tests.MilkBoardPlanTests.Scope_Comes_From_Prefilter_Matches_Not_From_Picks" computerName="WINSEV25DATA" duration="00:00:00.0018926" startTime="2026-11-15T11:57:10.6753731+08:00" endTime="2026-11-15T11:57:10.6753732+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="d8a0d0f7-df77-4d06-a6ff-ba8c7f11555c" />
+    <UnitTestResult executionId="95be1668-a8c5-4cc6-a02e-6abb9dbddf7a" testId="68b7c9d3-099d-416b-3248-5892aca09cab" testName="AiFootBall.Tests.MilkPublishPropagationTests.Wiring_AfterGate_Uses_Conclude_Then_FromMilkOutcome" computerName="WINSEV25DATA" duration="00:00:00.0199872" startTime="2026-11-15T11:57:10.6427141+08:00" endTime="2026-11-15T11:57:10.6427141+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="95be1668-a8c5-4cc6-a02e-6abb9dbddf7a" />
+    <UnitTestResult executionId="25224582-9419-4956-a054-b0711a557e9e" testId="ec2da471-60ec-c9a8-f077-a7c45383e049" testName="AiFootBall.Tests.MilkPublishPropagationTests.Conclude_Success_Only_When_Rewrite_Steps_And_Ledger_Ok" computerName="WINSEV25DATA" duration="00:00:00.0004598" startTime="2026-11-15T11:57:10.6426659+08:00" endTime="2026-11-15T11:57:10.6426660+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="25224582-9419-4956-a054-b0711a557e9e" />
+    <UnitTestResult executionId="f6509827-f55c-4fb8-92e7-274309d63119" testId="fd481e11-9f0d-359b-91d0-ad9012e7b699" testName="AiFootBall.Tests.MilkPublishPropagationTests.Conclude_Skip_When_Plan_Skip" computerName="WINSEV25DATA" duration="00:00:00.0005321" startTime="2026-11-15T11:57:10.6003693+08:00" endTime="2026-11-15T11:57:10.6003696+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="f6509827-f55c-4fb8-92e7-274309d63119" />
+    <UnitTestResult executionId="f60bcbed-0ff3-4198-ac6c-2725a6889247" testId="761801fc-d4a4-e03c-064d-453dc07ad53d" testName="AiFootBall.Tests.MilkBoardPlanTests.MultiIssue_OnePartial_IsPartial" computerName="WINSEV25DATA" duration="00:00:00.0004182" startTime="2026-11-15T11:57:10.6425605+08:00" endTime="2026-11-15T11:57:10.6425606+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="f60bcbed-0ff3-4198-ac6c-2725a6889247" />
+    <UnitTestResult executionId="e647d337-ab46-406a-9e05-b030a6b5e3d9" testId="a46551b4-d40b-063a-f4fb-d91bd27e61df" testName="AiFootBall.Tests.MilkBoardPlanTests.PartialCapture_DoesNotRewrite" computerName="WINSEV25DATA" duration="00:00:00.0152942" startTime="2026-11-15T11:57:10.5993810+08:00" endTime="2026-11-15T11:57:10.5993814+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="e647d337-ab46-406a-9e05-b030a6b5e3d9" />
+    <UnitTestResult executionId="f4dd4584-044f-4324-8710-b18b4e624bcd" testId="f7da9b44-bc67-a2da-82e0-02000b8acc47" testName="AiFootBall.Tests.MilkPublishPropagationTests.Failed_Milk_Keeps_Prior_Board_Time_Not_Now" computerName="WINSEV25DATA" duration="00:00:00.0003312" startTime="2026-11-15T11:57:10.6428034+08:00" endTime="2026-11-15T11:57:10.6428035+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="f4dd4584-044f-4324-8710-b18b4e624bcd" />
+    <UnitTestResult executionId="79b94ca4-55ef-4751-96f5-7757b60a908c" testId="6003f50b-33c9-c986-7236-85fb68798835" testName="AiFootBall.Tests.MilkPublishPropagationTests.Conclude_LedgerFailure_Does_Not_Publish" computerName="WINSEV25DATA" duration="00:00:00.0004185" startTime="2026-11-15T11:57:10.6426190+08:00" endTime="2026-11-15T11:57:10.6426191+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="79b94ca4-55ef-4751-96f5-7757b60a908c" />
+    <UnitTestResult executionId="2a4ffff2-d11e-424d-8c90-c4b4953d0369" testId="37592af0-e1c1-871f-c7d3-f34e1916936e" testName="AiFootBall.Tests.MilkBoardPlanTests.AllFiltered_StillRewrites_Confirmed_SalesDate" computerName="WINSEV25DATA" duration="00:00:00.0013775" startTime="2026-11-15T11:57:10.6042493+08:00" endTime="2026-11-15T11:57:10.6042497+08:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Passed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="2a4ffff2-d11e-424d-8c90-c4b4953d0369" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="AiFootBall.Tests.MilkPublishPropagationTests.Conclude_LedgerFailure_Does_Not_Publish" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="6003f50b-33c9-c986-7236-85fb68798835">
+      <Execution id="79b94ca4-55ef-4751-96f5-7757b60a908c" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkPublishPropagationTests" name="Conclude_LedgerFailure_Does_Not_Publish" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkPublishPropagationTests.FromMilk_BoardStatusError_Does_Not_Fabricate_PublishedAt" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="ad4af37d-8026-e250-99d7-a15042f11d66">
+      <Execution id="d7c9c478-1172-4212-acf5-81d2cf205969" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkPublishPropagationTests" name="FromMilk_BoardStatusError_Does_Not_Fabricate_PublishedAt" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkPublishPropagationTests.Conclude_Success_Only_When_Rewrite_Steps_And_Ledger_Ok" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="ec2da471-60ec-c9a8-f077-a7c45383e049">
+      <Execution id="25224582-9419-4956-a054-b0711a557e9e" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkPublishPropagationTests" name="Conclude_Success_Only_When_Rewrite_Steps_And_Ledger_Ok" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkBoardPlanTests.AllFiltered_StillRewrites_Confirmed_SalesDate" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="37592af0-e1c1-871f-c7d3-f34e1916936e">
+      <Execution id="2a4ffff2-d11e-424d-8c90-c4b4953d0369" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkBoardPlanTests" name="AllFiltered_StillRewrites_Confirmed_SalesDate" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkPublishPropagationTests.Conclude_StepFailure_Does_Not_Publish" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="b224c249-490d-81ca-32b0-38cd70a3057b">
+      <Execution id="6dde46b2-4592-48b5-a752-c75b8386340c" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkPublishPropagationTests" name="Conclude_StepFailure_Does_Not_Publish" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkPublishPropagationTests.Conclude_Partial_Is_Failed_Not_Published" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="45be0703-0fe5-91ea-2af8-4a7e57a2aa81">
+      <Execution id="89d01470-b221-4d4d-ab9d-b4fd4ab8517b" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkPublishPropagationTests" name="Conclude_Partial_Is_Failed_Not_Published" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkPublishPropagationTests.Failed_Milk_Keeps_Prior_Board_Time_Not_Now" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="f7da9b44-bc67-a2da-82e0-02000b8acc47">
+      <Execution id="f4dd4584-044f-4324-8710-b18b4e624bcd" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkPublishPropagationTests" name="Failed_Milk_Keeps_Prior_Board_Time_Not_Now" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkBoardPlanTests.RawMatchesPositive_ButNoSalesDates_Skips" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="7573ba0d-981c-8d87-cbb3-b211d06e581a">
+      <Execution id="f286711f-043a-449b-b22e-568ca0a04865" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkBoardPlanTests" name="RawMatchesPositive_ButNoSalesDates_Skips" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkBoardPlanTests.MultiIssue_OnePartial_IsPartial" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="761801fc-d4a4-e03c-064d-453dc07ad53d">
+      <Execution id="f60bcbed-0ff3-4198-ac6c-2725a6889247" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkBoardPlanTests" name="MultiIssue_OnePartial_IsPartial" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkBoardPlanTests.NoInput_DoesNotTouchBoard" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="0f278637-ac22-0a5a-b3f9-0b830c55f8d1">
+      <Execution id="53990f17-9836-42d7-8756-84079fa8fd88" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkBoardPlanTests" name="NoInput_DoesNotTouchBoard" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkBoardPlanTests.PartialCapture_DoesNotRewrite" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="a46551b4-d40b-063a-f4fb-d91bd27e61df">
+      <Execution id="e647d337-ab46-406a-9e05-b030a6b5e3d9" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkBoardPlanTests" name="PartialCapture_DoesNotRewrite" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkBoardPlanTests.MissingCapture_Skips" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="a229a5e6-3987-cc65-bfd3-7f60c48fea4a">
+      <Execution id="8395bef6-5575-418f-8ae4-6452365d783c" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkBoardPlanTests" name="MissingCapture_Skips" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkBoardPlanTests.PartialCapture_Ignores_NewPicks_Too" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="3eedbf85-3fc0-b980-d70b-e807665235fb">
+      <Execution id="a34d5eb3-97fc-404a-9289-ef2df68ca83f" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkBoardPlanTests" name="PartialCapture_Ignores_NewPicks_Too" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkPublishPropagationTests.Wiring_AfterGate_Uses_Conclude_Then_FromMilkOutcome" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="68b7c9d3-099d-416b-3248-5892aca09cab">
+      <Execution id="95be1668-a8c5-4cc6-a02e-6abb9dbddf7a" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkPublishPropagationTests" name="Wiring_AfterGate_Uses_Conclude_Then_FromMilkOutcome" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkBoardPlanTests.Picks_Outside_Scope_Are_Still_Written" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="72d76d0c-b73f-0b39-4d39-a56f12923a95">
+      <Execution id="1cbcb966-251c-4ee5-a3f0-01ca4a809ca5" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkBoardPlanTests" name="Picks_Outside_Scope_Are_Still_Written" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkBoardPlanTests.StaleBatch_Skips" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="9252bb1e-b067-4abf-5ffa-209ca109dda6">
+      <Execution id="747aea1b-5d97-4c75-bc49-2b5a47410a4b" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkBoardPlanTests" name="StaleBatch_Skips" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkPublishPropagationTests.BoardStatus_Read_Failure_Does_Not_Block_Gate_Reject" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="89709a82-af88-5a0b-437d-0224ca4bd10b">
+      <Execution id="331aeee9-e3d9-47f7-a136-143a7fc86c71" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkPublishPropagationTests" name="BoardStatus_Read_Failure_Does_Not_Block_Gate_Reject" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkBoardPlanTests.Banned_League_All_Filtered_Still_Rewrites" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="f28f020e-841d-4bd1-6821-fa7a96e665ea">
+      <Execution id="6c05e614-f93a-4da1-a1ea-e0d8760915d7" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkBoardPlanTests" name="Banned_League_All_Filtered_Still_Rewrites" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkPublishPropagationTests.Conclude_Skip_When_Plan_Skip" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="fd481e11-9f0d-359b-91d0-ad9012e7b699">
+      <Execution id="f6509827-f55c-4fb8-92e7-274309d63119" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkPublishPropagationTests" name="Conclude_Skip_When_Plan_Skip" />
+    </UnitTest>
+    <UnitTest name="AiFootBall.Tests.MilkBoardPlanTests.Scope_Comes_From_Prefilter_Matches_Not_From_Picks" storage="d:\setup\aifootball_迁移包_20261104\wb_aifootball_代码迁移_261104\source\aifootball\tests\aifootball.tests\bin\debug\net8.0\aifootball.tests.dll" id="30021177-a305-dd96-1aa3-9c082d39948a">
+      <Execution id="d8a0d0f7-df77-4d06-a6ff-ba8c7f11555c" />
+      <TestMethod codeBase="D:\Setup\AiFootball_迁移包_20261104\WB_AiFootball_代码迁移_261104\source\aifootball\tests\AiFootBall.Tests\bin\Debug\net8.0\AiFootBall.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="AiFootBall.Tests.MilkBoardPlanTests" name="Scope_Comes_From_Prefilter_Matches_Not_From_Picks" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="a229a5e6-3987-cc65-bfd3-7f60c48fea4a" executionId="8395bef6-5575-418f-8ae4-6452365d783c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="89709a82-af88-5a0b-437d-0224ca4bd10b" executionId="331aeee9-e3d9-47f7-a136-143a7fc86c71" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="9252bb1e-b067-4abf-5ffa-209ca109dda6" executionId="747aea1b-5d97-4c75-bc49-2b5a47410a4b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="ad4af37d-8026-e250-99d7-a15042f11d66" executionId="d7c9c478-1172-4212-acf5-81d2cf205969" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="72d76d0c-b73f-0b39-4d39-a56f12923a95" executionId="1cbcb966-251c-4ee5-a3f0-01ca4a809ca5" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="0f278637-ac22-0a5a-b3f9-0b830c55f8d1" executionId="53990f17-9836-42d7-8756-84079fa8fd88" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="45be0703-0fe5-91ea-2af8-4a7e57a2aa81" executionId="89d01470-b221-4d4d-ab9d-b4fd4ab8517b" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="3eedbf85-3fc0-b980-d70b-e807665235fb" executionId="a34d5eb3-97fc-404a-9289-ef2df68ca83f" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="f28f020e-841d-4bd1-6821-fa7a96e665ea" executionId="6c05e614-f93a-4da1-a1ea-e0d8760915d7" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="b224c249-490d-81ca-32b0-38cd70a3057b" executionId="6dde46b2-4592-48b5-a752-c75b8386340c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="7573ba0d-981c-8d87-cbb3-b211d06e581a" executionId="f286711f-043a-449b-b22e-568ca0a04865" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="30021177-a305-dd96-1aa3-9c082d39948a" executionId="d8a0d0f7-df77-4d06-a6ff-ba8c7f11555c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="68b7c9d3-099d-416b-3248-5892aca09cab" executionId="95be1668-a8c5-4cc6-a02e-6abb9dbddf7a" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="ec2da471-60ec-c9a8-f077-a7c45383e049" executionId="25224582-9419-4956-a054-b0711a557e9e" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="fd481e11-9f0d-359b-91d0-ad9012e7b699" executionId="f6509827-f55c-4fb8-92e7-274309d63119" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="761801fc-d4a4-e03c-064d-453dc07ad53d" executionId="f60bcbed-0ff3-4198-ac6c-2725a6889247" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="a46551b4-d40b-063a-f4fb-d91bd27e61df" executionId="e647d337-ab46-406a-9e05-b030a6b5e3d9" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="f7da9b44-bc67-a2da-82e0-02000b8acc47" executionId="f4dd4584-044f-4324-8710-b18b4e624bcd" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="6003f50b-33c9-c986-7236-85fb68798835" executionId="79b94ca4-55ef-4751-96f5-7757b60a908c" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="37592af0-e1c1-871f-c7d3-f34e1916936e" executionId="2a4ffff2-d11e-424d-8c90-c4b4953d0369" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="列表中未列出的结果" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="所有已加载的结果" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Completed">
+    <Counters total="20" executed="20" passed="20" failed="0" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v2.8.2+699d445a1a (64-bit .NET 8.0.33)&#xD;
+[xUnit.net 00:00:00.10]   Discovering: AiFootBall.Tests&#xD;
+[xUnit.net 00:00:00.36]   Discovered:  AiFootBall.Tests&#xD;
+[xUnit.net 00:00:00.37]   Starting:    AiFootBall.Tests&#xD;
+[xUnit.net 00:00:00.56]   Finished:    AiFootBall.Tests&#xD;
+</StdOut>
+    </Output>
+  </ResultSummary>
+</TestRun>

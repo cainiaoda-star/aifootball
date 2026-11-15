@@ -286,6 +286,8 @@ public sealed class MilkSourceReport
 ///      少一档同样是「引擎少算」，不能靠「预期=输入」自动通过；
 ///   ⑥ **源侧自己少了档**也要发现（2026-11-14 第八轮）：每个已启售玩法必须是
 ///      <see cref="JcPlayDomain"/> 的完整档位域，少一档即 `source-option-gap`。
+///      唯一豁免：该场没有输入凭证，且拒绝证据被独立判定为「明确联赛排除」。
+///      豁免只少报这一场的 `source-option-gap`，不删源场次、不删拒绝记录、不消其它问题。
 ///
 /// 为什么 ⑥ 不能省：⑤ 只查「源有档 → 引擎没算」，源侧自己少采一档时预期和输入一起少，
 /// 两边同时为「对」——与 1419319 同一种病因（预期取自被检验的一方）。
@@ -409,6 +411,13 @@ public static class MilkSourceSlate
         {
             var defect = r.Defect;
 
+            // league-excluded 的前缀 `list=` 只证明「写成了这个原因」，不证明联赛真在名单里。
+            // 证据必须拆成 list、league 各一次，再与源场次联赛名精确比对，并用现有名单复判。
+            // 对不上就维持拒绝（rejected-rejection）；对得上也不在这里删其它问题。
+            if (string.Equals(r.Reason, MilkInputRejection.ReasonLeagueExcluded, StringComparison.Ordinal)
+                && !IsConfirmedLeagueExclusion(r, src.FirstOrDefault(m => m.MatchId == r.MatchId), out var leagueDefect))
+                defect = leagueDefect;
+
             // `name-unresolved` 不能靠引擎自证：名称认不出恰恰说明引擎那套名字解析在这个名字上失效了。
             // 但「库里查得到几场」也**证明不了它是新队**——所以下面两次独立查询（场次、相近写法）
             // 从第十二轮起只用来**说清拒绝的理由**，没有任何一条构成放行依据。
@@ -491,8 +500,13 @@ public static class MilkSourceSlate
         //
         // 对**所有**源场次都查，不只查算过的：一场被 no-odds 拒绝、源侧却只采到三个玩法时，
         // 若只查算过的场次，这个拒绝就永远无从反驳——正是「历史有记录 ≠ 本轮有效」的反面。
+        //
+        // 明确联赛排除是唯一例外（2026-11-15）：名单命中与模型、赔率、队名无关，
+        // 缺档不能再把这一场卡成「应计算却没采全」。例外只跳过下面的 source-option-gap；
+        // 有输入凭证、证据对不上、或同场还有别的拒绝，都不跳。no-odds / 队名 / 样本不足照旧全查。
         foreach (var m in src)
         {
+            if (ExemptSourceOptionGap(m, rej, inIds)) continue;
             foreach (var play in JcPlayDomain.Plays)
             {
                 var domain = JcPlayDomain.Of(play);
@@ -596,6 +610,141 @@ public static class MilkSourceSlate
             ComputedCount = ins.Count(m => srcIds.Contains(m.MatchId)),
             RejectedCount = final.Count(r => r.Accepted)
         };
+    }
+
+    /// <summary>
+    /// 这一场的 <c>source-option-gap</c> 可否不报。
+    /// 有输入凭证一律不可。同场拒绝不是恰好一条、或该条不是已确认的联赛排除，也不可。
+    /// </summary>
+    private static bool ExemptSourceOptionGap(
+        MilkSourceMatch match,
+        IReadOnlyList<MilkInputRejection> rejections,
+        IReadOnlySet<long> inputIds)
+    {
+        if (inputIds.Contains(match.MatchId)) return false;
+
+        MilkInputRejection? only = null;
+        var count = 0;
+        foreach (var r in rejections)
+        {
+            if (r.MatchId != match.MatchId) continue;
+            count++;
+            only = r;
+            if (count > 1) return false;
+        }
+
+        return count == 1 && only is not null && IsConfirmedLeagueExclusion(only, match, out _);
+    }
+
+    /// <summary>
+    /// 拒绝证据是否独立构成「明确联赛排除」。
+    /// 只认 <c>list</c>、<c>league</c> 各出现一次；缺字段、重复或冲突、未知 list、
+    /// 与源场次联赛名不一致，都返回 false。名单只用 <see cref="NoPickLeagues"/> /
+    /// <see cref="NoParlayLeagues"/>，不另建一张。
+    /// </summary>
+    private static bool IsConfirmedLeagueExclusion(
+        MilkInputRejection rejection, MilkSourceMatch? source, out string defect)
+    {
+        defect = string.Empty;
+        if (!string.Equals(rejection.Reason, MilkInputRejection.ReasonLeagueExcluded, StringComparison.Ordinal))
+        {
+            defect = "不是联赛排除";
+            return false;
+        }
+
+        if (!rejection.EvidenceOk)
+        {
+            defect = rejection.Defect;
+            return false;
+        }
+
+        if (!TryReadLeagueFields(rejection.Evidence, out var listName, out var leagueName, out defect))
+            return false;
+
+        if (source is null || !string.Equals(leagueName, source.LeagueName, StringComparison.Ordinal))
+        {
+            defect = "联赛不一致";
+            return false;
+        }
+
+        var listed = listName switch
+        {
+            "NoPickLeagues" => NoPickLeagues.IsExcluded(source.LeagueName),
+            "NoParlayLeagues" => NoParlayLeagues.IsExcluded(source.LeagueName),
+            _ => false
+        };
+        if (!listed)
+        {
+            defect = "联赛不一致";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 把证据拆成字段。<c>list</c> 与 <c>league</c> 必须各有一个非空值，且全串每个分号段都是 <c>key=value</c>。
+    /// 其它键忽略，但不能缺等号。同一键出现两次即重复；两次的值不同同时算冲突。
+    /// </summary>
+    private static bool TryReadLeagueFields(
+        string evidence, out string listName, out string leagueName, out string defect)
+    {
+        listName = string.Empty;
+        leagueName = string.Empty;
+        defect = string.Empty;
+        string? list = null;
+        string? league = null;
+        var listCount = 0;
+        var leagueCount = 0;
+        var listConflict = false;
+        var leagueConflict = false;
+
+        foreach (var raw in evidence.Split(';'))
+        {
+            var eq = raw.IndexOf('=');
+            if (eq <= 0)
+            {
+                defect = "证据字段无法解析";
+                return false;
+            }
+
+            var key = raw[..eq];
+            var val = raw[(eq + 1)..];
+            if (key == "list")
+            {
+                listCount++;
+                if (list is null) list = val;
+                else if (!string.Equals(list, val, StringComparison.Ordinal)) listConflict = true;
+            }
+            else if (key == "league")
+            {
+                leagueCount++;
+                if (league is null) league = val;
+                else if (!string.Equals(league, val, StringComparison.Ordinal)) leagueConflict = true;
+            }
+        }
+
+        if (listCount == 0 || leagueCount == 0 || string.IsNullOrEmpty(list) || string.IsNullOrEmpty(league))
+        {
+            defect = "缺字段";
+            return false;
+        }
+
+        if (listCount > 1 || leagueCount > 1 || listConflict || leagueConflict)
+        {
+            defect = "重复冲突字段";
+            return false;
+        }
+
+        if (list != "NoPickLeagues" && list != "NoParlayLeagues")
+        {
+            defect = "未知list";
+            return false;
+        }
+
+        listName = list;
+        leagueName = league;
+        return true;
     }
 
     /// <summary>该键是否属于玩法域（`BF|1:0` 属域；`BQ|平/胜` 不属域）。</summary>
