@@ -1,0 +1,143 @@
+diff --git "a/C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\FitTraceDbTests-97927cb.cs" "b/D:\\Setup\\AiFootball_迁移包_20261104\\WB_AiFootball_代码迁移_261104\\handoff\\fittrace-isolated-sql2025test-20261115-candidate\\source\\aifootball\\tests\\AiFootBall.Tests\\FitTraceDbTests.cs"
+index 686c406..49528c9 100644
+--- "a/C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\FitTraceDbTests-97927cb.cs"
++++ "b/D:\\Setup\\AiFootball_迁移包_20261104\\WB_AiFootball_代码迁移_261104\\handoff\\fittrace-isolated-sql2025test-20261115-candidate\\source\\aifootball\\tests\\AiFootBall.Tests\\FitTraceDbTests.cs"
+@@ -1,5 +1,6 @@
+ using System.Diagnostics;
+ using System.Globalization;
++using System.Text;
+ using System.Text.RegularExpressions;
+ using AiFootBall.Core.Models;
+ using AiFootBall.Data;
+@@ -701,9 +702,10 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
+     public async Task SaveMilk_NotReadyInstance_ReachesBindAndDoesNotPublish()
+     {
+         var arranged = await ArrangePublishAsync();
++        MilkSaveOutcome? blocked = null;
+         try
+         {
+-            var blocked = await SaveMilkOnceAsync(arranged.Ready + 1000, arranged.MatchNo, arranged.Kick);
++            blocked = await SaveMilkOnceAsync(arranged.Ready + 1000, arranged.MatchNo, arranged.Kick);
+             Assert.True(blocked.Kind == MilkSaveKind.Failed,
+                 "未 ready 实例应在绑定检查失败，实际 " + blocked.Kind + "：" + blocked.Reason);
+             Assert.False(blocked.Published);
+@@ -715,6 +717,7 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
+         }
+         finally
+         {
++            await WriteSaveMilkEvidenceAsync(nameof(SaveMilk_NotReadyInstance_ReachesBindAndDoesNotPublish), blocked);
+             await RestoreStubMilkTablesAsync();
+         }
+     }
+@@ -723,9 +726,10 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
+     public async Task SaveMilk_ReadyInstance_PublishesWithItsModelFitInstanceId()
+     {
+         var arranged = await ArrangePublishAsync();
++        MilkSaveOutcome? published = null;
+         try
+         {
+-            var published = await SaveMilkOnceAsync(arranged.Ready, arranged.MatchNo, arranged.Kick);
++            published = await SaveMilkOnceAsync(arranged.Ready, arranged.MatchNo, arranged.Kick);
+             Assert.True(published.Kind == MilkSaveKind.Published,
+                 "ready 实例绑定提交后应发布，实际 " + published.Kind + "：" + published.Reason);
+             await using var conn = await _db.Factory.OpenAsync();
+@@ -735,6 +739,7 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
+         }
+         finally
+         {
++            await WriteSaveMilkEvidenceAsync(nameof(SaveMilk_ReadyInstance_PublishesWithItsModelFitInstanceId), published);
+             await RestoreStubMilkTablesAsync();
+         }
+     }
+@@ -755,6 +760,8 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
+         await SeedQuotedCaptureAsync(matchNo, kick);
+         var points = SyntheticOddsBook(88002, matchNo, DateTime.Now.AddSeconds(-2));
+         await SeedOddsAsync(points);
++        MilkSaveOutcome? published = null;
++        string? preCleanup = null;
+         try
+         {
+             var factory = _db.Factory;
+@@ -772,7 +779,7 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
+             {
+                 OddsReader = (_, _, _) => Task.FromResult(points)
+             };
+-            var published = await svc.SaveMilkAsync(new List<MatchRecommendation>
++            published = await svc.SaveMilkAsync(new List<MatchRecommendation>
+             {
+                 new()
+                 {
+@@ -800,6 +807,7 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
+                 $"run={published.RunId} kind={published.Kind} reason={published.Reason} "
+                 + $"successRows={success} pickRows={picks} pickCount={listed} "
+                 + $"modelFitInstanceId={bound} readyInstanceId={ready}";
++            preCleanup = evidence;
+             _output.WriteLine(evidence);
+             var evidencePath = Path.Combine(Directory.GetCurrentDirectory(), "fittrace-pickrow-evidence.txt");
+             await File.WriteAllTextAsync(evidencePath, evidence + Environment.NewLine);
+@@ -814,10 +822,65 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
+         }
+         finally
+         {
++            await WriteSaveMilkEvidenceAsync(
++                nameof(SaveMilk_ReadyInstance_PublishesAtLeastOnePick), published, preCleanup);
+             await RestoreStubMilkTablesAsync();
+         }
+     }
+ 
++    private async Task WriteSaveMilkEvidenceAsync(string testName, MilkSaveOutcome? outcome, string? already = null)
++    {
++        var sb = new StringBuilder();
++        sb.Append("test=").Append(testName);
++        if (outcome is null)
++        {
++            sb.Append(" outcome=none");
++        }
++        else
++        {
++            sb.Append(" run=").Append(outcome.RunId);
++            sb.Append(" kind=").Append(outcome.Kind);
++            sb.Append(" published=").Append(outcome.Published);
++            sb.Append(" reason=").Append(outcome.Reason);
++            sb.Append(" outcomePickRows=").Append(outcome.PickRows);
++        }
++        if (!string.IsNullOrEmpty(already))
++            sb.Append(" | ").Append(already);
++
++        if (!string.IsNullOrEmpty(outcome?.RunId))
++        {
++            await using var conn = await _db.Factory.OpenAsync();
++            var runId = outcome.RunId;
++            async Task<long> Count(string sql) =>
++                await FitTraceDbFixture.Scalar(conn, sql, new SqlParameter("@run", runId));
++            var runRows = await Count("SELECT COUNT(*) FROM dbo.FbMilkRun WHERE RunId=@run");
++            var success = await Count("SELECT COUNT(*) FROM dbo.FbMilkRun WHERE RunId=@run AND Status=N'success'");
++            var picks = await Count("SELECT COUNT(*) FROM dbo.FbMilkPick WHERE RunId=@run");
++            var listed = await Count("SELECT COALESCE((SELECT SUM(PickCount) FROM dbo.FbMilkRunDate WHERE RunId=@run), 0)");
++            var bound = await Count("SELECT COALESCE((SELECT ModelFitInstanceId FROM dbo.FbMilkRun WHERE RunId=@run), 0)");
++            var status = "";
++            if (runRows > 0)
++            {
++                await using var cmd = new SqlCommand(
++                    "SELECT Status FROM dbo.FbMilkRun WHERE RunId=@run", conn) { CommandTimeout = 30 };
++                cmd.Parameters.Add(new SqlParameter("@run", runId));
++                var value = await cmd.ExecuteScalarAsync();
++                status = value is null or DBNull ? "" : Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
++            }
++            sb.Append(" | beforeCleanup runRows=").Append(runRows);
++            sb.Append(" status=").Append(status);
++            sb.Append(" successRows=").Append(success);
++            sb.Append(" pickRows=").Append(picks);
++            sb.Append(" pickCount=").Append(listed);
++            sb.Append(" modelFitInstanceId=").Append(bound);
++        }
++
++        var line = sb.ToString();
++        _output.WriteLine(line);
++        var path = Path.Combine(Directory.GetCurrentDirectory(), "fittrace-savemilk-evidence.txt");
++        await File.AppendAllTextAsync(path, line + Environment.NewLine);
++    }
++
+     private async Task<(long Ready, string MatchNo, DateTime Kick)> ArrangePublishAsync()
+     {
+         await PreparePublishTablesAsync();

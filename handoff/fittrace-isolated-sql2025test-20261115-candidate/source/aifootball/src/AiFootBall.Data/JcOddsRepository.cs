@@ -1,0 +1,813 @@
+using AiFootBall.Core.Models;
+using Dapper;
+using Microsoft.Data.SqlClient;
+
+namespace AiFootBall.Data;
+
+/// <summary>竞彩固定奖金（四类玩法）历史采样仓储。</summary>
+public sealed class JcOddsRepository
+{
+    private readonly SqlConnectionFactory _factory;
+
+    public JcOddsRepository(SqlConnectionFactory factory) => _factory = factory;
+
+    /// <summary>
+    /// 变盘判定阈值：|(新价 − 旧价) / 旧价| ≥ 5% 才记一笔。
+    ///
+    /// 低赔率档的 5% 绝对量更小（3.00 → 3.15），这是想要的：热门方向动 5% 比冷门动 5% 有信息量。
+    /// 阈值不能太小——采样是分钟级的，正常抖动会把它淹成噪声；也不能太大，11-04 朗斯
+    /// 那次胜胜 5.85→6.20 只有 6.0%，阈值放到 8% 就整条漏掉了。
+    /// </summary>
+    public const decimal MoveThreshold = 0.05m;
+
+    /// <summary>
+    /// 读 FbJcOddsHistory 的命令超时（秒）。默认 30s 不够：这张表 600 万行、每 2 分钟
+    /// 被 jc-odds-sample 写入 1600 行，单条查询经常要扫几十万行。
+    /// 2026-11-08 实测 /api/milk/turn-guard/scan 就是这么挂的（500），
+    /// 同一路径的 turn-guard 作业一旦超时就是「静默无告警」。
+    ///
+    /// 注：当年把根因记成「数据库没开 RCSI」是错的。2026-11-10 实测
+    /// is_read_committed_snapshot_on = 1（早就开着），读根本没被写阻塞，
+    /// 慢是因为查询本身要扫的数据量大。别再拿 RCSI 解释这张表上的任何超时。
+    /// </summary>
+    private const int OddsReadTimeoutSeconds = 120;
+
+    /// <summary>
+    /// 把一批竞彩固定奖金快照写成时间序列点（同一 CapturedAt，先删旧再插，保证幂等）。
+    ///
+    /// watchMoves：采样时开（默认），回补历史时关。
+    /// 回补是把「已经完结的终价」一次性插进去，跟当前库里的最新价没有时间先后关系，
+    /// 拿它比对只会产出一堆假变盘。
+    ///
+    /// 同一事务里还做两件事，三件必须一起成功或一起失败：
+    ///   1. 写 FbOddsScanLog —— 这一轮采了几场、几个选项、几个变盘（没有这条就分不清「漏采」和「没变化」）
+    ///   2. 刷 FbMatchTrend  —— 本次涉及场次的「首轮→现价」走向汇总（页面直接读，不再现算 124 万行）
+    /// </summary>
+    public async Task<int> SaveSnapshotAsync(IReadOnlyList<JcOddsSnapshot> snapshots, DateTime capturedAt,
+        bool watchMoves = true, CancellationToken ct = default, IProgress<string>? log = null)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        var points = new List<JcOddsHistoryPoint>();
+        foreach (var s in snapshots)
+        {
+            foreach (var o in s.Options)
+            {
+                o.MatchId = s.MatchId;
+                o.MatchNo = s.MatchNo;
+                o.CapturedAt = capturedAt;
+                points.Add(o);
+            }
+        }
+
+        // 赔率 1.00 不是报价，是「已停售 / 未开盘」的占位值（2026-11-10 加）。
+        //
+        // 实测形态：1430601 不伦瑞克 vs 科特布斯，01:30 开赛；01:30 那轮还是
+        // 3.600 / 3.860 / 1.660，**01:32（开赛后 2 分钟）写进来 1.000 / 1.000 / 1.000**。
+        // 全库 207 行、56 场，集中在凌晨几个作业窗口。
+        //
+        // 危害只发生在**读最新价**的地方：SPF 三档全 1.00 → 隐含概率 100% → 去水后 33.3%，
+        // 模型 Blend 看起来就像「大幅低估市场」，凭空造出一个大 edge。
+        // 线上读取点都有 `Odds > 1` 兜底（GetLatestAsync / GetLatestPlayAsync / TrendSql），
+        // 所以真票没被污染（7 注脏场次全是赛前正常出票）—— **但分析侧没有这个兜底**：
+        // 2026-11-10 那次「SPF 热门被高估 18 个点、客胜 <1.50 只有 76% 回报」的结论，
+        // 就是被 32 场 × 3 档这 96 行 1.00 带出来的；按赛前有效价重算后直接反转
+        // （主胜 <1.50 由 81.3% → 89.7%，客胜由 76.2% → 104.1%）。
+        //
+        // 在写入口堵住，比要求每个读取点各自记得过滤可靠。
+        var valid = points.Where(p => p.Odds > 1m).ToList();
+        if (valid.Count < points.Count)
+            log?.Report($"    丢弃无效赔率 {points.Count - valid.Count} 行（Odds<=1，多为开赛后占位值）");
+        points = valid;
+        if (points.Count == 0) return 0;
+
+        await using var conn = await _factory.OpenAsync(ct);
+        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(ct);
+
+        // 分段计时（2026-11-10 加）。起因是 jc-odds-backfill 反复报「执行超时已过期」，
+        // 而每条语句单独看都在几秒内 —— 光看总耗时永远分不清是 DELETE 慢、插入慢、
+        // 还是走向重算慢。查计划缓存只看到一批 3.4 秒的合计，定位不到段。
+        // 这个计时只在本轮涉及场次 ≥ 20 时输出（回补就是这种规模），
+        // 每 2 分钟一轮的 jc-odds-sample 不会刷屏。
+        var clocks = new Dictionary<string, long>(StringComparer.Ordinal);
+        var seg = System.Diagnostics.Stopwatch.StartNew();
+        void Mark(string name)
+        {
+            var ms = seg.ElapsedMilliseconds;
+            clocks[name] = clocks.TryGetValue(name, out var acc) ? acc + ms : ms;
+            seg.Restart();
+        }
+
+        // 先清掉本分钟已采样的旧数据，避免同分钟重复触发造成重复行
+        var matchNos = points.Select(p => p.MatchNo).Distinct().ToArray();
+
+        // 上一次采样的价格必须在 DELETE 之前取：本分钟的旧行马上要被删掉，
+        // 删完再取就只能拿到更早一条，跨过一整轮采样。
+        var prev = watchMoves
+            ? await GetPrevSampledAsync(conn, tx, matchNos, capturedAt, ct)
+            : new Dictionary<string, (decimal Odds, DateTime At)>(StringComparer.Ordinal);
+        Mark("prev");
+
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"DELETE FROM dbo.FbJcOddsHistory WHERE CapturedAt = @at AND MatchNo IN @nos",
+            new { at = capturedAt, nos = matchNos }, tx, cancellationToken: ct));
+        Mark("delete");
+
+        var affected = await InsertPointsAsync(conn, tx, points, ct);
+        Mark("insert");
+
+        var moves = watchMoves
+            ? await RecordMovesAsync(conn, tx, points, capturedAt, prev, ct)
+            : 0;
+        Mark("moves");
+
+        // 走向按「有 MatchId 的场次」刷新。MatchId 空的档写进去也归不到场，跳过。
+        var matchIds = points.Where(p => p.MatchId is > 0).Select(p => p.MatchId!.Value).Distinct().ToArray();
+        if (matchIds.Length > 0)
+        {
+            await RefreshTrendAsync(conn, tx, matchIds, ct);
+            Mark("trend");
+            // 净胜球诊断和走向同事务刷新：两者读的是同一批快照，
+            // 分开刷会出现「走向已是封盘价、净胜球还是上一轮」的错位。
+            await RefreshScoreDiagAsync(conn, tx, matchIds, ct);
+            Mark("diag");
+        }
+
+        await LogScanAsync(conn, tx, "jc", capturedAt, snapshots.Count, affected, moves,
+            (int)sw.ElapsedMilliseconds, ct);
+        Mark("log");
+
+        await tx.CommitAsync(ct);
+
+        // 只在回补路径报（watchMoves=false）。回补是按 CapturedAt 分组调用的，
+        // 每组只有几场几十行，靠「场次 ≥20」根本触发不到 —— 第一次加这段时
+        // 就是因为条件写成了按规模判断，日志里一个字都没出现。
+        // 实时采样（jc-odds-sample）每 2 分钟一轮，不报，避免刷屏。
+        if (log is not null && !watchMoves)
+            log.Report($"    快照分段（{capturedAt:MM-dd HH:mm}）：{snapshots.Count} 场 / {points.Count} 行，"
+                       + string.Join(" / ", clocks.Select(kv => $"{kv.Key} {kv.Value}ms")));
+
+        return affected;
+    }
+
+    /// <summary>
+    /// 每个多值 INSERT 带多少行。7 列 × 250 = 1750 个参数，低于 SQL Server 的 2100 上限；
+    /// 留出余量是因为 Dapper 自己也可能加参数。调大不会更快多少（瓶颈在索引维护），
+    /// 调小则往返次数线性上升。
+    /// </summary>
+    private const int InsertBatchSize = 250;
+
+    /// <summary>
+    /// 批量插入快照点。
+    ///
+    /// 原来是 foreach 里一条一行。2026-11-10 查 jc-odds-backfill 反复「执行超时已过期」时量到：
+    /// 这张表 600 万行、身上挂着 6 个 B 树（1 聚簇 + 5 非聚簇），一行一条语句意味着
+    /// 每一行都要走一次网络往返、一次解析、一次日志分配。一轮回补 3 天 = 3000 行 = 3000 次往返，
+    /// 事务从头到尾都开着，jc-odds-sample 每 2 分钟还要进来写同一张表。
+    /// 改成多值 INSERT 后往返次数从 3000 降到 12 次，事务持锁时间同比缩短。
+    ///
+    /// 索引的维护总量不变（那是行数的函数，不是语句数的函数），所以这不是「变快 250 倍」，
+    /// 而是「把一小时的锁窗口压到秒级」。真正的热点在 RefreshTrendAsync，见那里的分批。
+    /// </summary>
+    private static async Task<int> InsertPointsAsync(
+        SqlConnection conn, SqlTransaction tx, List<JcOddsHistoryPoint> points, CancellationToken ct)
+    {
+        var affected = 0;
+        for (var start = 0; start < points.Count; start += InsertBatchSize)
+        {
+            var slice = points.GetRange(start, Math.Min(InsertBatchSize, points.Count - start));
+            var values = new List<string>(slice.Count);
+            var args = new DynamicParameters();
+            for (var i = 0; i < slice.Count; i++)
+            {
+                values.Add($"(@mid{i},@no{i},@pt{i},@code{i},@name{i},@odds{i},@at{i})");
+                var p = slice[i];
+                args.Add($"mid{i}", p.MatchId);
+                args.Add($"no{i}", p.MatchNo);
+                args.Add($"pt{i}", p.PlayType);
+                args.Add($"code{i}", p.OptionCode);
+                args.Add($"name{i}", p.OptionName);
+                args.Add($"odds{i}", p.Odds);
+                args.Add($"at{i}", p.CapturedAt);
+            }
+
+            var sql = "INSERT INTO dbo.FbJcOddsHistory (MatchId, MatchNo, PlayType, OptionCode, OptionName, Odds, CapturedAt) VALUES "
+                      + string.Join(",", values);
+            affected += await conn.ExecuteAsync(new CommandDefinition(sql, args, tx, cancellationToken: ct));
+        }
+        return affected;
+    }
+
+    /// <summary>
+    /// 采集批次台账。一轮一行，唯一键 (Source, CapturedAt) —— 重跑同一分钟是覆盖，不是新增。
+    ///
+    /// 为什么值得单独一张表：11-05 上午 11:09 → 11:15 → 11:37，中间空了 22 分钟。
+    /// 光看 FbJcOddsHistory 只知道「这 22 分钟价格没变」，不知道「根本没去采」。
+    /// 调度停了、接口抽了、进程被杀，在明细表里全长得像「市场很平静」。
+    /// </summary>
+    private static async Task LogScanAsync(
+        SqlConnection conn, SqlTransaction tx, string source, DateTime capturedAt,
+        int matchCount, int optionCount, int moveCount, int elapsedMs, CancellationToken ct)
+    {
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"MERGE dbo.FbOddsScanLog AS t
+              USING (SELECT @source AS Source, @at AS CapturedAt) AS s
+                 ON t.Source = s.Source AND t.CapturedAt = s.CapturedAt
+              WHEN MATCHED THEN UPDATE SET
+                   MatchCount = @matches, OptionCount = @options, MoveCount = @moves,
+                   ElapsedMs = @ms, Status = 'ok', LoggedAt = SYSDATETIME()
+              WHEN NOT MATCHED THEN INSERT
+                   (Source, CapturedAt, MatchCount, OptionCount, MoveCount, ElapsedMs, Status)
+                   VALUES (@source, @at, @matches, @options, @moves, @ms, 'ok');",
+            new
+            {
+                source, at = capturedAt, matches = matchCount, options = optionCount,
+                moves = moveCount, ms = elapsedMs
+            }, tx, cancellationToken: ct));
+    }
+
+    /// <summary>采样失败也要留痕。「今天没采到」和「今天没比赛」在页面上是两件事。</summary>
+    public async Task LogScanFailureAsync(string source, DateTime capturedAt, string note, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            @"MERGE dbo.FbOddsScanLog AS t
+              USING (SELECT @source AS Source, @at AS CapturedAt) AS s
+                 ON t.Source = s.Source AND t.CapturedAt = s.CapturedAt
+              WHEN MATCHED THEN UPDATE SET Status = 'error', Note = @note, LoggedAt = SYSDATETIME()
+              WHEN NOT MATCHED THEN INSERT (Source, CapturedAt, MatchCount, OptionCount, MoveCount, Status, Note)
+                   VALUES (@source, @at, 0, 0, 0, 'error', @note);",
+            new { source, at = capturedAt, note }, cancellationToken: ct));
+    }
+
+    /// <summary>
+    /// 重算指定场次的「每场 × 每玩法」走向。整场整玩法先删后插，不做增量累加——
+    /// 累加要区分「新增一轮」和「重跑同一轮」，一旦算错就永远偏，重算便宜且永远对。
+    ///
+    /// 口径必须和 db/19_odds_capture.sql 的历史回填完全一致，否则老数据和新数据接不上。
+    /// </summary>
+    /// <summary>
+    /// 走向重算一次带多少场。
+    ///
+    /// 2026-11-10 量的数：这条 SQL 是对每个 MatchId 的**全历史**做三遍窗口函数
+    /// （首价、末价、聚合），而不是只扫最近几轮。全表 600 万行、628 场、平均 9552 行/场，
+    /// 但近期场次的行数远高于均值（它们还在被持续采样），所以「3 天内完场的 67 场」
+    /// 一次性带出 **374 万行 = 全表 62%**。
+    ///
+    /// 这就是 jc-odds-backfill 反复「执行超时已过期」的真正原因：不是锁等待，是单条命令
+    /// 要对 374 万行排序三遍，30 秒的命令超时到了。11-08 08:00 与 11-09 04:35 那两次都报这个。
+    /// 分成 8 场一批后每批约 45 万行，单条命令回到几秒量级。
+    ///
+    /// 为什么不在 SQL 里加 CapturedAt 下界：首价定义就是「这张场最早的那个价」，
+    /// 加下界会把历史场次的首价算成窗口内的第一个价，走向整列失真。
+    /// 分批只是把同一份计算结果切片提交，口径不变。
+    /// </summary>
+    private const int TrendBatchMatches = 8;
+
+    private static async Task RefreshTrendAsync(
+        SqlConnection conn, SqlTransaction tx, long[] matchIds, CancellationToken ct)
+    {
+        foreach (var chunk in Chunk(matchIds, TrendBatchMatches))
+            await conn.ExecuteAsync(new CommandDefinition(TrendSql,
+                new { ids = chunk }, tx, cancellationToken: ct,
+                // 默认 30 秒是「一条命令」的上限，不是整个作业的。单批 8 场实测 1.5 秒，
+                // 但慢盘或统计信息陈旧时会跳好几倍，30 秒会把它误杀成一个含糊的
+                // 「执行超时已过期」——那句话既不说哪条语句、也不说跑了多久。
+                // 真正的节流靠分批，这里只是别让一次 IO 抖动变成作业失败。
+                commandTimeout: TrendCommandTimeoutSeconds));
+    }
+
+    /// <summary>走向/诊断重算的单条命令上限（秒）。见 RefreshTrendAsync 里的说明。</summary>
+    private const int TrendCommandTimeoutSeconds = 300;
+
+    private static IEnumerable<long[]> Chunk(long[] ids, int size)
+    {
+        for (var i = 0; i < ids.Length; i += size)
+            yield return ids.Skip(i).Take(size).ToArray();
+    }
+
+    private const string TrendSql = @"
+DELETE FROM dbo.FbMatchTrend WHERE MatchId IN @ids;
+
+;WITH s AS (
+    SELECT MatchId, PlayType, OptionCode, OptionName, Odds, CapturedAt,
+           ROW_NUMBER() OVER (PARTITION BY MatchId, PlayType, OptionCode ORDER BY CapturedAt)      AS rf,
+           ROW_NUMBER() OVER (PARTITION BY MatchId, PlayType, OptionCode ORDER BY CapturedAt DESC) AS rl
+    FROM dbo.FbJcOddsHistory
+    WHERE MatchId IN @ids AND Odds > 1
+), f AS (SELECT * FROM s WHERE rf = 1),
+   l AS (SELECT * FROM s WHERE rl = 1),
+   agg AS (
+    SELECT MatchId, PlayType, MIN(CapturedAt) AS FirstAt, MAX(CapturedAt) AS LastAt,
+           COUNT(DISTINCT CapturedAt) AS Rounds, COUNT(DISTINCT OptionCode) AS Options
+    FROM dbo.FbJcOddsHistory
+    WHERE MatchId IN @ids AND Odds > 1
+    GROUP BY MatchId, PlayType
+   ),
+   ft AS (SELECT MatchId, PlayType, OptionCode, OptionName, Odds FROM (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY MatchId, PlayType ORDER BY Odds, OptionCode) rn
+            FROM f) z WHERE rn = 1),
+   lt AS (SELECT MatchId, PlayType, OptionCode, OptionName, Odds FROM (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY MatchId, PlayType ORDER BY Odds, OptionCode) rn
+            FROM l) z WHERE rn = 1),
+   pf AS (SELECT MatchId, PlayType,
+                 MAX(CASE WHEN OptionCode = '3' THEN Odds END) AS W,
+                 MAX(CASE WHEN OptionCode = '1' THEN Odds END) AS D,
+                 MAX(CASE WHEN OptionCode = '0' THEN Odds END) AS L
+          FROM f WHERE PlayType IN ('SPF', 'NSPF') GROUP BY MatchId, PlayType),
+   pl AS (SELECT MatchId, PlayType,
+                 MAX(CASE WHEN OptionCode = '3' THEN Odds END) AS W,
+                 MAX(CASE WHEN OptionCode = '1' THEN Odds END) AS D,
+                 MAX(CASE WHEN OptionCode = '0' THEN Odds END) AS L
+          FROM l WHERE PlayType IN ('SPF', 'NSPF') GROUP BY MatchId, PlayType),
+   mv AS (SELECT MatchId, PlayType, COUNT(*) AS Moves,
+                 SUM(CASE WHEN ABS(ChangePct) >= 0.10 THEN 1 ELSE 0 END) AS BigMoves,
+                 SUM(CASE WHEN ChangePct > 0 THEN 1 ELSE 0 END) AS UpCount,
+                 SUM(CASE WHEN ChangePct < 0 THEN 1 ELSE 0 END) AS DownCount,
+                 MIN(MoveAt) AS FirstMoveAt, MAX(MoveAt) AS LastMoveAt,
+                 SUM(CASE WHEN MinutesToKick IS NOT NULL AND MinutesToKick <= 180 THEN 1 ELSE 0 END) AS LateMoves
+          FROM dbo.FbOddsMove WHERE MatchId IN @ids GROUP BY MatchId, PlayType),
+   p AS (
+    SELECT a.MatchId, a.PlayType, a.FirstAt, a.LastAt, a.Rounds, a.Options,
+           ft.OptionCode AS FCode, ft.OptionName AS FName, ft.Odds AS FOdds,
+           lt.OptionCode AS LCode, lt.OptionName AS LName, lt.Odds AS LOdds,
+           pf.W AS OW, pf.D AS OD, pf.L AS OL,
+           pl.W AS CW, pl.D AS CD, pl.L AS CL
+    FROM agg a
+    LEFT JOIN ft ON ft.MatchId = a.MatchId AND ft.PlayType = a.PlayType
+    LEFT JOIN lt ON lt.MatchId = a.MatchId AND lt.PlayType = a.PlayType
+    LEFT JOIN pf ON pf.MatchId = a.MatchId AND pf.PlayType = a.PlayType
+    LEFT JOIN pl ON pl.MatchId = a.MatchId AND pl.PlayType = a.PlayType
+   )
+INSERT INTO dbo.FbMatchTrend
+    (MatchId, PlayType, MatchNo, FirstAt, LastAt, Rounds, Options, Moves, BigMoves,
+     UpCount, DownCount, FirstTopCode, FirstTopName, FirstTopOdds,
+     LastTopCode, LastTopName, LastTopOdds, TopShift,
+     OpenWin, OpenDraw, OpenLoss, CurrWin, CurrDraw, CurrLoss,
+     FirstMoveAt, LastMoveAt, LateMoves, TrendTag, UpdatedAt)
+SELECT p.MatchId, p.PlayType,
+       (SELECT MAX(n.MatchNo) FROM dbo.FbJcOddsHistory n
+        WHERE n.MatchId = p.MatchId AND n.MatchNo IS NOT NULL),
+       p.FirstAt, p.LastAt, p.Rounds, p.Options,
+       ISNULL(mv.Moves, 0), ISNULL(mv.BigMoves, 0), ISNULL(mv.UpCount, 0), ISNULL(mv.DownCount, 0),
+       p.FCode, p.FName, p.FOdds, p.LCode, p.LName, p.LOdds,
+       CASE WHEN p.FCode = p.LCode AND p.FOdds > 1
+            THEN (p.LOdds - p.FOdds) / p.FOdds END,
+       p.OW, p.OD, p.OL, p.CW, p.CD, p.CL,
+       mv.FirstMoveAt, mv.LastMoveAt, ISNULL(mv.LateMoves, 0),
+       CASE
+           WHEN p.OW > 1 AND p.OD > 1 AND p.OL > 1 AND p.CW > 1 AND p.CD > 1 AND p.CL > 1 THEN
+               CASE
+                   WHEN ABS((1.0/p.CW) / ((1.0/p.CW)+(1.0/p.CD)+(1.0/p.CL))
+                          - (1.0/p.OW) / ((1.0/p.OW)+(1.0/p.OD)+(1.0/p.OL))) < 0.02
+                    AND ABS((1.0/p.CD) / ((1.0/p.CW)+(1.0/p.CD)+(1.0/p.CL))
+                          - (1.0/p.OD) / ((1.0/p.OW)+(1.0/p.OD)+(1.0/p.OL))) < 0.02
+                    AND ABS((1.0/p.CL) / ((1.0/p.CW)+(1.0/p.CD)+(1.0/p.CL))
+                          - (1.0/p.OL) / ((1.0/p.OW)+(1.0/p.OD)+(1.0/p.OL))) < 0.02
+                   THEN N'无明显迁移'
+                   WHEN (1.0/p.CW) / ((1.0/p.CW)+(1.0/p.CD)+(1.0/p.CL))
+                      - (1.0/p.OW) / ((1.0/p.OW)+(1.0/p.OD)+(1.0/p.OL))
+                      >= (1.0/p.CD) / ((1.0/p.CW)+(1.0/p.CD)+(1.0/p.CL)) - (1.0/p.OD) / ((1.0/p.OW)+(1.0/p.OD)+(1.0/p.OL))
+                    AND (1.0/p.CW) / ((1.0/p.CW)+(1.0/p.CD)+(1.0/p.CL))
+                      - (1.0/p.OW) / ((1.0/p.OW)+(1.0/p.OD)+(1.0/p.OL))
+                      >= (1.0/p.CL) / ((1.0/p.CW)+(1.0/p.CD)+(1.0/p.CL)) - (1.0/p.OL) / ((1.0/p.OW)+(1.0/p.OD)+(1.0/p.OL))
+                   THEN N'主胜走强'
+                   WHEN (1.0/p.CL) / ((1.0/p.CW)+(1.0/p.CD)+(1.0/p.CL))
+                      - (1.0/p.OL) / ((1.0/p.OW)+(1.0/p.OD)+(1.0/p.OL))
+                      >= (1.0/p.CD) / ((1.0/p.CW)+(1.0/p.CD)+(1.0/p.CL)) - (1.0/p.OD) / ((1.0/p.OW)+(1.0/p.OD)+(1.0/p.OL))
+                   THEN N'客胜走强'
+                   ELSE N'平局走强'
+               END
+           WHEN p.FCode <> p.LCode THEN CONCAT(N'热门档切换 ', p.FName, N'→', p.LName)
+       END,
+       SYSDATETIME()
+FROM p
+LEFT JOIN mv ON mv.MatchId = p.MatchId AND mv.PlayType = p.PlayType;";
+
+    /// <summary>
+    /// 重算指定场次的净胜球诊断（每场一行）。
+    ///
+    /// 口径与 db/20_score_diag.sql 的全量回填必须逐字一致，否则历史和新数据接不上。
+    /// 唯一差别：这里是 DEL 加 INS，回填是 MERGE——效果等价，增量场景下 DEL 更省。
+    ///
+    /// 整轮不足 20 档的快照整轮丢掉。新挂的场次先上三五个比分档，
+    /// 按那几档归一化会得出 PHome=100%、ExpGd=4.0 这种假值（回填时真出现过）。
+    /// </summary>
+    private static async Task RefreshScoreDiagAsync(
+        SqlConnection conn, SqlTransaction tx, long[] matchIds, CancellationToken ct)
+    {
+        // 同样分批。这条只扫 PlayType='BF'，行数比走向那条少，但也是全历史，
+        // 且 474 个比分档的归一化更吃 CPU。和 RefreshTrend 用同一个批次大小，
+        // 是为了让两段在同一个事务里交替推进时不会一边 8 场一边 67 场。
+        foreach (var chunk in Chunk(matchIds, TrendBatchMatches))
+            await conn.ExecuteAsync(new CommandDefinition(ScoreDiagSql,
+                new { ids = chunk }, tx, cancellationToken: ct,
+                commandTimeout: TrendCommandTimeoutSeconds));
+    }
+
+    private const string ScoreDiagSql = @"
+DELETE FROM dbo.FbScoreDiag WHERE MatchId IN @ids;
+
+;WITH base AS (
+    SELECT MatchId, CapturedAt, OptionCode, Odds,
+           CASE WHEN CHARINDEX(':', OptionCode) > 0
+                THEN CAST(LEFT(OptionCode, CHARINDEX(':', OptionCode) - 1) AS int)
+                   - CAST(SUBSTRING(OptionCode, CHARINDEX(':', OptionCode) + 1, 3) AS int)
+                WHEN UNICODE(LEFT(OptionCode, 1)) = 32988 THEN 5
+                WHEN UNICODE(LEFT(OptionCode, 1)) = 36127 THEN -5
+                ELSE 0 END AS gd,
+           CASE WHEN CHARINDEX(':', OptionCode) > 0
+                THEN CAST(LEFT(OptionCode, CHARINDEX(':', OptionCode) - 1) AS int)
+                   + CAST(SUBSTRING(OptionCode, CHARINDEX(':', OptionCode) + 1, 3) AS int)
+                ELSE 3 END AS tg
+    FROM dbo.FbJcOddsHistory
+    WHERE MatchId IN @ids AND PlayType = 'BF' AND Odds > 1
+),
+cnt AS (
+    SELECT MatchId, CapturedAt, COUNT(*) AS n FROM base GROUP BY MatchId, CapturedAt
+),
+ok AS (
+    SELECT b.* FROM base b JOIN cnt c ON c.MatchId = b.MatchId AND c.CapturedAt = b.CapturedAt
+    WHERE c.n >= 20
+),
+norm AS (
+    SELECT MatchId, CapturedAt, OptionCode, Odds, gd, tg,
+           1.0 / Odds / SUM(1.0 / Odds) OVER (PARTITION BY MatchId, CapturedAt) AS p
+    FROM ok
+),
+per AS (
+    SELECT MatchId, CapturedAt,
+           SUM(gd * p)                                AS exp_gd,
+           SUM(tg * p)                                AS exp_tg,
+           SUM(CASE WHEN gd >  0 THEN p ELSE 0 END)   AS p_home,
+           SUM(CASE WHEN gd =  0 THEN p ELSE 0 END)   AS p_draw,
+           SUM(CASE WHEN gd >= 3 THEN p ELSE 0 END)   AS p3,
+           SUM(CASE WHEN gd <= -3 THEN p ELSE 0 END)  AS pm3
+    FROM norm
+    GROUP BY MatchId, CapturedAt
+),
+rk AS (
+    SELECT *,
+           ROW_NUMBER() OVER (PARTITION BY MatchId ORDER BY CapturedAt)      AS rf,
+           ROW_NUMBER() OVER (PARTITION BY MatchId ORDER BY CapturedAt DESC) AS rl,
+           MIN(CapturedAt) OVER (PARTITION BY MatchId) AS fat,
+           MAX(CapturedAt) OVER (PARTITION BY MatchId) AS lat,
+           COUNT(*)        OVER (PARTITION BY MatchId) AS n
+    FROM per
+),
+fr AS (SELECT * FROM rk WHERE rf = 1),
+lr AS (SELECT * FROM rk WHERE rl = 1),
+fraw AS (
+    SELECT n.MatchId, n.OptionCode, n.Odds, n.gd
+    FROM norm n JOIN fr ON fr.MatchId = n.MatchId AND fr.CapturedAt = n.CapturedAt
+),
+lraw AS (
+    SELECT n.MatchId, n.OptionCode, n.Odds, n.gd
+    FROM norm n JOIN lr ON lr.MatchId = n.MatchId AND lr.CapturedAt = n.CapturedAt
+),
+deepdrop AS (
+    SELECT l.MatchId,
+           SUM(CASE WHEN l.gd <= -3 AND l.Odds <= f.Odds * 0.95 THEN 1 ELSE 0 END) AS neg_drop,
+           SUM(CASE WHEN l.gd >=  3 AND l.Odds <= f.Odds * 0.95 THEN 1 ELSE 0 END) AS pos_drop
+    FROM lraw l JOIN fraw f ON f.MatchId = l.MatchId AND f.OptionCode = l.OptionCode
+    GROUP BY l.MatchId
+),
+dist AS (
+    SELECT n.MatchId, n.gd, SUM(n.p) AS p
+    FROM norm n JOIN lr ON lr.MatchId = n.MatchId AND lr.CapturedAt = n.CapturedAt
+    GROUP BY n.MatchId, n.gd
+),
+distj AS (
+    SELECT MatchId,
+           STRING_AGG(CAST(gd AS varchar(4)) + ':' + CAST(CAST(ROUND(p * 1000, 0) AS int) AS varchar(6)), ',')
+               WITHIN GROUP (ORDER BY gd) AS j
+    FROM dist GROUP BY MatchId
+),
+ins AS (
+    SELECT l.MatchId,
+           (SELECT MAX(n.MatchNo) FROM dbo.FbJcOddsHistory n
+            WHERE n.MatchId = l.MatchId AND n.MatchNo IS NOT NULL) AS MatchNo,
+           l.n AS Rounds, l.fat AS FirstAt, l.lat AS LastAt,
+           l.exp_gd, f.exp_gd AS exp_gd_open, l.exp_gd - f.exp_gd AS exp_gd_move,
+           l.exp_tg,
+           l.p_home, l.p_draw, 1.0 - l.p_home - l.p_draw AS p_away, f.p_home AS p_home_open,
+           l.p3, l.pm3, l.p3 - f.p3 AS p3_move, l.pm3 - f.pm3 AS pm3_move,
+           ISNULL(d.neg_drop, 0) AS neg_drop, ISNULL(d.pos_drop, 0) AS pos_drop,
+           dj.j AS DistText,
+           CASE
+               WHEN ISNULL(d.neg_drop,0) >= 3 AND ISNULL(d.pos_drop,0) >= 3 THEN N'两端整批降价'
+               WHEN ISNULL(d.neg_drop,0) >= 3 THEN N'客队深档整批降价'
+               WHEN ISNULL(d.pos_drop,0) >= 3 THEN N'主队深档整批降价'
+               WHEN l.p3 - f.p3 >= 0.01 AND l.pm3 - f.pm3 >= 0.01 THEN N'两端加厚'
+               WHEN l.p3 - f.p3 >= 0.01 THEN N'主队深档加价'
+               WHEN l.pm3 - f.pm3 >= 0.01 THEN N'客队深档加价'
+               WHEN l.p3 - f.p3 <= -0.01 AND l.pm3 - f.pm3 <= -0.01 THEN N'两端削薄'
+               WHEN l.p3 - f.p3 <= -0.01 THEN N'主队深档减价'
+               WHEN l.pm3 - f.pm3 <= -0.01 THEN N'客队深档减价'
+               ELSE N'尾部未动'
+           END AS TailTag
+    FROM lr l
+    JOIN fr f ON f.MatchId = l.MatchId
+    LEFT JOIN deepdrop d ON d.MatchId = l.MatchId
+    LEFT JOIN distj dj ON dj.MatchId = l.MatchId
+)
+INSERT INTO dbo.FbScoreDiag
+    (MatchId, MatchNo, Rounds, FirstAt, LastAt,
+     ExpGd, ExpGdOpen, ExpGdMove, ExpTotal,
+     PHome, PDraw, PAway, PHomeOpen,
+     P3Plus, PMinus3, P3PlusMove, PMinus3Move,
+     DeepNegDrop, DeepPosDrop, DistText, TailTag, UpdatedAt)
+SELECT MatchId, MatchNo, Rounds, FirstAt, LastAt,
+       exp_gd, exp_gd_open, exp_gd_move, exp_tg,
+       p_home, p_draw, p_away, p_home_open,
+       p3, pm3, p3_move, pm3_move,
+       neg_drop, pos_drop, DistText, TailTag, SYSDATETIME()
+FROM ins;";
+
+    /// <summary>本批场次「上一次采样」的价格，键 = MatchNo|PlayType|OptionCode。</summary>
+    private static async Task<Dictionary<string, (decimal Odds, DateTime At)>> GetPrevSampledAsync(
+        SqlConnection conn, SqlTransaction tx, string[] matchNos, DateTime before, CancellationToken ct)
+    {
+        var map = new Dictionary<string, (decimal, DateTime)>(StringComparer.Ordinal);
+        if (matchNos.Length == 0) return map;
+
+        var rows = await conn.QueryAsync<(string MatchNo, string PlayType, string OptionCode, decimal Odds, DateTime CapturedAt)>(
+            new CommandDefinition(
+                @"WITH t AS (
+                      SELECT MatchNo, PlayType, OptionCode, MAX(CapturedAt) AS lastAt
+                      FROM dbo.FbJcOddsHistory
+                      WHERE MatchNo IN @nos AND CapturedAt < @before
+                      GROUP BY MatchNo, PlayType, OptionCode
+                  )
+                  SELECT h.MatchNo, h.PlayType, h.OptionCode, h.Odds, h.CapturedAt
+                  FROM dbo.FbJcOddsHistory h
+                  JOIN t ON t.MatchNo = h.MatchNo AND t.PlayType = h.PlayType
+                        AND t.OptionCode = h.OptionCode AND t.lastAt = h.CapturedAt",
+                new { nos = matchNos, before }, tx, cancellationToken: ct));
+
+        foreach (var r in rows)
+            map[$"{r.MatchNo}|{r.PlayType}|{r.OptionCode}"] = (r.Odds, r.CapturedAt);
+        return map;
+    }
+
+    /// <summary>
+    /// 把本批超出阈值的变盘写进 FbOddsMove。只记事实：几点、哪档、从多少到多少、距开赛多久。
+    /// 不判断方向、不拦注——11-04 的教训是缺「记录」，不是缺「判断」。
+    /// </summary>
+    private static async Task<int> RecordMovesAsync(
+        SqlConnection conn, SqlTransaction tx, IReadOnlyList<JcOddsHistoryPoint> points,
+        DateTime capturedAt, IReadOnlyDictionary<string, (decimal Odds, DateTime At)> prev, CancellationToken ct)
+    {
+        var written = 0;
+        foreach (var p in points)
+        {
+            if (p.MatchId is null || string.IsNullOrEmpty(p.MatchNo) || p.Odds <= 1) continue;
+            if (!prev.TryGetValue($"{p.MatchNo}|{p.PlayType}|{p.OptionCode}", out var old)) continue;
+            if (old.Odds <= 1 || old.Odds == p.Odds) continue;
+
+            var pct = (p.Odds - old.Odds) / old.Odds;
+            if (Math.Abs(pct) < MoveThreshold) continue;
+
+            written += await conn.ExecuteAsync(new CommandDefinition(
+                @"INSERT INTO dbo.FbOddsMove
+                      (MatchId, MatchNo, LeagueName, HomeTeam, AwayTeam, MatchTime,
+                       PlayType, OptionCode, OptionName, PrevOdds, CurrOdds, ChangePct, PrevAt, MoveAt, MinutesToKick)
+                  SELECT m.MatchId, @no, m.LeagueName, m.HomeTeamName, m.AwayTeamName, m.MatchTime,
+                         @pt, @code, @name, @prev, @odds, @pct, @prevAt, @at,
+                         DATEDIFF(minute, @at, m.MatchTime)
+                  FROM dbo.FbMatch m
+                  WHERE m.MatchId = @mid
+                    AND NOT EXISTS (SELECT 1 FROM dbo.FbOddsMove d
+                                    WHERE d.MatchId = @mid AND d.PlayType = @pt
+                                      AND d.OptionCode = @code AND d.MoveAt = @at)",
+                new
+                {
+                    mid = p.MatchId, no = p.MatchNo, pt = p.PlayType, code = p.OptionCode,
+                    name = p.OptionName, prev = old.Odds, odds = p.Odds, pct,
+                    prevAt = old.At, at = capturedAt
+                }, tx, cancellationToken: ct));
+        }
+        return written;
+    }
+
+    /// <summary>
+    /// 按场次号取竞彩固定奖金的最新水位（当前值 + 相对上一次采样的涨跌）。
+    /// 返回结构按玩法分组，每个选项给出 odds 与 delta。
+    /// </summary>
+    public async Task<object?> GetWaterAsync(string matchNo, CancellationToken ct = default)
+    {
+        await using var conn = await _factory.OpenAsync(ct);
+
+        // 最近两次采样时间点
+        var times = (await conn.QueryAsync<DateTime>(new CommandDefinition(
+            @"SELECT DISTINCT TOP 2 CapturedAt FROM dbo.FbJcOddsHistory
+              WHERE MatchNo = @no ORDER BY CapturedAt DESC", new { no = matchNo }, cancellationToken: ct))).ToList();
+        if (times.Count == 0) return null;
+
+        var latestAt = times[0];
+        var prevAt = times.Count > 1 ? times[1] : (DateTime?)null;
+
+        // 最新一次采样的所有选项
+        var latest = await conn.QueryAsync<JcOddsHistoryPoint>(new CommandDefinition(
+            @"SELECT * FROM dbo.FbJcOddsHistory WHERE MatchNo = @no AND CapturedAt = @at",
+            new { no = matchNo, at = latestAt }, cancellationToken: ct));
+
+        // 上一次采样的选项（算涨跌）
+        Dictionary<string, decimal> prevMap = new();
+        if (prevAt is not null)
+        {
+            var prev = await conn.QueryAsync<JcOddsHistoryPoint>(new CommandDefinition(
+                @"SELECT * FROM dbo.FbJcOddsHistory WHERE MatchNo = @no AND CapturedAt = @at",
+                new { no = matchNo, at = prevAt }, cancellationToken: ct));
+            foreach (var p in prev)
+                prevMap[$"{p.PlayType}|{p.OptionCode}"] = p.Odds;
+        }
+
+        // 按玩法分组
+        var groups = latest
+            .GroupBy(p => p.PlayType)
+            .Select(g => new
+            {
+                playType = g.Key,
+                playName = PlayName(g.Key),
+                options = g.Select(p =>
+                {
+                    var key = $"{p.PlayType}|{p.OptionCode}";
+                    decimal? delta = prevMap.TryGetValue(key, out var prevOdds)
+                        ? decimal.Round(p.Odds - prevOdds, 3)
+                        : null;
+                    return new
+                    {
+                        code = p.OptionCode,
+                        name = p.OptionName,
+                        odds = p.Odds,
+                        delta
+                    };
+                }).ToList()
+            }).ToList();
+
+        return new
+        {
+            matchNo,
+            capturedAt = latestAt,
+            prevCapturedAt = prevAt,
+            groups
+        };
+    }
+
+    /// <summary>
+    /// 每场每个选项取最近一次大于 1 的赔率。1 是完场后的占位，不当成报价。
+    ///
+    /// <paramref name="asOf"/>（2026-11-14 第九轮加）：只认**该时刻及之前**的采样。
+    /// 为什么必须给：发布核对按 `FbMilkRun.StartedAt` 冻结源侧清单，而引擎这边原来取的是
+    /// 「此刻最新的价」。两条链路各看一个时间点，于是核对器证明的是另一批赔率——
+    /// 采样在 `runAt` 之后又落了一行时，引擎用的是新价、账本记的是旧清单，
+    /// 缺档/超龄这些判据全都查不到真正被用的那份数据上。
+    /// 传 null 保持旧行为（回测/复盘要看「当时最新」，不受本轮边界约束）。
+    /// </summary>
+    public async Task<List<JcOddsHistoryPoint>> GetLatestAsync(
+        IEnumerable<long> matchIds, CancellationToken ct = default, DateTime? asOf = null)
+    {
+        var ids = matchIds.Distinct().ToArray();
+        if (ids.Length == 0) return new();
+
+        await using var conn = await _factory.OpenAsync(ct);
+        // 上界用「极大值」而不是 `@asOf IS NULL OR ...`：参数始终有值，不走 OR，
+        // 索引也能用上——这个查询在每轮 11 场 × 54 档上跑，不该为了「null 表示不限」多付扫描。
+        var until = asOf ?? DateTime.MaxValue;
+        return (await conn.QueryAsync<JcOddsHistoryPoint>(new CommandDefinition(
+            @"SELECT MatchId, PlayType, OptionCode, OptionName, Odds
+              FROM (
+                  SELECT MatchId, PlayType, OptionCode, OptionName, Odds,
+                         ROW_NUMBER() OVER (PARTITION BY MatchId, PlayType, OptionCode ORDER BY CapturedAt DESC) AS rn
+                  FROM dbo.FbJcOddsHistory
+                  WHERE MatchId IN @ids AND Odds > 1 AND CapturedAt <= @until
+              ) t WHERE rn = 1",
+            new { ids, until }, cancellationToken: ct))).ToList();
+    }
+
+    /// <summary>各场胜平负的最新价。键是 MatchId，值是胜/平/负。</summary>
+    public Task<Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>> GetLatestSpfAsync(
+        IEnumerable<long> matchIds, CancellationToken ct = default)
+        => GetLatestPlayAsync(matchIds, "SPF", ct);
+
+    /// <summary>各场让球胜平负的最新价。键是 MatchId，值是让胜/让平/让负。</summary>
+    public Task<Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>> GetLatestNspfAsync(
+        IEnumerable<long> matchIds, CancellationToken ct = default)
+        => GetLatestPlayAsync(matchIds, "NSPF", ct);
+
+    /// <summary>
+    /// 各场让球胜平负的「最早价」（临场转向哨兵用，2026-11-05 加）。
+    /// 键是 MatchId，值是让胜/让平/让负。转向哨兵拿「最早让胜 vs 最新让胜」比单边拉升。
+    /// </summary>
+    public Task<Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>> GetEarliestNspfAsync(
+        IEnumerable<long> matchIds, CancellationToken ct = default)
+        => GetEarliestPlayAsync(matchIds, "NSPF", ct);
+
+    private async Task<Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>> GetEarliestPlayAsync(
+        IEnumerable<long> matchIds, string playType, CancellationToken ct)
+    {
+        var ids = matchIds.Distinct().ToArray();
+        var map = new Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>();
+        if (ids.Length == 0) return map;
+
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.QueryAsync<(long MatchId, string OptionCode, decimal Odds)>(new CommandDefinition(
+            // 2026-11-08 晚：加 READUNCOMMITTED。FbJcOddsHistory 是「只追加」的历史表，
+            // 脏读（读到正在插入的半条价）对这个用途无害；而不加的话，jc-odds-sample
+            // 每 2 分钟写 1600 行时读者会被排他锁挡住——数据库 RCSI 是关的。
+            // 实测：同一查询会被堵 44s（CPU 只花 126ms），正好越过默认 30s 命令超时，
+            // 于是 turn-guard 抛异常、「本轮无告警」变成静默失败，正是 2026-11-08 那类事故的形状。
+            @"SELECT MatchId, OptionCode, Odds
+              FROM (
+                  SELECT MatchId, OptionCode, Odds,
+                         ROW_NUMBER() OVER (PARTITION BY MatchId, OptionCode ORDER BY CapturedAt ASC) AS rn
+                  FROM dbo.FbJcOddsHistory WITH (READUNCOMMITTED)
+                  WHERE PlayType = @play AND MatchId IN @ids AND OptionCode IN ('3','1','0') AND Odds > 1
+              ) t
+              WHERE rn = 1",
+            new { ids, play = playType }, commandTimeout: OddsReadTimeoutSeconds, cancellationToken: ct));
+
+        foreach (var g in rows.GroupBy(r => r.MatchId))
+        {
+            decimal win = 0, draw = 0, loss = 0;
+            foreach (var row in g)
+            {
+                if (row.OptionCode == "3") win = row.Odds;
+                else if (row.OptionCode == "1") draw = row.Odds;
+                else if (row.OptionCode == "0") loss = row.Odds;
+            }
+            if (win > 1 && draw > 1 && loss > 1)
+                map[g.Key] = (win, draw, loss);
+        }
+        return map;
+    }
+
+    private async Task<Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>> GetLatestPlayAsync(
+        IEnumerable<long> matchIds, string playType, CancellationToken ct)
+    {
+        var ids = matchIds.Distinct().ToArray();
+        var map = new Dictionary<long, (decimal Win, decimal Draw, decimal Loss)>();
+        if (ids.Length == 0) return map;
+
+        await using var conn = await _factory.OpenAsync(ct);
+        var rows = await conn.QueryAsync<(long MatchId, string OptionCode, decimal Odds)>(new CommandDefinition(
+            // READUNCOMMITTED / 超时的理由同 GetEarliestPlayAsync，见那里的注释。
+            @"SELECT MatchId, OptionCode, Odds
+              FROM (
+                  SELECT MatchId, OptionCode, Odds,
+                         ROW_NUMBER() OVER (PARTITION BY MatchId, OptionCode ORDER BY CapturedAt DESC) AS rn
+                  FROM dbo.FbJcOddsHistory WITH (READUNCOMMITTED)
+                  WHERE PlayType = @play AND MatchId IN @ids AND OptionCode IN ('3','1','0') AND Odds > 1
+              ) t
+              WHERE rn = 1",
+            new { ids, play = playType }, commandTimeout: OddsReadTimeoutSeconds, cancellationToken: ct));
+
+        foreach (var g in rows.GroupBy(r => r.MatchId))
+        {
+            decimal win = 0, draw = 0, loss = 0;
+            foreach (var row in g)
+            {
+                if (row.OptionCode == "3") win = row.Odds;
+                else if (row.OptionCode == "1") draw = row.Odds;
+                else if (row.OptionCode == "0") loss = row.Odds;
+            }
+            if (win > 1 && draw > 1 && loss > 1)
+                map[g.Key] = (win, draw, loss);
+        }
+        return map;
+    }
+
+    /// <summary>北单开奖页上的 SP。同一选项价格没变就不再写一行。</summary>
+    public async Task InsertChangedAsync(IReadOnlyList<JcOddsHistoryPoint> points, CancellationToken ct = default)
+    {
+        if (points.Count == 0) return;
+        var at = DateTime.Now;
+        await using var conn = await _factory.OpenAsync(ct);
+        foreach (var p in points)
+        {
+            if (p.MatchId is null || p.Odds <= 1) continue;
+            await conn.ExecuteAsync(new CommandDefinition(
+                @"INSERT INTO dbo.FbJcOddsHistory (MatchId, MatchNo, PlayType, OptionCode, OptionName, Odds, CapturedAt)
+                  SELECT @mid, @no, @pt, @code, @name, @odds, @at
+                  WHERE NOT EXISTS (
+                      SELECT 1 FROM dbo.FbJcOddsHistory
+                      WHERE MatchId = @mid AND PlayType = @pt AND OptionCode = @code AND Odds = @odds)",
+                new
+                {
+                    mid = p.MatchId, no = p.MatchNo, pt = p.PlayType, code = p.OptionCode,
+                    name = p.OptionName, odds = p.Odds, at
+                }, cancellationToken: ct));
+        }
+    }
+
+    private static string PlayName(string playType) => playType switch
+    {
+        JcPlayTypes.Nspf => "让球胜平负",
+        JcPlayTypes.Spf => "胜平负",
+        JcPlayTypes.Bf => "全场比分",
+        JcPlayTypes.Jq => "总进球",
+        JcPlayTypes.Bq => "半全场",
+        _ => playType
+    };
+}

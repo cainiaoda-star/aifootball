@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AiFootBall.Sources\AiFootBall.Sources.csproj" />
+    <!-- 2026-11-10 加：SyncLog 的列宽截断是可测的纯函数，而 SyncLogRepository 在 Data 层。
+         不加这条引用就只能靠「读代码确认」，那不是验证。 -->
+    <ProjectReference Include="..\..\src\AiFootBall.Data\AiFootBall.Data.csproj" />
+  </ItemGroup>
+
+</Project>
