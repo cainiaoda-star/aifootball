@@ -96,6 +96,11 @@ public sealed class MilkInputRejection
     public const string ReasonLeagueExcluded = "league-excluded";
     /// <summary>该场进推荐时一条赔率都没有；证据必须与源侧档数一致（source=0）。</summary>
     public const string ReasonNoOdds = "no-odds";
+    /// <summary>
+    /// 这场已经开出，但赔率簿不是完整域。只拒绝这一场，不拿它阻断整轮。
+    /// 证据是 <see cref="JcPlayDomain.GapEvidence"/>，并且必须和源侧缺档一致。
+    /// </summary>
+    public const string ReasonIncompleteOdds = "incomplete-odds";
     /// <summary>主客队名缺失，无法定位球队。</summary>
     public const string ReasonNameMissing = "name-missing";
     /// <summary>队名解析不出——**恒不接受**（2026-11-14 第十二轮），须补别名或人工确认。</summary>
@@ -138,7 +143,7 @@ public sealed class MilkInputRejection
         {
             Reason = ReasonLeagueExcluded,
             EvidencePrefix = "list=",
-            Condition = "联赛命中 NoPickLeagues / NoParlayLeagues（同一份名单，不另写）"
+            Condition = "历史拒绝证据仍按 NoPickLeagues / NoParlayLeagues 核对。2026-11-16 起竞彩大奶不再写出这类整场拒绝"
         },
         new()
         {
@@ -146,6 +151,13 @@ public sealed class MilkInputRejection
             EvidencePrefix = "options=0",
             Condition = "该场进推荐时源侧档数为 0；证据必须写 `options=0;source=<源侧档数>`，"
                         + "源侧档数与 0 不符即判证据不成立（赔率有记录不等于本轮没价）"
+        },
+        new()
+        {
+            Reason = ReasonIncompleteOdds,
+            EvidencePrefix = "sale-basis=unavailable",
+            Condition = "这场赔率簿不完整。证据必须等于源侧按标准域算出的缺档，"
+                        + "只停这一场；赔率簿其实完整时这条拒绝不成立"
         },
         new()
         {
@@ -239,7 +251,7 @@ public sealed class MilkSourceReport
     /// <summary>本轮的拒绝记录（已回填 Accepted）。落库用。</summary>
     public IReadOnlyList<MilkInputRejection> Rejections { get; init; } = Array.Empty<MilkInputRejection>();
 
-    public bool Ok => Issues.Count == 0;
+    public bool Ok => !Issues.Any(i => i.BlocksRound);
 
     public int ComputedCount { get; init; }
     public int RejectedCount { get; init; }
@@ -254,7 +266,9 @@ public sealed class MilkSourceReport
                 .OrderBy(g => g.Key, StringComparer.Ordinal)
                 .Select(g => $"{g.Key} {g.Count()}");
             var tail = Rejections.Count == 0 ? "无" : string.Join("、", byReason);
-            return $"源 {Source.Count} 场（算 {ComputedCount} / 拒 {RejectedCount}）；拒绝 {tail}";
+            var parked = Issues.Count(i => i.Kind == "source-option-gap" && !i.BlocksRound);
+            var parkedText = parked == 0 ? "" : $"；缺档记在场上 {parked}";
+            return $"源 {Source.Count} 场（算 {ComputedCount} / 拒 {RejectedCount}）；拒绝 {tail}{parkedText}";
         }
     }
 
@@ -286,15 +300,17 @@ public sealed class MilkSourceReport
 ///      少一档同样是「引擎少算」，不能靠「预期=输入」自动通过；
 ///   ⑥ **源侧自己少了档**也要发现（2026-11-14 第八轮）：每个已启售玩法必须是
 ///      <see cref="JcPlayDomain"/> 的完整档位域，少一档即 `source-option-gap`。
-///      唯一豁免：该场没有输入凭证，且拒绝证据被独立判定为「明确联赛排除」。
-///      豁免只少报这一场的 `source-option-gap`，不删源场次、不删拒绝记录、不消其它问题。
+///      2026-11-16：缺档只停在这一场。这场没有输入凭证、并且已有一条被接受的拒绝时，
+///      缺档仍写进问题，但 <see cref="MilkLedgerIssue.BlocksRound"/> 为 false，不让整轮失败。
+///      这场已经算过（有输入凭证）时，缺档仍阻断整轮。
+///      历史联赛排除仍只少报这一场的缺档，不删源场次、不删拒绝记录、不消其它问题。
 ///
 /// 为什么 ⑥ 不能省：⑤ 只查「源有档 → 引擎没算」，源侧自己少采一档时预期和输入一起少，
 /// 两边同时为「对」——与 1419319 同一种病因（预期取自被检验的一方）。
 /// 也正因为如此，「采集里没有某玩法的赔率」**不得**被当成「该玩法未启售」：
 /// 未启售需要源侧落库的启售清单才能证明，而库内没有这个字段（见 <see cref="SaleBasis"/>），
-/// 所以一律按缺档阻断——这是**无法判定时的保守阻断**，不是「54 档齐全即合格」的验收标准。
-/// 阻断时把 `sale-basis=unavailable` 写进问题键，事后能分清「真缺档」与「不知道有没有启售」。
+/// 所以仍按缺档记在该场。这是**无法判定时的保守记录**，不是「54 档齐全即合格」的验收标准，
+/// 也不再拿一场缺档阻断整轮。问题键仍写 `sale-basis=unavailable`。
 /// </summary>
 public static class MilkSourceSlate
 {
@@ -418,6 +434,18 @@ public static class MilkSourceSlate
                 && !IsConfirmedLeagueExclusion(r, src.FirstOrDefault(m => m.MatchId == r.MatchId), out var leagueDefect))
                 defect = leagueDefect;
 
+            if (defect.Length == 0
+                && string.Equals(r.Reason, MilkInputRejection.ReasonIncompleteOdds, StringComparison.Ordinal)
+                && r.EvidenceOk)
+            {
+                var booked = src.FirstOrDefault(m => m.MatchId == r.MatchId);
+                var expected = JcPlayDomain.GapEvidence(booked?.OptionKeys);
+                if (booked is null || JcPlayDomain.Gaps(booked.OptionKeys).Count == 0)
+                    defect = "赔率簿完整";
+                else if (!string.Equals(r.Evidence, expected, StringComparison.Ordinal))
+                    defect = "缺档证据与源侧不符";
+            }
+
             // `name-unresolved` 不能靠引擎自证：名称认不出恰恰说明引擎那套名字解析在这个名字上失效了。
             // 但「库里查得到几场」也**证明不了它是新队**——所以下面两次独立查询（场次、相近写法）
             // 从第十二轮起只用来**说清拒绝的理由**，没有任何一条构成放行依据。
@@ -501,12 +529,13 @@ public static class MilkSourceSlate
         // 对**所有**源场次都查，不只查算过的：一场被 no-odds 拒绝、源侧却只采到三个玩法时，
         // 若只查算过的场次，这个拒绝就永远无从反驳——正是「历史有记录 ≠ 本轮有效」的反面。
         //
-        // 明确联赛排除是唯一例外（2026-11-15）：名单命中与模型、赔率、队名无关，
-        // 缺档不能再把这一场卡成「应计算却没采全」。例外只跳过下面的 source-option-gap；
-        // 有输入凭证、证据对不上、或同场还有别的拒绝，都不跳。no-odds / 队名 / 样本不足照旧全查。
+        // 历史联赛排除仍整段跳过缺档（旧证据，2026-11-15）。
+        // 2026-11-16：其它已经停在该场的拒绝也把缺档留在该场，不再阻断整轮。
+        // 这场有输入凭证，说明已经拿不完整的赔率簿算过，缺档仍阻断。
         foreach (var m in src)
         {
             if (ExemptSourceOptionGap(m, rej, inIds)) continue;
+            var parked = GapStaysOnMatch(m, final, inIds);
             foreach (var play in JcPlayDomain.Plays)
             {
                 var domain = JcPlayDomain.Of(play);
@@ -518,7 +547,7 @@ public static class MilkSourceSlate
                     var bar = k.IndexOf('|');
                     if (bar <= 0) continue;
                     if (!string.Equals(k[..bar], play, StringComparison.Ordinal)) continue;
-                    have.Add(k[(bar + 1)..]);
+                    have.Add(JcPlayDomain.Normalize(k[(bar + 1)..]));
                 }
 
                 var missingTotal = 0;
@@ -537,7 +566,8 @@ public static class MilkSourceSlate
                     Key = $"{m.MatchId}|{m.MatchNo}|{play}|缺 {missingTotal}/{domain.Count}"
                           + $"|{string.Join(",", sample)}{(missingTotal > sample.Count ? ",…" : "")}"
                           + $"|sale-basis={SaleBasis}",
-                    Expected = domain.Count, Actual = domain.Count - missingTotal
+                    Expected = domain.Count, Actual = domain.Count - missingTotal,
+                    BlocksRound = !parked
                 });
             }
         }
@@ -637,7 +667,71 @@ public static class MilkSourceSlate
     }
 
     /// <summary>
-    /// 拒绝证据是否独立构成「明确联赛排除」。
+    /// 这场没有进入计算，并且恰好有一条已被接受的拒绝。
+    /// 缺档就记在这条拒绝旁边，不拿去阻断整轮。
+    /// </summary>
+    private static bool GapStaysOnMatch(
+        MilkSourceMatch match,
+        IReadOnlyList<MilkInputRejection> rejections,
+        IReadOnlySet<long> inputIds)
+    {
+        if (inputIds.Contains(match.MatchId)) return false;
+
+        MilkInputRejection? only = null;
+        var count = 0;
+        foreach (var rejection in rejections)
+        {
+            if (rejection.MatchId != match.MatchId) continue;
+            count++;
+            only = rejection;
+            if (count > 1) return false;
+        }
+
+        return count == 1 && only is { Accepted: true };
+    }
+
+    /// <summary>
+    /// 源侧赔率簿不完整的场次退出本轮计算：删掉它的注、凭证和快照，改记一条拒绝。
+    /// 一条赔率都没有用 <see cref="MilkInputRejection.ReasonNoOdds"/>，
+    /// 有残缺用 <see cref="MilkInputRejection.ReasonIncompleteOdds"/>。
+    /// 其它场次的注单不动。
+    /// </summary>
+    public static void ParkIncompleteBooks(MilkBuildResult build, IReadOnlyList<MilkSourceMatch>? source)
+    {
+        if (build is null || source is null) return;
+        foreach (var match in source)
+        {
+            if (match.MatchId <= 0 || JcPlayDomain.Gaps(match.OptionKeys).Count == 0) continue;
+            var id = match.MatchId;
+            build.Picks.RemoveAll(p => p.MatchId == id);
+            build.Inputs.RemoveAll(p => p.MatchId == id);
+            build.ProbSnapshots.RemoveAll(p => p.MatchId == id);
+            build.Gates.RemoveAll(p => p.MatchId == id);
+            build.ShowRows.RemoveAll(p => p.MatchId == id);
+            build.CounterCandidates.RemoveAll(p => p.MatchId == id);
+            build.SlateExemptions.RemoveAll(p => p.MatchId == id);
+            build.Rejections.RemoveAll(p => p.MatchId == id);
+
+            var empty = match.OptionCount == 0;
+            build.Rejections.Add(new MilkInputRejection
+            {
+                MatchId = id,
+                MatchNo = match.MatchNo,
+                LeagueName = match.LeagueName,
+                HomeTeam = match.HomeTeam,
+                AwayTeam = match.AwayTeam,
+                SalesDate = match.SalesDate,
+                Reason = empty ? MilkInputRejection.ReasonNoOdds : MilkInputRejection.ReasonIncompleteOdds,
+                Evidence = empty
+                    ? "options=0;sale-basis=" + SaleBasis
+                    : JcPlayDomain.GapEvidence(match.OptionKeys)
+            });
+        }
+    }
+
+    /// <summary>
+    /// 历史拒绝证据是否独立构成「明确联赛排除」。
+    /// 2026-11-16 起竞彩大奶不再写出整场联赛拒绝；这里只核对已经落库的旧证据。
     /// 只认 <c>list</c>、<c>league</c> 各出现一次；缺字段、重复或冲突、未知 list、
     /// 与源场次联赛名不一致，都返回 false。名单只用 <see cref="NoPickLeagues"/> /
     /// <see cref="NoParlayLeagues"/>，不另建一张。

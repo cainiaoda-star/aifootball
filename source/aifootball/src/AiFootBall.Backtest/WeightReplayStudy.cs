@@ -107,7 +107,7 @@ public static class WeightReplayStudy
         Console.WriteLine("- 命中率高不代表赚：专挑低赔同样会把 ROI 压到返奖率以下，所以两列必须一起看。");
         Console.WriteLine("- **只有验证段的排序与调参段一致，那个 w 才算站得住**；两段打架就是过拟合。");
         Console.WriteLine("- 每场 1 注 × 几百场，同档命中个位数是常态，别把 2~3 注的差当成结论。");
-        Console.WriteLine("- 比分（BF）不在这里：`EnableScorePicks = false`，当前不发注，回放 ROI 没有落点。");
+        Console.WriteLine("- 比分（BF）不在这份回放里：探针只读，不走出票链。2026-11-16 起引擎开关已允许出票。");
         return 0;
     }
 

@@ -128,7 +128,7 @@ public class SteadyPickTests
         Assert.Empty(built.Picks);
     }
 
-    /// <summary>不推名单（欧国联/友谊赛/青年赛）与黑名单（澳超）都不出，和主榜共用同一份名单。</summary>
+    /// <summary>稳胆仍跳过不推名单和澳超。竞彩大奶入漏斗前不再用这份跳过。</summary>
     [Theory]
     [InlineData("欧国联")]
     [InlineData("国际友谊赛")]

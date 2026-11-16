@@ -312,6 +312,7 @@ public class MilkSourceSlateTests
     {
         // 档数仍是 54（BF 少一档、BQ 多一条脏代码），只看总数会判「齐」。
         // 生产中半全场真出现过 `平/胜`/`平/负`/`平/平` 这类脏代码，所以必须逐档位比对。
+        // 这场没有输入凭证，缺档只记在该场，不再单独把整轮判失败。
         var keys = FullKeys();
         keys.Remove("BF|2:1");
         keys.Add("BQ|平/胜");
@@ -322,9 +323,68 @@ public class MilkSourceSlateTests
             new[] { Src(1, "周六001", "A", "B", keys: keys) }, Array.Empty<MilkInputMatch>(),
             new[] { Rej(1, "周六001", MilkInputRejection.ReasonThinSample, "games=1/2;min=5") }, RunAt);
 
-        Assert.False(r.Ok);
-        Assert.Contains(r.Issues, i => i.Kind == "source-option-gap" && i.Key.Contains("2:1"));
+        Assert.True(r.Ok, r.Detail);
+        var gap = Assert.Single(r.Issues, i => i.Kind == "source-option-gap");
+        Assert.Contains("2:1", gap.Key);
+        Assert.False(gap.BlocksRound);
         Assert.DoesNotContain(r.Issues, i => i.Kind == "source-option-gap" && i.Key.Contains("BQ"));
+    }
+
+    [Fact]
+    public void IncompleteBook_IsParkedOnThatMatch_AndTheCompleteMatchStays()
+    {
+        var full = FullKeys();
+        var gapKeys = Without("BF|1:0");
+        var source = new[]
+        {
+            Src(1, "周六001", "缺档主", "缺档客", keys: gapKeys),
+            Src(2, "周六002", "合成主", "合成客", keys: full)
+        };
+        var build = new MilkBuildResult
+        {
+            Inputs =
+            {
+                InpFrom(1, "周六001", "缺档主", "缺档客", gapKeys),
+                InpFrom(2, "周六002", "合成主", "合成客", full)
+            },
+            Picks =
+            {
+                new MilkPick { MatchId = 1, PlayType = JcPlayTypes.Bf, OptionCode = "2:1", OptionName = "2:1", Odds = 10m },
+                new MilkPick { MatchId = 2, PlayType = JcPlayTypes.Bq, OptionCode = "3-3", OptionName = "3-3", Odds = 3.50m }
+            }
+        };
+
+        MilkSourceSlate.ParkIncompleteBooks(build, source);
+        var report = MilkSourceSlate.Verify(source, build.Inputs, build.Rejections, RunAt);
+
+        Assert.True(report.Ok, report.Detail);
+        Assert.DoesNotContain(build.Picks, p => p.MatchId == 1);
+        Assert.Contains(build.Picks, p => p.MatchId == 2 && p.OptionCode == "3-3");
+        Assert.DoesNotContain(build.Inputs, i => i.MatchId == 1);
+        Assert.Contains(build.Inputs, i => i.MatchId == 2);
+        var parked = Assert.Single(build.Rejections);
+        Assert.Equal(MilkInputRejection.ReasonIncompleteOdds, parked.Reason);
+        Assert.Equal(JcPlayDomain.GapEvidence(gapKeys), parked.Evidence);
+        Assert.True(Assert.Single(report.Rejections).Accepted);
+        var gap = Assert.Single(report.Issues, i => i.Kind == "source-option-gap");
+        Assert.StartsWith("1|", gap.Key);
+        Assert.Contains("1:0", gap.Key);
+        Assert.False(gap.BlocksRound);
+    }
+
+    [Fact]
+    public void IncompleteOdds_OnACompleteBook_IsNotAccepted()
+    {
+        var evidence = JcPlayDomain.GapEvidence(FullKeys());
+        var r = MilkSourceSlate.Verify(
+            new[] { Src(1, "周六001", "A", "B") },
+            Array.Empty<MilkInputMatch>(),
+            new[] { Rej(1, "周六001", MilkInputRejection.ReasonIncompleteOdds, evidence) },
+            RunAt);
+
+        Assert.False(r.Ok);
+        Assert.Contains(r.Issues, i => i.Kind == "rejected-rejection" && i.Key.Contains("赔率簿完整"));
+        Assert.False(Assert.Single(r.Rejections).Accepted);
     }
 
     [Fact]

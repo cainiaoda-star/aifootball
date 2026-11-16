@@ -6,8 +6,8 @@ namespace AiFootBall.Tests;
 
 /// <summary>
 /// 大奶推荐引擎（2026-11-04 改向）。
-/// 关键约束：半全场只发 胜胜/平平/负负 且 ≥4.0（逆转档实测净亏，2026-11-04 晚下线）；
-/// 比分 4.0~100 倍、赔率三位数不发；总进球 4.0 起、5 球档不发；
+/// 关键约束：半全场九档都发，2026-11-16 起不再卡 4~8 倍，只看「能中」；
+/// 比分重新出票，不再卡赔率区间；总进球 4.0~10 倍、5 球档不发；
 /// 排序按 EV，EV 上限 2.5（超过的是模型在冷门格子上编概率）。
 /// </summary>
 public class MilkPickTests
@@ -71,7 +71,6 @@ public class MilkPickTests
         Assert.NotEmpty(bq);
         // 白名单：只可能发出这四个组合
         Assert.All(bq, p => Assert.Contains(p.OptionCode, MilkPickEngine.HalfFullCombos));
-        Assert.All(bq, p => Assert.True(p.Odds >= MilkPickEngine.MinHalfFullOdds));
         // 同一场只讲一个剧本：留下来的组合，全场方向必须一致。
         // （3-1/0-1 是全场平，3-0 是全场负，0-3 是全场胜——混在一起就是自相矛盾）
         Assert.Single(bq.Select(p => p.OptionCode[2]).Distinct());
@@ -83,10 +82,8 @@ public class MilkPickTests
         // 用户 2026-11-04 指出的问题：同一场既发「比分 3:0（主胜）」又发「半全场 胜平（全场打平）」。
         // 顺风档改版后，锚点通常是「胜胜」（概率高、EV 稳），比分会反过来被它筛。
         //
-        // 2026-11-08 二次收紧：跨玩法去重从「方向矛盾才撤」升级为「一场只留一注」。
-        // 起因是周日005 江原FC vs 全北现代一场挂了三注（比分 0:1 + 总进球 1 球 + 半全场 负负），
-        // 0:1 成立则 1 球必然成立，是同一笔钱押三遍。所以本测试的断言从
-        // 「同方向的比分保留」改成「只留下玩法优先级最高的那一注」。
+        // 方向对不上的平平、0:0、0 球仍然撤掉。
+        // 同方向且能中的 2:1 留下，不靠同场名额去抢半全场的位置。
         var model = Model();
         var rec = Rec(1);
         var odds = new Dictionary<long, List<JcOddsHistoryPoint>>
@@ -95,7 +92,7 @@ public class MilkPickTests
             {
                 Pt(1, JcPlayTypes.Bq, "3-3", 4.2m),    // 胜胜：终场主胜，概率最高 → 锚点
                 Pt(1, JcPlayTypes.Bq, "1-1", 8.0m),    // 平平：终场平 → 必须被撤
-                Pt(1, JcPlayTypes.Bf, "2:1", 10.0m),   // 主胜 3 球 → 同方向，但同场只留一注 → 撤
+                Pt(1, JcPlayTypes.Bf, "2:1", 10.0m),   // 主胜，与胜胜同方向，双选的第二注
                 Pt(1, JcPlayTypes.Bf, "0:0", 22.0m),   // 终场平 → 与胜胜矛盾，撤
                 Pt(1, JcPlayTypes.Jq, "0", 22.0m),     // 0 球 → 与胜胜矛盾，撤
             }
@@ -104,9 +101,9 @@ public class MilkPickTests
         var picks = MilkPickEngine.Build(new[] { rec }, odds, model);
         var codes = picks.Select(p => p.OptionCode).ToHashSet();
 
-        Assert.Single(picks);
+        Assert.Equal(MilkPickEngine.PerMatchMaxPicks, picks.Count);
         Assert.Contains("3-3", codes);
-        Assert.DoesNotContain("2:1", codes);    // 同场只留一注，玩法优先级 BQ > BF
+        Assert.Contains("2:1", codes);
         Assert.DoesNotContain("1-1", codes);    // 平平与胜胜方向冲突
         Assert.DoesNotContain("0:0", codes);    // 平局比分与胜胜矛盾
         Assert.DoesNotContain("0", codes);      // 0 球与胜胜矛盾
@@ -122,9 +119,7 @@ public class MilkPickTests
         // 于是同一场可以同时挂比分 + 总进球 + 半全场，三注互为子集、抽三遍水。
         var model = Model();
         var rec = Rec(1);
-        // 2026-11-09 改：原来用 4 档比分当载体，比分已停发
-        // （MilkPickEngine.EnableScorePicks=false，返奖率 0.710 结构性劣势）。
-        // 换成半全场 2 档 + 总进球 2 档，仍然是「同一场多个玩法多个互斥档」，
+        // 载体是半全场 2 档 + 总进球 2 档，仍然是「同一场多个玩法多个互斥档」，
         // 验证意图不变：跨玩法去重后整场只留一注。
         var odds = new Dictionary<long, List<JcOddsHistoryPoint>>
         {
@@ -168,7 +163,7 @@ public class MilkPickTests
     }
 
     [Fact]
-    public void HalfFull_Below40Odds_NotPublished()
+    public void HalfFull_Below40Odds_FollowsCanHit()
     {
         var model = Model();
         var recs = new[] { Rec(1), Rec(2) };
@@ -180,8 +175,9 @@ public class MilkPickTests
 
         var picks = MilkPickEngine.Build(recs, odds, model);
 
-        Assert.DoesNotContain(picks, p => p.MatchId == 1 && p.OptionCode == "3-3");  // 3.9 < 4.0 大奶线
-        Assert.Contains(picks, p => p.MatchId == 2 && p.OptionCode == "3-3");        // 4.0 恰好过线
+        // 2026-11-16：3.9 不再因为低于 4 被拒。4.0 原来就能发，3.9 走同一套「能中」闸，所以也必须在。
+        Assert.Contains(picks, p => p.MatchId == 1 && p.OptionCode == "3-3");
+        Assert.Contains(picks, p => p.MatchId == 2 && p.OptionCode == "3-3");
         // 0-0 = 半场客胜且全场客胜，这个模型里主队稳赢，概率远不到 12% 的命中率门槛
         Assert.DoesNotContain(picks, p => p.OptionCode == "0-0");
     }
@@ -248,7 +244,7 @@ public class MilkPickTests
     }
 
     [Fact]
-    public void Ranked_ByEv_Descending_And_Capped()
+    public void Ranked_ByEv_Descending_WithoutDailyCap()
     {
         var model = Model();
         var recs = Enumerable.Range(1, 10).Select(i => Rec(i, $"周三{i:000}")).ToList();
@@ -258,7 +254,8 @@ public class MilkPickTests
 
         var picks = MilkPickEngine.Build(recs, odds, model);
 
-        Assert.True(picks.Count <= MilkPickEngine.MaxPicks);
+        // 比分没有每日名额。十场都能中时必须多于 4 注，并且仍按 EV 从高到低。
+        Assert.True(picks.Count > 4);
         for (var i = 1; i < picks.Count; i++)
             Assert.True(picks[i - 1].Ev >= picks[i].Ev);
         // 不允许同一场占两席之外还混进没有 MatchId 的行

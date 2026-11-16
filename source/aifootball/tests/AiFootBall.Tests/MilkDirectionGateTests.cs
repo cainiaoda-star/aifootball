@@ -272,8 +272,7 @@ public class MilkDirectionGateTests
     private static List<JcOddsHistoryPoint> PickBook(decimal home, decimal draw, decimal away) => new()
     {
         Spf("3", home), Spf("1", draw), Spf("0", away),
-        // 2026-11-09 改：原来这里放三档比分当「可出注载体」，比分已停发
-        // （MilkPickEngine.EnableScorePicks=false），换成总进球 2/3 球。
+        // 载体用总进球 2/3 球，方向断言不依赖比分出不出。
         Jq("2", 4.2m), Jq("3", 4.0m),
         new JcOddsHistoryPoint
         {
@@ -340,8 +339,7 @@ public class MilkDirectionGateTests
     public void BuildDetailed_NoSpf_GateStaysOpen()
     {
         // 快照里没有胜平负（只有总进球/半全场）时闸算不出方向，不能因此把榜清空。
-        // 2026-11-09 改：原来靠比分（BF）当载体，比分已停发（MilkPickEngine.EnableScorePicks=false），
-        // 换成总进球 2/3 球——这是实战里最常过闸的档（22 注里 6 注都是它）。
+        // 载体用总进球 2/3 球，这样没有胜平负时闸的开合不依赖比分。
         var points = new List<JcOddsHistoryPoint>
         {
             Jq("2", 4.2m), Jq("3", 4.0m),

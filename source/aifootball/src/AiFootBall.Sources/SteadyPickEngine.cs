@@ -6,7 +6,7 @@ namespace AiFootBall.Sources;
 /// 稳胆出注（2026-11-09 加，用户拍板）。
 ///
 /// 规则只有四步，**每一步都能被复算**——这是它和主榜最大的区别：
-///   1. 排除不推名单（欧国联/友谊赛/青年赛）与黑名单（澳超）；
+///   1. 稳胆仍排除不推名单（欧国联/友谊赛/青年赛）与黑名单（澳超）。竞彩大奶从 2026-11-16 起不在入漏斗前读这两份名单；
 ///   2. 取该场竞彩胜平负（SPF，不让球）三档的赛前最后快照，去水成概率；
 ///   3. 取概率最高的那一档 —— 这就是「市场最看好」；
 ///   4. 该档赔率 ≤ <see cref="SteadyPickRules.MaxOdds"/>，全天后按赔率升序取前
@@ -46,7 +46,7 @@ public static class SteadyPickEngine
             if (r.MatchId is not long mid) continue;
             var label = $"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}";
 
-            // 1) 名单。与主榜共用同一份，不另立一套——名单维护在一处，两边行为才一致。
+            // 1) 名单。稳胆仍跳过。竞彩大奶从 2026-11-16 起不在入漏斗前读这两份名单。
             if (NoPickLeagues.IsExcluded(r.LeagueName) || NoParlayLeagues.IsExcluded(r.LeagueName))
             {
                 result.Excluded++;

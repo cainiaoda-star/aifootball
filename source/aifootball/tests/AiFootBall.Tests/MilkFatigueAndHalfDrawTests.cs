@@ -48,7 +48,7 @@ public class MilkFatigueAndHalfDrawTests
     };
 
     [Fact]
-    public void 胜平负平_上限降到8后整类不再出注_两道闸都过不去()
+    public void 胜平负平_赔率7点5时仍因能中不出注()
     {
         var model = DrawishModel();
         var rec = Rec(7);
@@ -70,11 +70,8 @@ public class MilkFatigueAndHalfDrawTests
                 Pt(7, JcPlayTypes.Jq, "5", 15.0m),
                 Pt(7, JcPlayTypes.Jq, "6", 20.0m),
                 Pt(7, JcPlayTypes.Jq, "7", 25.0m),
-                // 只给反转档，不给胜胜/平平，确保这一注就是该场的剧本锚点。
-                // 2026-11-09：真实胜平/负平均价 15.43，被 MaxHalfFullOdds=8 整类拦掉
-                // （台账 3 注 13/17/30 倍全黑、421 场回放 8 倍以上回报 0.711，两个独立样本同向）。
-                // 本测试验证的是「概率来自 HalfDrawModel」这条路径本身，与赔率高低无关，
-                // 所以载体赔率取 7.5 让它能过闸；「超上限时不发」由下面那条测试单独锁。
+                // 只给反转档，不给胜胜/平平。赔率带已于 2026-11-16 取消，
+                // 7.5 仍过不了基线 EV（英超胜平约 6.9% × 7.5 低于返奖率），所以这里锁的是「能中」。
                 Pt(7, JcPlayTypes.Bq, "3-1", 7.5m),
                 Pt(7, JcPlayTypes.Bq, "0-1", 7.5m),
             }
@@ -84,14 +81,8 @@ public class MilkFatigueAndHalfDrawTests
 
         var refined = picks.Where(p => p.HalfDrawRefined).ToList();
 
-        // 2026-11-09：MaxHalfFullOdds 15 → 8 之后，胜平/负平被两道闸同时挡住，整类退出。
-        //   ① 赔率闸：真实均价 15.43 > 8，根本进不到选注环节；
-        //   ② 即使把赔率压到 8 以内（本测试用的 7.5），HalfDrawModel 给的 4~9% 概率
-        //      算出的 EV 只有 0.30~0.68，过不了 BQ 的基线 EV 闸（要求 ≥1.00 倍返奖率，
-        //      即赔率需 ≥ 8.9 才可能放行）。
-        // 也就是说「把上限放宽回 15」救不回这两档——放宽赔率闸仍会被 EV 闸拦，
-        // 唯一能救它们的做法是放宽 EV 闸，那是另一个决策。
-        // HalfDrawModel 的代码保留在引擎里，将来重启时需要重新验证。
+        // 赔率带取消之后，7.5 仍因基线 EV 出不了：英超胜平实测约 6.9%，
+        // 6.9% × 7.5 低于半全场返奖率。这不是赔率上限在拦。
         Assert.Empty(refined);
 
         // 同一场也不该出现胜平/负平（换档逻辑不能把它们塞回来）。
@@ -101,10 +92,8 @@ public class MilkFatigueAndHalfDrawTests
     [Fact]
     public void 胜平负平赔率超上限时整类不再出注()
     {
-        // 设计后果锁定（2026-11-09 MaxHalfFullOdds 15 → 8）：
-        // 胜平/负平真实均价 15.43，落到上限之外，两档会整类退出。
-        // 这条测试的存在意义是：将来有人把上限放宽回 15 时，会立刻看到这里变红，
-        // 从而必须回答「8~15 倍那批到底该不该发」——那批在 421 场回放里回报 0.711。
+        // 2026-11-16 赔率上限已取消。15.43 若「能中」就该出；若基线或期望仍不过，就仍不出。
+        // 这条断言锁的是当前模型下的「能中」结果，不再锁赔率上限。
         var model = DrawishModel();
         var rec = Rec(7);
         var odds = new Dictionary<long, List<JcOddsHistoryPoint>>

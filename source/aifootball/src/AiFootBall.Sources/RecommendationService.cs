@@ -1137,7 +1137,6 @@ public sealed class RecommendationService
                          ?? build.ProbSnapshots.FirstOrDefault()?.ModelVersion,
             Capture = capture
         };
-        var plan = MilkBoardPlan.Create(run, build.Picks, today);
 
         // ★ 源侧快照（2026-11-14 第七轮）：本轮的「应该算哪些场」由**源侧**给出，不是引擎的输入凭证。
         //
@@ -1171,6 +1170,12 @@ public sealed class RecommendationService
             // 取不到源侧快照 = 无法证明覆盖，按失败处理（不发布），不猜。
             sourceError = $"{ex.GetType().Name}: {ex.Message}";
         }
+
+        // 赔率簿不完整的场次停在该场：删掉它的注和凭证，其余场次照旧进计划。
+        // 必须发生在组计划之前，否则缺档场的注会先写进榜。
+        if (sourceError is null)
+            MilkSourceSlate.ParkIncompleteBooks(build, source);
+        var plan = MilkBoardPlan.Create(run, build.Picks, today);
 
         // ★ 顺序（2026-11-13 第三轮，用户明确要求）：先落 running 头 → 再写四类数据 →
         // 全部成功才标 success 并发布。中途崩溃留下的是 running，**永远不会**被榜面选中；
@@ -1561,7 +1566,7 @@ public sealed class RecommendationService
             nameVariants: name => !string.IsNullOrWhiteSpace(name) && variantsSnapshot.TryGetValue(name!.Trim(), out var v)
                 ? v
                 : null);
-        pre.AddRange(sourceReport.Issues);
+        pre.AddRange(sourceReport.Issues.Where(i => i.BlocksRound));
         if (!string.IsNullOrWhiteSpace(sourceError))
             pre.Add(new MilkLedgerIssue
             {

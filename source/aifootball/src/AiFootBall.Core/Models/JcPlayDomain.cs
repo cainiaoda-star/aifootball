@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace AiFootBall.Core.Models;
 
@@ -96,6 +97,60 @@ public static class JcPlayDomain
         foreach (var d in domain)
             if (string.Equals(d, c, StringComparison.Ordinal)) return true;
         return false;
+    }
+
+    /// <summary>一个玩法少了几档。样例最多 4 个代码，多的记成省略号。</summary>
+    public readonly record struct OptionGap(string Play, int Missing, int DomainSize, string Sample);
+
+    /// <summary>
+    /// 按标准域列出缺档。键的形态是 <c>玩法|代码</c>。
+    /// 「其他」先归一成「其它」。域外脏码不补成缺档，也不拿来抵销缺档。
+    /// </summary>
+    public static IReadOnlyList<OptionGap> Gaps(IEnumerable<string>? optionKeys)
+    {
+        var have = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        if (optionKeys is not null)
+        {
+            foreach (var key in optionKeys)
+            {
+                if (string.IsNullOrEmpty(key)) continue;
+                var bar = key.IndexOf('|');
+                if (bar <= 0) continue;
+                var play = key[..bar];
+                var code = Normalize(key[(bar + 1)..]);
+                if (code.Length == 0) continue;
+                if (!have.TryGetValue(play, out var set))
+                    have[play] = set = new HashSet<string>(StringComparer.Ordinal);
+                set.Add(code);
+            }
+        }
+
+        var gaps = new List<OptionGap>();
+        foreach (var play in Plays)
+        {
+            var domain = Of(play)!;
+            have.TryGetValue(play, out var set);
+            var missing = new List<string>();
+            foreach (var code in domain)
+                if (set is null || !set.Contains(code)) missing.Add(code);
+            if (missing.Count == 0) continue;
+            var sample = string.Join(",", missing.Take(4));
+            if (missing.Count > 4) sample += ",…";
+            gaps.Add(new OptionGap(play, missing.Count, domain.Count, sample));
+        }
+        return gaps;
+    }
+
+    /// <summary>
+    /// 缺档证据。第一段固定是 <c>sale-basis=unavailable</c>，后面按玩法顺序列出缺了什么。
+    /// 核对器用整串相等来确认「拒绝的就是源侧这一份缺档」。
+    /// </summary>
+    public static string GapEvidence(IEnumerable<string>? optionKeys)
+    {
+        var parts = new List<string> { "sale-basis=" + MilkSourceSlate.SaleBasis };
+        foreach (var gap in Gaps(optionKeys))
+            parts.Add($"{gap.Play}={gap.Missing}/{gap.DomainSize}:{gap.Sample}");
+        return string.Join(";", parts);
     }
 
     /// <summary>全五玩法的总档数（3+3+9+8+31=54）。**只用于日志与展示**，不得作为核对判据。</summary>

@@ -33,6 +33,12 @@ public sealed class MilkLedgerIssue
     public int Expected { get; init; }
     public int Actual { get; init; }
 
+    /// <summary>
+    /// 这条问题是否让整轮不能发布。缺档记在未计算的场次上时为 false。
+    /// 其它问题默认阻断。
+    /// </summary>
+    public bool BlocksRound { get; init; } = true;
+
     public override string ToString()
         => $"{Table}:{Kind} [{Key}] 预期 {Expected} 实际 {Actual}";
 }

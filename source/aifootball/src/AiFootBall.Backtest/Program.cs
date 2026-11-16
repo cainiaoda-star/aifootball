@@ -182,7 +182,7 @@ public static class Program
             return await MilkIsolatedCheck.RunAsync(connStr);
 
         // 比分（BF）只读评估（2026-11-12 加）：模型 Hit@1 / Hit@3 vs 历史频率 vs 市场。
-        // 只读，且**不恢复出票**——`EnableScorePicks` 仍然关着，这里只回答「模型挑比分准不准」。
+        // 只读。2026-11-16 起 `EnableScorePicks` 已允许出票，这个探针仍然不写出票，只回答「模型挑比分准不准」。
         // 起因：校验方案要求「比分 Hit@1 在 8%~15% 算可用」，而这条数在项目里从来不存在。
         if (args.Any(a => a.Equals("score-probe", StringComparison.OrdinalIgnoreCase)))
         {

@@ -7,10 +7,10 @@ namespace AiFootBall.Sources;
 /// 竞彩大奶推荐引擎（2026-11-04 改向）。
 ///
 /// 用户指示：胜负彩、北单推荐下线，每日只推荐竞彩大奶——
-///   · 半全场（BQ）：只发 胜胜 / 平平 / 负负（2026-11-04 晚实测逆转档净亏，见 <see cref="HalfFullCombos"/>）；
-///   · 总进球（JQ）：官方 0~7+ 档，5 球档不发；
-///   · 比分（BF）：官方固定奖金全部比分档，赔率 4.0~<see cref="MaxScoreOdds"/>。
-/// 玩法侧重点（2026-11-06 定调）：主攻半全场 → 总进球为辅 → 其次比分，见 <see cref="PlayOrder"/>。
+///   · 半全场（BQ）：九档都发（含反转档，见 <see cref="HalfFullCombos"/>）。2026-11-16 起不再卡赔率区间，只看「能中」；
+///   · 总进球（JQ）：官方 0~7+ 档，赔率 4.0~<see cref="MaxGoalOdds"/>，5 球档不发；
+///   · 比分（BF）：2026-11-16 起重新出票。不卡赔率区间，也没有每日名额、同场上限或玩法优先，只看「能中」。
+/// 半全场、总进球、让球仍按 <see cref="PlayOrder"/> 排，每场非比分最多 <see cref="PerMatchMaxPicks"/> 注。比分不参与这道排序。
 ///
 /// 概率全部来自 Dixon-Coles 比分网格（<see cref="ScorelineModel"/>）：
 ///   · 比分 = 单格概率；
@@ -73,9 +73,6 @@ public static class MilkPickEngine
     /// </summary>
     public const int MinTeamGames = MilkThresholds.MinTeamGames;
 
-    /// <summary>半全场大奶线。用户 2026-11-04 指定：4.0 以下不发。</summary>
-    public const decimal MinHalfFullOdds = 4.0m;
-
     /// <summary>
     /// 半全场「模型 vs 市场」偏离上限（2026-11-07 新增，防 21.40%/EV 2.25 那类假 EV）。
     /// 判据来自页面自己的口径：EV 天花板 = 玩法返奖率（半全场 0.797），一注 EV 若显著超过它，
@@ -85,62 +82,23 @@ public static class MilkPickEngine
     /// </summary>
     public const decimal BqModelOverMarketMax = 1.6m;
 
-    /// <summary>比分 / 总进球的大奶线。与半全场共用同一条线，要动一起动。</summary>
+    /// <summary>
+    /// 总进球与让平的大奶线，仍是出票闸。比分从 2026-11-16 起不再用它。
+    /// </summary>
     public const decimal MinOptionOdds = 4.0m;
 
     /// <summary>
-    /// 比分赔率上限（2026-11-04 晚按实测加的，当夜从 100 收紧到 40）。
+    /// 比分玩法总开关。2026-11-09 曾停发，2026-11-16 起改回允许出票。
     ///
-    /// 竞彩 453~519 场实测命中率：4~6 倍 6.2% / 6~10 倍 11.4% / 10~20 倍 8.4% /
-    /// 20~40 倍 6.0% / 40~60 倍 6.1% / 60~100 倍 5.3% / 100 倍以上 4.4%。
-    /// 40 倍以上命中率开始塌，且 100 倍以上档被几个千倍冷门单点拉爆，样本极不稳。
-    /// 用户 2026-11-04 定调「目的是提高中奖率」，所以砍到 40：3:0@80、3:1@50 这类不再上榜。
+    /// 停发时的结构性记录留在这里，避免以后把开关误读成「没这回事」：
+    ///   ① 比分返奖率 0.710，比半全场/总进球（0.797）低 8.7 个点；
+    ///   ② 模型进球分布 MAE 1.53 球，差于市场 1.33；
+    ///   ③ 2026-11-09 回测（测试集 3107 场）Top-1 命中率模型 9.8% vs 市场 12.8%。
+    /// 2026-11-16 的决定是：这些记录不构成「一律不发」。能中的比分照发，不能中的仍不发。
+    /// 「能中」仍是概率门槛、期望闸和基线 EV，定义没有放宽。赔率上下限不再拦截。
+    /// 开关保留：改回 false 会重新停发，选注循环里的判断还在。
     /// </summary>
-    public const decimal MaxScoreOdds = 20m;
-
-    /// <summary>
-    /// 比分玩法总开关（2026-11-09 停发，用户「提高中奖率」第一段）。
-    ///
-    /// **停发理由不是「4 注 0 中」**——4 注全灭在 10% 真实命中率下概率高达 65.6%，是纯噪音，
-    /// 拿它当依据和我自己反复批判的错法是同一个。真实理由有两条，都是结构性的、不依赖样本：
-    ///   ① 比分返奖率 0.710，比半全场/总进球（0.797）低 8.7 个点。同样猜对率下，比分天生多亏一截，
-    ///      这是税，不是能力问题，再准也补不回来。
-    ///   ② 模型对进球分布的 MAE 1.53 球，比市场 1.33 还差。比分恰好是**唯一**只吃「进球分布精度」
-    ///      的玩法（半全场还有半场/全场相关性可用、总进球只需合计），模型在最弱的能力上被要求最高。
-    ///
-    /// 保留开关而不是删代码：第二段校准检验若证明模型在进球分布上确实优于市场，这里改回 true 即可。
-    /// 关掉后每天注数会减少 0~2 注，这是代价。
-    ///
-    /// ★ 2026-11-09 回测补证（Backtest 校准台，测试集 3107 场，切分 2026-10-29）：
-    ///   比分 Top-1 命中率 **模型 9.8% vs 市场 12.8%**，平均 Brier 0.9346 vs 0.9333。
-    ///   也就是说「选哪一个比分」这件事，模型比市场差 3 个点——这比返奖率论据更直接：
-    ///   不光是税高，是连挑都挑不过。停发的决定因此从推断变成有实测支撑。
-    /// </summary>
-    public const bool EnableScorePicks = false;
-
-    /// <summary>
-    /// 半全场赔率上限（2026-11-09 由 15 降到 8）。
-    ///
-    /// 依据：`league-probe ALL 2026-10-01` 用 **421 场真实竞彩九档 + 真实赛果** 扫描
-    /// 「赔率上限 × 概率下限」，每场一注（取过闸档里模型概率最高那档）：
-    ///
-    /// | 上限 | 注数 | 命中率 | 平均赔率 | 平注回报 |
-    /// |---|---|---|---|---|
-    /// | 6  | 372 | 16.4% | 4.72 | 0.763 |
-    /// | 8  | 401 | 16.5% | 5.04 | **0.811** |
-    /// | 10 | 415 | 15.2% | 5.30 | 0.743 |
-    /// | 12 | 415 | 15.2% | 5.36 | 0.743 |
-    /// | 15 | 415 | 14.5% | 5.51 | 0.711 |
-    ///
-    /// 15 倍是全部配置里最差的一档；10/12/15 三行几乎重合，说明 10 倍以上那批注是纯拖累。
-    /// 8 倍比 15 倍多 2 个点命中、多 0.10 回报，注数只从 415 掉到 401。
-    /// 根因：模型在半全场顺风档（胜胜/负负）与反转档上系统性高估 3~5 倍
-    /// （逐注看：模型 26~30% vs 市场 5~7%），高赔档把这种高估放大成了 EV。
-    ///
-    /// 代价要说清：胜平/负平（13~15 倍）、胜负/负胜（25 倍以上）整类不再发。
-    /// **这不是提高期望，是用赔率换命中率**——扫描里最好的一格（8 倍 + 模型≥市场）也只有 0.951。
-    /// </summary>
-    public const decimal MaxHalfFullOdds = 8m;
+    public static readonly bool EnableScorePicks = true;
 
     /// <summary>
     /// 总进球赔率上限（2026-11-09 新增）。总进球 2/3/4 球档赔率约 3.5~5.5，
@@ -707,13 +665,6 @@ public static class MilkPickEngine
         var sum = (1m - w) + w * sumMarket;
         return sum <= 0m ? 1m : 1m / sum;
     }
-
-    /// <summary>
-    /// 全榜上限 = 各玩法名额之和（半全场 2 + 让球胜平负 1 + 总进球 1 + 比分 0）。
-    /// 2026-11-11 由 8 改 4：比分返奖率 .710 最低，名额归零。
-    /// 注意 NSPF 那一份是名义值，引擎无生成器，实际出注数恒比这个小。
-    /// </summary>
-    public const int MaxPicks = 4;
 
     /// <summary>
     /// 各玩法的「单注概率下限」，也就是这条榜的门槛命中率。
@@ -1360,29 +1311,9 @@ public static class MilkPickEngine
 
         foreach (var r in recs)
         {
-            // 完全不出注的联赛（2026-11-09 加，起因「欧国联能不能推」）。
-            // 与下面的 NoParlayLeagues 不是一回事：那张是「能单关、不进串」，这张是「连单关都不发」。
-            // 证据见 NoPickLeagues 注释：欧国联回放 14 场 Top-1 模型 14.3% vs 市场 42.9%，出注口径 13 注 0 中。
-            if (NoPickLeagues.IsExcluded(r.LeagueName))
-            {
-                Reject(r, MilkInputRejection.ReasonLeagueExcluded,
-                    $"list=NoPickLeagues;league={r.LeagueName}");
-                if (funnel.Skipped.Count < 20)
-                    funnel.Skipped.Add($"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：{r.LeagueName} 属不推名单（国际赛/友谊赛/青年赛，模型无 alpha）");
-                continue;
-            }
-
-            // 联赛黑名单（2026-11-07 用户拍板）：澳超整类不发。大奶榜是组串的主要来源，
-            // 澳超无升降级+高方差+判罚争议高发（11-07 珀斯光荣越位进球判有效，正是实购 4 串 1 的挂腿）。
-            // 名单集中在 NoParlayLeagues，恢复某联赛只改那里。
-            if (NoParlayLeagues.IsExcluded(r.LeagueName))
-            {
-                Reject(r, MilkInputRejection.ReasonLeagueExcluded,
-                    $"list=NoParlayLeagues;league={r.LeagueName}");
-                if (funnel.Skipped.Count < 20)
-                    funnel.Skipped.Add($"{r.MatchNo} {r.HomeTeam}vs{r.AwayTeam}：{r.LeagueName} 属黑名单，不进串关");
-                continue;
-            }
+            // 2026-11-16：竞彩已经开出的场次不再按 NoPickLeagues / NoParlayLeagues 在入漏斗前丢掉。
+            // 欧国联、友谊赛、青年赛、澳超都进计算，后面只看「能中」。
+            // 这两份名单仍留给稳胆。北单仍只读 NoParlayLeagues。这里不再调用。
 
             if (r.MatchId is not long mid)
             {
@@ -1645,13 +1576,11 @@ public static class MilkPickEngine
             foreach (var (side, pt) in others)
                 bfPure[pt.OptionCode] = Math.Max(0m, (decimal)ResultProbability(grid, mass, side) - listed[side]);
 
-            // 候选：三道闸（赔率区间 / 停发比分 / 解析失败）只管「进不进榜」，不管「算不算」。
-            // 停发比分期间 bfPure 照算——存档要的正是这份分布，BF 的 Hit@1 评估也靠它。
+            // 候选：解析失败或开关关掉才不进榜。赔率上下限从 2026-11-16 起不再拦截。
+            // bfPure 照算——存档要的正是这份分布，跟出不出票无关。
             foreach (var pt in bfPoints)
             {
                 if (!bfPure.TryGetValue(pt.OptionCode, out var p) || p <= 0m) continue;
-                if (pt.Odds < MinOptionOdds) continue;
-                if (pt.Odds > MaxScoreOdds) continue;
                 if (!EnableScorePicks) continue;
                 matchPicks.Add(Blended(Option(pt, r), p, pt.Odds, bfOver, pt.PlayType, bfNorm));
             }
@@ -1724,8 +1653,6 @@ public static class MilkPickEngine
                     // 与完整性判断同一个域：生产 BQ 出现过 `平/胜`/`平/负`/`平/平` 三条脏码，
                     // 它们没有对应的联合分布格子，进候选只会取到 SideIndex('平') 的兜底值。
                     if (!JcPlayDomain.Contains(JcPlayTypes.Bq, pt.OptionCode)) continue;
-                    if (pt.Odds < MinHalfFullOdds) continue;
-                    if (pt.Odds > MaxHalfFullOdds) continue;
                     var p = joint[SideIndex(pt.OptionCode[0]), SideIndex(pt.OptionCode[2])];
                     var bqPick = Option(pt, r);
                     // 友谊赛反转档全库仅 2.7%（39.5万场实测，联赛 11.1%、杯赛 15.1%），
@@ -2083,12 +2010,16 @@ public static class MilkPickEngine
         //    早前先卡名额、再判一致性，一场里概率最高的两个比分很可能恰好是被锚点否掉的
         //    方向（比如锚点是主胜，两个名额全给了 1:1 和 1:2），于是这两个被撤，
         //    而真正同方向的 2:1 因为排第三根本没进来——整个比分玩法在这场凭空消失。
+        //    2026-11-16：比分不再吃这道同场上限。能中的比分全部留下，半全场/总进球/让球仍是两注。
         var capped = coherent
             .GroupBy(x => (x.MatchId, x.PlayType))
-            .SelectMany(g => g
-                .OrderByDescending(x => x.ModelProbability)
-                .ThenByDescending(x => x.Ev)
-                .Take(MaxPerMatchPerPlay))
+            .SelectMany(g =>
+            {
+                var ordered = g
+                    .OrderByDescending(x => x.ModelProbability)
+                    .ThenByDescending(x => x.Ev);
+                return g.Key.PlayType == JcPlayTypes.Bf ? ordered : ordered.Take(MaxPerMatchPerPlay);
+            })
             .ToList();
 
         // 3.5) 逐场跟进模式（2026-11-06 起）：每场只留概率最高的一注，不再全局砍单。
@@ -2117,15 +2048,27 @@ public static class MilkPickEngine
             // 也可能「BQ 平平 + JQ 2 球」这种相关对，两种都不重复扣水。
             var perMatchPicks = capped
                 .GroupBy(x => x.MatchId)
-                .SelectMany(g => g
-                    .GroupBy(x => x.PlayType)
-                    .OrderBy(pg => Array.IndexOf(PlayOrder, pg.Key))
-                    .SelectMany(pg => pg
-                        .OrderBy(x => HalfFullTier(x))
-                        .ThenByDescending(x => x.ModelProbability)
-                        .ThenByDescending(x => x.Ev)
-                        .Take(MaxPerMatchPerPlay))
-                    .Take(PerMatchMaxPicks))
+                .SelectMany(g =>
+                {
+                    var byPlay = g.GroupBy(x => x.PlayType)
+                        .OrderBy(pg => Array.IndexOf(PlayOrder, pg.Key))
+                        .ToList();
+                    // 比分不占同场名额，也不按玩法优先级被挤掉。能中的全部留下。
+                    var scores = byPlay
+                        .Where(pg => pg.Key == JcPlayTypes.Bf)
+                        .SelectMany(pg => pg
+                            .OrderByDescending(x => x.Ev)
+                            .ThenByDescending(x => x.ModelProbability));
+                    var others = byPlay
+                        .Where(pg => pg.Key != JcPlayTypes.Bf)
+                        .SelectMany(pg => pg
+                            .OrderBy(x => HalfFullTier(x))
+                            .ThenByDescending(x => x.ModelProbability)
+                            .ThenByDescending(x => x.Ev)
+                            .Take(MaxPerMatchPerPlay))
+                        .Take(PerMatchMaxPicks);
+                    return others.Concat(scores);
+                })
                 .ToList();
 
             funnel.Final = perMatchPicks.Count;
@@ -2147,10 +2090,16 @@ public static class MilkPickEngine
         var ranked = capped
             .GroupBy(x => x.PlayType)
             .OrderBy(g => Array.IndexOf(PlayOrder, g.Key))
-            .SelectMany(g => g
-                .OrderByDescending(x => x.PlayType == JcPlayTypes.Bf ? x.Ev : x.ModelProbability)
-                .ThenByDescending(x => x.ModelProbability)
-                .Take(MaxPerPlay.TryGetValue(g.Key, out var cap) ? cap : 4))
+            .SelectMany(g =>
+            {
+                var ordered = g
+                    .OrderByDescending(x => x.PlayType == JcPlayTypes.Bf ? x.Ev : x.ModelProbability)
+                    .ThenByDescending(x => x.ModelProbability);
+                // 比分没有每日名额。其余玩法仍按 MaxPerPlay 截断。
+                if (g.Key == JcPlayTypes.Bf) return ordered;
+                var cap = MaxPerPlay.TryGetValue(g.Key, out var configured) ? configured : 4;
+                return ordered.Take(cap);
+            })
             .ToList();
 
         // 「总进球 0 球」就是 0:0，和比分的 0:0 是同一注。同一场两个都列等于把同一注卖两次，
@@ -2188,6 +2137,8 @@ public static class MilkPickEngine
         picks = picks
             .Where(x =>
             {
+                // 比分不占、也不受每场两注的限制。半全场排在前面不再把能中的比分挤掉。
+                if (x.PlayType == JcPlayTypes.Bf) return true;
                 if (x.MatchId is not long dedupId) return true;
                 perMatchTaken.TryGetValue(dedupId, out var taken);
                 if (taken >= PerMatchMaxPicks) return false;
@@ -2557,8 +2508,8 @@ public static class MilkPickEngine
     }
 
     /// <summary>
-    /// 每个玩法最多几条（全局榜）。2026-11-06 用户定调侧重点「主攻半全场 → 总进球为辅 → 其次比分」：
-    /// 半全场 3 条、总进球 2 条、比分 1 条，名额向半全场倾斜，比分降为点缀。
+    /// 每个玩法最多几条（全局榜）。比分不在这张表里，能中的全部出。
+    /// 半全场、让球、总进球仍有名额。
     /// </summary>
     /// <summary>
     /// 各玩法名额。**2026-11-11 按返奖率重排，砍掉比分**。
@@ -2590,8 +2541,8 @@ public static class MilkPickEngine
         // 名义配额 1（历史值），实际恒为 0 注 —— 引擎无 NSPF 生成器，见上。
         [JcPlayTypes.Nspf] = 1,
         // 2026-11-11 由 2 降 1（只取最热那档）；同日晚因双选回到 2，允许同场两档并出。
-        [JcPlayTypes.Jq] = 2,
-        [JcPlayTypes.Bf] = 0
+        [JcPlayTypes.Jq] = 2
+        // 比分不在这张表里（2026-11-16）。能中的比分全部出，不设每日名额。
     };
 
     /* ---------------- 同一场的一致性 ---------------- */
@@ -2946,6 +2897,41 @@ public static class MilkPickEngine
     }
 
     /// <summary>
+    /// 半全场九档里有格子被 HalfDrawModel 换成出票用的百分数之后，把其余格子缩到合计 100。
+    /// 被替换的格子保持原值，这样存档仍是「实际用的那个数」。
+    /// 替换值合计已经不低于 100 时，九档一起缩，避免其余格子变成负数。
+    /// </summary>
+    private static void RenormalizeHalfFullSnapshot(
+        List<(string Code, decimal? Odds, decimal Pure, bool Replaced)> rows)
+    {
+        if (!rows.Any(r => r.Replaced)) return;
+
+        var replacedSum = rows.Where(r => r.Replaced).Sum(r => r.Pure);
+        var otherSum = rows.Where(r => !r.Replaced).Sum(r => r.Pure);
+
+        if (otherSum <= 0m || replacedSum >= 100m)
+        {
+            var all = replacedSum + otherSum;
+            if (all <= 0m) return;
+            var scaleAll = 100m / all;
+            for (var i = 0; i < rows.Count; i++)
+            {
+                var r = rows[i];
+                rows[i] = (r.Code, r.Odds, Math.Round(r.Pure * scaleAll, 3), r.Replaced);
+            }
+            return;
+        }
+
+        var scale = (100m - replacedSum) / otherSum;
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var r = rows[i];
+            if (r.Replaced) continue;
+            rows[i] = (r.Code, r.Odds, Math.Round(r.Pure * scale, 3), false);
+        }
+    }
+
+    /// <summary>
     /// 生成一场比赛的**完整分布存档**（2026-11-12 加，落库 dbo.FbMilkProbSnapshot）。
     ///
     /// 三列口径（每档都存三个数，缺一个就无法归因）：
@@ -3072,6 +3058,8 @@ public static class MilkPickEngine
         }
 
         // ---- 半全场：联合分布取对角；3-1 / 0-1 若走了 HalfDrawModel，存实际用的那个值 ----
+        // 替换之后其余档按比例缩，使九档合计回到 100。不缩的话合计会变成 102.768 这类数，
+        // 发布闸 MilkProbScale 会以 prob-not-normalized 拦住。只在九档齐全且真的替换过时做。
         if (joint is not null)
         {
             var refined = new Dictionary<string, decimal>(StringComparer.Ordinal);
@@ -3079,15 +3067,29 @@ public static class MilkPickEngine
                 foreach (var p in picks.Where(x => x.HalfDrawRefined && x.PlayType == JcPlayTypes.Bq))
                     refined[p.OptionCode] = p.ModelPctPure;
 
+            var byCode = new Dictionary<string, (decimal? Odds, decimal Pure, bool Replaced)>(StringComparer.Ordinal);
+            var order = new List<string>();
             foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Bq))
             {
                 if (!JcPlayDomain.Contains(JcPlayTypes.Bq, pt.OptionCode)) continue;
                 var odds = pt.Odds > 1m ? pt.Odds : (decimal?)null;
-                decimal pure = refined.TryGetValue(pt.OptionCode, out var rv)
+                var replaced = refined.TryGetValue(pt.OptionCode, out var rv);
+                var pure = replaced
                     ? rv
                     : Math.Round(joint[SideIndex(pt.OptionCode[0]), SideIndex(pt.OptionCode[2])] * 100m, 3);
-                Add(JcPlayTypes.Bq, pt.OptionCode, odds, pure);
+                if (!byCode.ContainsKey(pt.OptionCode)) order.Add(pt.OptionCode);
+                byCode[pt.OptionCode] = (odds, pure, replaced);
             }
+
+            var pending = order
+                .Select(c => (Code: c, byCode[c].Odds, byCode[c].Pure, byCode[c].Replaced))
+                .ToList();
+            if (pending.Count == JcPlayDomain.Bq.Count
+                && JcPlayDomain.Bq.All(c => byCode.ContainsKey(c)))
+                RenormalizeHalfFullSnapshot(pending);
+
+            foreach (var row in pending)
+                Add(JcPlayTypes.Bq, row.Code, row.Odds, row.Pure);
         }
         else if (exempts is not null)
         {

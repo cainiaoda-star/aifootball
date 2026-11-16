@@ -8,7 +8,8 @@ namespace AiFootBall.Backtest;
 /// 单联赛「能不能套现有模型」的专项诊断（2026-11-09 加，用户问「欧国联能不能推」）。
 ///
 /// 与主回测台的区别：主回测台回答「模型全体上比市场差多少」，这里回答一个更窄、
-/// 更可执行的问题——**某个联赛的场次，按线上那套判据会不会出注；出了的话准不准。**
+/// 更可执行的问题——**某个联赛的场次，落在探针自己的扫描窗口里有几注、准不准。**
+/// 窗口里的赔率 4～15 只属于这次扫描，不是现网半全场出票闸。现网不再卡半全场赔率区间。
 ///
 /// 为什么必须单独做：欧国联这类国家队赛事在库里的形态和联赛完全不同，
 /// ① 半全场联赛分层基线表里根本没有它（只有球会友谊/友谊赛）；
@@ -24,7 +25,7 @@ namespace AiFootBall.Backtest;
 /// 输出三块，缺一不可：
 ///   一、数据覆盖（有多少场能进模型）
 ///   二、能不能过门槛（认识的队、样本场次）
-///   三、真打起来怎么样（Top-1 命中、校准、按出票口径的出注与回报）
+///   三、真打起来怎么样（Top-1 命中、校准、按探针扫描窗口的注数与回报）
 ///
 /// 用法：dotnet run --project src/AiFootBall.Backtest -c Release -- league-probe 欧国联 [测试起始日]
 /// </summary>
@@ -33,9 +34,7 @@ public static class LeagueProbeStudy
     private const double HalfShare = 0.45;
     private const int MaxHalfGoals = 6;
 
-    /// <summary>与 MilkPickEngine 对齐的出票门槛（只取能在这里复刻的部分）。</summary>
-    private const decimal MinHalfFullOdds = 4.0m;
-    private const decimal MaxHalfFullOdds = 15m;
+    /// <summary>探针自己的概率下限。赔率窗口写在扫描处，不再借引擎常量。</summary>
     private const double MinHalfFullPct = 12.0;
 
     /// <summary>9 档顺序：先半场结果（3胜/1平/0负），再全场结果。与 MilkCombos 一致。</summary>
@@ -254,10 +253,11 @@ public static class LeagueProbeStudy
             for (var i = 0; i < 9; i++)
                 calib.Add((joint[i] * 100.0, Combos[i] == actual ? 1 : 0));
 
-            // 出票口径近似：概率 ≥12%、赔率 4~15，取模型概率最高的一档（每场只出一注）
+            // 探针自己的扫描窗口，不是现网出票闸：概率 ≥12%、赔率 4~15，每场取模型概率最高的一档。
+            // 现网半全场不再使用赔率上下限。
             var eligible = Enumerable.Range(0, 9)
                 .Where(i => oddsByCode.TryGetValue(Combos[i], out var o)
-                            && o >= MinHalfFullOdds && o <= MaxHalfFullOdds
+                            && o >= 4.0m && o <= 15m
                             && joint[i] * 100.0 >= MinHalfFullPct)
                 .OrderByDescending(i => joint[i])
                 .ToList();
@@ -309,12 +309,12 @@ public static class LeagueProbeStudy
         }
         Console.WriteLine();
 
-        // ---------- 四、按出票口径会出几注 ----------
-        Console.WriteLine("## 四、按线上出票口径（概率≥12%、赔率 4~15、每场一注）");
+        // ---------- 四、探针扫描窗口里有几注 ----------
+        Console.WriteLine("## 四、探针扫描窗口（概率≥12%、赔率 4~15、每场一注；不是现网出票闸）");
         Console.WriteLine();
         if (picks.Count == 0)
         {
-            Console.WriteLine("**一场都不会出注**：所有档位都被「概率 ≥12% 且赔率 4~15」筛掉了。");
+            Console.WriteLine("**没有一场落进探针窗口**：所有档位都在「概率 ≥12% 且赔率 4~15」之外。这不是现网出票结果。");
             return 0;
         }
 
@@ -348,10 +348,11 @@ public static class LeagueProbeStudy
         }
         Console.WriteLine();
 
-        // ---------- 五、闸门扫描：赔率上限 × 概率下限 ----------
-        // 用途只有一个：回答「把闸门拧紧能让命中率涨多少，代价是回报还是注数」。
+        // ---------- 五、探针自己的窗口扫描：赔率上限 × 概率下限 ----------
+        // 4 和 15 是这次扫描的端点，不是现网出票闸。现网半全场不再卡赔率区间。
+        // 用途只有一个：回答「把探针窗口拧紧能让命中率涨多少，代价是回报还是注数」。
         // 返奖率固定（BQ 0.797）时，降赔率不改长期 EV，只改方差——扫描就是把这句话量化。
-        Console.WriteLine("## 五、闸门扫描（每场一注，只取过闸档里模型概率最高的那档）");
+        Console.WriteLine("## 五、探针窗口扫描（变动的是本探针的赔率上限和概率下限，不是现网出票闸）");
         Console.WriteLine();
         Console.WriteLine("| 赔率上限 | 概率下限 | 注数 | 命中 | 命中率 | 平均赔率 | 平注回报 |");
         Console.WriteLine("|---|---|---|---|---|---|---|");
@@ -369,7 +370,7 @@ public static class LeagueProbeStudy
                 for (var i = 0; i < 9; i++)
                 {
                     if (!odds.TryGetValue(Combos[i], out var o)) continue;
-                    if (o < MinHalfFullOdds || o > maxOdds) continue;
+                    if (o < 4.0m || o > maxOdds) continue;
                     var pct = joint[i] * 100.0;
                     if (pct < minPct) continue;
                     // 线上基线闸（BQ ≥1.00 倍）的等价下界：模型概率比市场去水概率还低，必被拦掉。
@@ -402,7 +403,7 @@ public static class LeagueProbeStudy
             Scan(maxOdds, minPct, onlyEdge: true);
         Console.WriteLine();
 
-        Console.WriteLine($"样本判定：可评估 {evaluated} 场 / 出注口径 {picks.Count} 注；" +
+        Console.WriteLine($"样本判定：可评估 {evaluated} 场 / 探针窗口 {picks.Count} 注；" +
                           $"参考门槛 30 注 —— {(picks.Count < 30 ? "**样本不足，任何命中率都不可信**" : "样本可读")}。");
 
         return 0;

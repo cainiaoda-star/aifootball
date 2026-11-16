@@ -4,13 +4,10 @@ using Xunit;
 namespace AiFootBall.Tests;
 
 /// <summary>
-/// 「完全不出注」名单测试（2026-11-09 加）。
+/// 名单分类测试（2026-11-09 加）。
 ///
-/// 这张名单直接决定榜面会不会出注，改错的后果是双面刃：
-///   · 少拦一类 → 模型在国家队/青年赛上继续按 2~4 倍高估的顺风档出注（欧国联实测 13 注 0 中）；
-///   · 多拦一类 → 整类联赛永远不出注，而且线上不会报错，只是榜面静悄悄地少一块
-///     （项目里踩过：韩职/日乙叫法不一致导致整类联赛样本 0/0）。
-/// 所以两个方向都要钉住。
+/// 2026-11-16 起这张表不再决定竞彩大奶入不入漏斗。这里只钉名字还在不在名单里，
+/// 大奶是否出注看 MilkBandAndScoreTests 的「能中」。
 /// </summary>
 public class NoPickLeaguesTests
 {
@@ -57,7 +54,7 @@ public class NoPickLeaguesTests
         Assert.True(NoParlayLeagues.IsExcluded("澳超"));
         Assert.False(NoPickLeagues.IsExcluded("澳超"));
 
-        // 欧国联：连单关都不出，自然也不该进串关。
+        // 欧国联仍在稳胆名单里。竞彩大奶不再因此在入漏斗前丢掉整场。
         Assert.True(NoPickLeagues.IsExcluded("欧国联"));
     }
 }

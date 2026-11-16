@@ -531,4 +531,53 @@ public class AuditSnapshotTests
         Assert.Contains($"rho={model.Rho:0.000}", model.VersionTag);
         Assert.Contains(model.FitFrom!.Value.ToString("yyyy-MM-dd"), model.VersionTag);
     }
+
+    [Fact]
+    public void CollectSnapshots_HalfDrawReplacement_RescalesTheOtherCellsTo100()
+    {
+        // 联合分布合计 1。3-1 与 0-1 各 4.540%，其余七档分掉剩下的 90.920%。
+        // 出票把这两档换成 6.06 和 5.79 之后，不缩放的合计是 102.77，会撞上发布闸。
+        var joint = new decimal[3, 3];
+        joint[0, 0] = 0.129886m; joint[0, 1] = 0.045400m; joint[0, 2] = 0.129886m;
+        joint[1, 0] = 0.129886m; joint[1, 1] = 0.129886m; joint[1, 2] = 0.129886m;
+        joint[2, 0] = 0.129886m; joint[2, 1] = 0.045400m; joint[2, 2] = 0.129884m;
+
+        var pts = JcPlayDomain.Bq
+            .Select(code => new JcOddsHistoryPoint
+            {
+                MatchId = 900001,
+                PlayType = JcPlayTypes.Bq,
+                OptionCode = code,
+                OptionName = code,
+                Odds = 3.50m
+            })
+            .ToList();
+
+        var picks = new List<MilkPick>
+        {
+            new() { PlayType = JcPlayTypes.Bq, OptionCode = "3-1", HalfDrawRefined = true, ModelPctPure = 6.06m },
+            new() { PlayType = JcPlayTypes.Bq, OptionCode = "0-1", HalfDrawRefined = true, ModelPctPure = 5.79m }
+        };
+
+        var rows = MilkPickEngine.CollectSnapshots(
+            Rec(), 900001, pts,
+            Array.Empty<(int H, int A, double P)>(), 1d,
+            new Dictionary<string, decimal>(), 0m, 1m,
+            new decimal[8], 0m, 1m,
+            joint, 0m, 1m,
+            "dc1|test", picks);
+
+        var bq = rows.Where(x => x.PlayType == JcPlayTypes.Bq).ToList();
+        Assert.Equal(9, bq.Count);
+        Assert.Equal(6.06m, bq.Single(x => x.OptionCode == "3-1").ModelPctPure);
+        Assert.Equal(5.79m, bq.Single(x => x.OptionCode == "0-1").ModelPctPure);
+        var sum = bq.Sum(x => x.ModelPctPure ?? 0m);
+        Assert.InRange(sum, 100m - MilkProbScale.Tolerance, 100m + MilkProbScale.Tolerance);
+        Assert.DoesNotContain(MilkProbScale.Verify(bq), i => i.Kind == "prob-not-normalized");
+
+        // 其余格子被缩小，不能还停在联合分布的原值上。
+        var winWin = bq.Single(x => x.OptionCode == "3-3").ModelPctPure;
+        Assert.NotNull(winWin);
+        Assert.True(winWin < 12.989m);
+    }
 }

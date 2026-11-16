@@ -93,7 +93,7 @@ public class FitTraceTests
         var version = MilkPickEngine.PickVersion(model);
         var config = MilkPickEngine.FitConfigVersion();
         Assert.EndsWith(config, version, StringComparison.Ordinal);
-        Assert.Equal("w=70/70/50/80/30|bf=off", config);
+        Assert.Equal("w=70/70/50/80/30|bf=on", config);
     }
 
     [Fact]

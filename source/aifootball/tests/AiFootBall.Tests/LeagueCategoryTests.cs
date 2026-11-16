@@ -43,7 +43,7 @@ public class LeagueCategoryTests
         Assert.NotEqual(LeagueCategory.Friendly, LeagueCategory.Of(league));
         Assert.Equal(LeagueCategory.Cup, LeagueCategory.Of(league));
         Assert.True(LeagueCategory.IsMajorTournament(league), $"{league} 应当被认成正式国际赛事");
-        // 连着名单一起钉：正式国际赛事不在禁推名单里（禁推的是欧国联与青年赛，不是所有国家队比赛）
+        // 正式国际赛事除欧国联外不在稳胆名单里。欧国联仍在名单上，但竞彩大奶入漏斗前不再读这份名单。
         if (league != "欧国联") Assert.False(NoPickLeagues.IsExcluded(league));
     }
 
@@ -71,8 +71,9 @@ public class LeagueCategoryTests
     [Fact]
     public void 禁推名单与引擎判定同源()
     {
-        // 名单里的「国际赛」和引擎对友谊赛的理解必须是同一份判定：
+        // 名单里的「国际赛」和友谊赛分类必须是同一份判定：
         // 11-13 就是两处各写一份，名单只认「友谊赛」，卡名「国际赛」整类漏网。
+        // 2026-11-16 起竞彩大奶入漏斗前不再因这份名单丢掉整场；这里只钉分类本身。
         foreach (var lg in new[] { "国际赛", "友谊赛", "球会友谊", "热身赛", "国际友谊赛" })
         {
             Assert.True(LeagueCategory.IsFriendly(lg), $"{lg} 应判为友谊赛类");
