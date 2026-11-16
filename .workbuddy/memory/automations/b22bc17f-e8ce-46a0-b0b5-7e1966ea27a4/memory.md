@@ -1,5 +1,9 @@
 # AiFootBall 代码自动同步到码云（Gitee）— 执行历史
 
+## 2026-11-16 18:00
+- 25 文件改动（+958 增 241 删）：Backtest 侧 DirectionStudy/LeagueProbeStudy/ScoreProbeStudy/WeightReplayStudy/Program；Core 新增 JcPlayDomain/LeagueCategory/MilkRunLedger/MilkSourceSlate/NoPickLeagues 模型；Sources 侧 MilkPickEngine/RecommendationService/SteadyPickEngine；测试组多文件 + 新增 MilkBandAndScoreTests.cs；1 个其他自动化 memory.md 日志。
+- 提交 e3172ae 并成功推送到 origin main（a47488f..e3172ae）。未触碰 github 远端。无敏感文件。
+
 ## 2026-11-15 18:00
 - 32 文件改动（+7474 增 43 删）：新增 FitTrace/MilkModelFitStore 模型与存储、sql/pending 的 milk_model_fit、FitTrace 测试组及 TestResults/*.trx、6 篇复盘文档；修改 Program.cs（Api/Collector）、LeagueNames/TeamAliases/MilkDirectionGate/ScorelineModel 等模型与 RecommendationService、MilkPickEngine 等源码。
 - 提交 dcbfb2b 并成功推送到 origin main（5109ccc..dcbfb2b）。未触碰 github 远端。无敏感文件。
