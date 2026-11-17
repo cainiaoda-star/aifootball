@@ -444,7 +444,8 @@ public class FitTraceDbTests : IClassFixture<FitTraceDbFixture>
             "SELECT MinOwnGames FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
         Assert.Equal((long)FitContentCodec.LeaguePrior, await FitTraceDbFixture.Scalar(conn,
             "SELECT LeaguePrior FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
-        Assert.Equal((long)FitContentCodec.MaxHalfGoals, await FitTraceDbFixture.Scalar(conn,
+        Assert.Equal(12, FitContentCodec.MaxHalfGoals);
+        Assert.Equal(12L, await FitTraceDbFixture.Scalar(conn,
             "SELECT MaxHalfGoals FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
         Assert.Equal(2L, await FitTraceDbFixture.Scalar(conn,
             "SELECT SampleCount FROM dbo.FbMilkModelFitContent WHERE Status='ready'"));
