@@ -129,7 +129,7 @@ public static class FitContentCodec
     public const double ScaleMin = 0.65;
     public const double ScaleMax = 1.55;
     public const double HalfGoalShare = 0.45;
-    public const int MaxHalfGoals = 6;
+    public const int MaxHalfGoals = 12;
 
     public static (string Informational, string Mvid) CodeIdentity()
     {

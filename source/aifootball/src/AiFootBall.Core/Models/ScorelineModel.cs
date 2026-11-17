@@ -874,8 +874,9 @@ public sealed class ScorelineModel
     }
 
     /// <summary>
-    /// 全比分概率分布（0..6 × 0..6，Dixon-Coles 修正，含 tau，未归一化到 1——
-    /// 7 球以上的尾部自然落在 1 减合计的余量里，调用方用余量算 7+ 和「其它」）。
+    /// 全比分概率分布（0..6 × 0..6，Dixon-Coles 修正，含 tau，未按全支撑归一）。
+    /// 1 减这 49 格只是「任一队 ≥7 球」的尾部，不是总进球 7+，也不是胜其它：
+    /// 总进球 7+ 还要加上网格内 h+a≥7；胜其它只收该方向没单列的比分。
     /// 大奶推荐（比分/总进球/半全场）的基础分布，Top 只给筛选后的前 N 格，不够用。
     /// </summary>
     public IReadOnlyList<(int Home, int Away, double P)> Distribution(

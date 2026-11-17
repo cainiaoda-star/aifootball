@@ -267,10 +267,11 @@ public static class MilkPickEngine
     /// 这两处各写一遍时，只要有一处把 7+ 的余量算法改掉，榜上出的是「1 球」，
     /// 存档里记的却是另一个「1 球」，复盘就再也对不上了。
     ///
-    /// 口径（与出票完全一致，别在这里改）：
-    /// · 0~6 球 = 比分网格里 h+a 等于该值的格子之和 ÷ 网格总质量；
-    /// · 7+ = 1 减去 0~6 的合计（网格被截断到 0..6 球，所以余量就是「所有更高的比分」）。
-    /// 因为分母是同一个 mass，Σ(0..7) 恒等于 1；这条性质有测试锁死。
+    /// <paramref name="mass"/> 是调用方给的归一化分母，不是「总进球 ≥ 7」的定义。
+    /// 传入截断网格的质量和时，0..6 会被抬高，7+ 只剩网格内 h+a≥7 的条件概率，网格外（任一队 ≥7 球）被丢掉。
+    /// 正式路径走 <see cref="TotalGoalBands"/>：分母是截断质量和加上网格外尾部。
+    /// 那时 0..6 是绝对概率，7+ = 1 − 这七档 = 网格内总进球 ≥7 加上网格外尾部。
+    /// 7+ 是双方进球之和 ≥7，不是单队进球 ≥7。
     /// </summary>
     public static decimal[] GoalBands(IReadOnlyList<(int H, int A, double P)> grid, double mass)
     {
@@ -282,6 +283,94 @@ public static class MilkPickEngine
         for (var k = 0; k < 7; k++) low += bands[k];
         bands[7] = Math.Max(0m, 1m - low);
         return bands;
+    }
+
+    /// <summary>
+    /// 正式路径的总进球 8 档。0..6 用网格里的绝对质量，分母是全支撑 Z，7+ 接住网格内总和 ≥7 以及任一队 ≥7 的尾部。
+    /// </summary>
+    internal static decimal[] TotalGoalBands(
+        IReadOnlyList<(int H, int A, double P)> grid, double lh, double la)
+    {
+        var z = FullMass(grid, lh, la);
+        return GoalBands(grid, z);
+    }
+
+    /// <summary>
+    /// 比分盘。单列比分用自己的格子。胜/平/负其它 = 该方向里没单列的格子，外加网格外仍属于该方向的尾部。
+    /// 5:2 是单列比分，即使总进球为 7 也不进胜其它。6:0 没单列，进胜其它，但总进球是 6，不进 7+。
+    /// </summary>
+    internal static Dictionary<string, decimal> Scorebook(
+        IReadOnlyList<(int H, int A, double P)> grid,
+        IEnumerable<string> offered,
+        double lh, double la)
+    {
+        var tail = OutsideByResult(lh, la);
+        var z = FullMass(grid, lh, la);
+        var result = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        var listed = new Dictionary<char, decimal> { ['3'] = 0m, ['1'] = 0m, ['0'] = 0m };
+        var others = new Dictionary<char, string>();
+        foreach (var code in offered)
+        {
+            if (string.IsNullOrEmpty(code)) continue;
+            var otherSide = code.EndsWith("其它", StringComparison.Ordinal)
+                            || code.EndsWith("其他", StringComparison.Ordinal)
+                ? code[0] switch { '胜' => '3', '平' => '1', '负' => '0', _ => '?' }
+                : '?';
+            if (otherSide == '?')
+            {
+                var p = ScoreProbability(grid, z, code);
+                if (p is null) continue;
+                result[code] = (decimal)p.Value;
+                var split = SplitScore(code);
+                if (split is not null)
+                    listed[split.Value.H > split.Value.A ? '3' : split.Value.H == split.Value.A ? '1' : '0'] += (decimal)p.Value;
+            }
+            else
+            {
+                others[otherSide] = code;
+            }
+        }
+        foreach (var (side, code) in others)
+        {
+            var extra = side switch { '3' => tail.Home, '1' => tail.Draw, '0' => tail.Away, _ => 0d };
+            var p = ResultProbability(grid, z, side) - (double)listed[side] + extra / z;
+            result[code] = (decimal)Math.Max(0d, p);
+        }
+        return result;
+    }
+
+    /// <summary>截断网格质量 + 任一队进球 ≥7 的泊松尾部。Dixon-Coles 的 τ 已经在网格里，尾部 τ=1。</summary>
+    static double FullMass(IReadOnlyList<(int H, int A, double P)> grid, double lh, double la)
+    {
+        var truncated = 0.0;
+        foreach (var c in grid) truncated += c.P;
+        var tail = OutsideByResult(lh, la);
+        var z = truncated + tail.Home + tail.Draw + tail.Away;
+        return z > 0 ? z : truncated;
+    }
+
+    const int TailCap = 40;
+
+    static (double Home, double Draw, double Away) OutsideByResult(double lh, double la)
+    {
+        var ph = new double[TailCap + 1];
+        var pa = new double[TailCap + 1];
+        for (var i = 0; i <= TailCap; i++)
+        {
+            ph[i] = Poisson(i, lh);
+            pa[i] = Poisson(i, la);
+        }
+        double home = 0, draw = 0, away = 0;
+        for (var h = 0; h <= TailCap; h++)
+        for (var a = 0; a <= TailCap; a++)
+        {
+            if (h <= 6 && a <= 6) continue;
+            var p = ph[h] * pa[a];
+            if (h > a) home += p;
+            else if (h == a) draw += p;
+            else away += p;
+        }
+        return (home, draw, away);
     }
 
     /// <summary>
@@ -1543,38 +1632,11 @@ public static class MilkPickEngine
             var bfPoints = points
                 .Where(p => p.PlayType == JcPlayTypes.Bf && JcPlayDomain.Contains(JcPlayTypes.Bf, p.OptionCode))
                 .ToList();
-            var bfPure = new Dictionary<string, decimal>(StringComparer.Ordinal);
-            var others = new Dictionary<char, JcOddsHistoryPoint>();
-            var listed = new Dictionary<char, decimal> { ['3'] = 0m, ['1'] = 0m, ['0'] = 0m };
-            foreach (var pt in bfPoints)
-            {
-                // 采集端的写法并不统一：500 是「胜其它」，别的源出现过「胜其他」。
-                // 只认「其它」的话，另一种写法会掉进下面的具体比分分支、解析成 null 后被默默丢掉，
-                // 整个方向的其他档就消失了——概率尾巴凭空多出来一截。
-                var otherSide = pt.OptionCode.EndsWith("其它", StringComparison.Ordinal)
-                                || pt.OptionCode.EndsWith("其他", StringComparison.Ordinal)
-                    ? pt.OptionCode[0] switch { '胜' => '3', '平' => '1', '负' => '0', _ => '?' }
-                    : '?';
-                if (otherSide == '?')
-                {
-                    var p = ScoreProbability(grid, mass, pt.OptionCode);
-                    if (p is null) continue;
-                    bfPure[pt.OptionCode] = (decimal)p.Value;
-
-                    // 「其它」= 方向合计 − 官方已列具体比分合计，所以这里的累计必须先于赔率闸。
-                    // 早前把累计放在闸后面，低赔的具体比分（如 2:0 @3.5）被跳过、没进合计，
-                    // 于是「胜其它」的概率被抬高一大截，EV 凭空变好看。
-                    var split = SplitScore(pt.OptionCode);
-                    if (split is not null)
-                        listed[split.Value.H > split.Value.A ? '3' : split.Value.H == split.Value.A ? '1' : '0'] += (decimal)p.Value;
-                }
-                else
-                {
-                    others[otherSide] = pt;
-                }
-            }
-            foreach (var (side, pt) in others)
-                bfPure[pt.OptionCode] = Math.Max(0m, (decimal)ResultProbability(grid, mass, side) - listed[side]);
+            // 「其它」的算法在 Scorebook：没单列的比分，加上网格外仍属于该方向的尾部。
+            // 不要把总进球 7+ 整段塞进胜其它。5:2 总进球是 7，但仍是单列比分。
+            var lh = goals?.Home ?? 0;
+            var la = goals?.Away ?? 0;
+            var bfPure = Scorebook(grid, bfPoints.Select(p => p.OptionCode), lh, la);
 
             // 候选：解析失败或开关关掉才不进榜。赔率上下限从 2026-11-16 起不再拦截。
             // bfPure 照算——存档要的正是这份分布，跟出不出票无关。
@@ -1585,9 +1647,8 @@ public static class MilkPickEngine
                 matchPicks.Add(Blended(Option(pt, r), p, pt.Odds, bfOver, pt.PlayType, bfNorm));
             }
 
-            // 总进球：对角线合计，7+ 取余量。
-            // 坑：档位概率由 GoalBands 统一给（候选与存档同一份），别在这里再内联一遍算式。
-            var jqBands = GoalBands(grid, mass);
+            // 总进球：0..6 用绝对质量，7+ 含网格内总和 ≥7 和网格外尾部。候选与存档共用这一份。
+            var jqBands = TotalGoalBands(grid, lh, la);
             foreach (var pt in points.Where(p => p.PlayType == JcPlayTypes.Jq))
             {
                 if (!JcPlayDomain.Contains(JcPlayTypes.Jq, pt.OptionCode)) continue;
@@ -2739,8 +2800,12 @@ public static class MilkPickEngine
     {
         var eg = scores.ExpectedGoals(league, home, away, ouLine);
         if (eg is null) return null;
-        var (lh, la) = eg.Value;
+        return HalfFullJointFromLambdas(eg.Value.Home, eg.Value.Away);
+    }
 
+    /// <summary>半全场九格。只依赖两段 λ，测试不必拟合整份模型。</summary>
+    internal static decimal[,]? HalfFullJointFromLambdas(double lh, double la)
+    {
         var first = GoalGrid(lh * HalfGoalShare, la * HalfGoalShare);
         var second = GoalGrid(lh * (1 - HalfGoalShare), la * (1 - HalfGoalShare));
         var massFirst = first.Sum(p => p.P);
@@ -2777,7 +2842,11 @@ public static class MilkPickEngine
 
     private static int SideIndex(char c) => c switch { '3' => 0, '1' => 1, _ => 2 };
 
-    internal const int MaxHalfGoals = 6;
+    /// <summary>
+    /// 半全场每一段单队进球算到这一格。7 球仍是该半场的胜或负，所以不能停在 6。
+    /// 全场比分网格另截在 0..6，那是总进球 7+ 的边界，两套上限各管各的空间。
+    /// </summary>
+    internal const int MaxHalfGoals = 12;
 
     private static double Poisson(int k, double lambda)
     {

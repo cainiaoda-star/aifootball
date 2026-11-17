@@ -14,7 +14,7 @@ namespace AiFootBall.Tests;
 ///
 /// 这组测试钉三件事：
 ///   1. 输入集在**方向闸之前**记录——被 MarketStrongReverse 整场撤掉的场次仍然在集里；
-///   2. 禁推名单里的联赛**根本不进集**（11-13「国际赛」漏网就是这条没钉住）；
+///   2. 2026-11-16 起竞彩在售场次进入计算，不按联赛名单预过滤（「国际赛」也进输入集）；
 ///   3. Inputs 与 ProbSnapshots 的场次集合一一对应（这是覆盖率的可验证形式）。
 /// </summary>
 public class MilkInputLedgerTests
@@ -85,19 +85,23 @@ public class MilkInputLedgerTests
     }
 
     /// <summary>
-    /// 11-13 的原样复现：竞彩把国家队热身赛叫「国际赛」，当时名单只认「友谊赛」，
-    /// 于是这场进了引擎、出了注、还写了 48 行存档。现在它必须一场都进不来。
+    /// 2026-11-16：竞彩官方在售场次进入计算，不再按 NoPickLeagues / NoParlayLeagues 预过滤。
+    /// 「国际赛」仍被稳胆名单视为友谊赛，但大奶必须留下输入和分布。稳胆、北单的名单不在这里改。
     /// </summary>
     [Fact]
-    public void Friendly_League_Never_Enters_Inputs()
+    public void Opened_Jc_Match_Enters_Calculation_Without_League_Prefilter()
     {
+        Assert.True(NoPickLeagues.IsExcluded("国际赛"));
+
         var build = MilkPickEngine.BuildDetailed(
             new[] { Rec(1, league: "国际赛") }, Odds(1), Model());
 
-        Assert.Empty(build.Inputs);
-        Assert.Empty(build.ProbSnapshots);
-        Assert.Empty(build.Picks);
-        Assert.Equal(0, build.Funnel.Distributed);
+        var input = Assert.Single(build.Inputs);
+        Assert.Equal(1, input.MatchId);
+        Assert.Equal("国际赛", input.LeagueName);
+        Assert.DoesNotContain(build.Rejections, r => r.Reason == MilkInputRejection.ReasonLeagueExcluded);
+        Assert.True(build.Funnel.Distributed >= 1);
+        Assert.Contains(build.ProbSnapshots, s => s.MatchId == 1);
     }
 
     /// <summary>
