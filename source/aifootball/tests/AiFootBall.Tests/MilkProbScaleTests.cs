@@ -102,4 +102,75 @@ public class MilkProbScaleTests
         // 本轮 0 档（没有输入）不是「单位错了」，由源侧账本判，不在这里报。
         Assert.Empty(MilkProbScale.Verify(Array.Empty<MilkProbSnapshot>()));
     }
+
+    /// <summary>
+    /// 手算，不读任何已发布快照。
+    /// 比分 31 档、总进球 8 档、半全场 9 格的纯模型和混合列各自合计为 1。
+    /// 比分市场列用固定水位 1.410：31 档同赔 21.25 时，
+    /// 100÷21.25÷1.410=3.3375045…，四舍五入到 3 位是 3.338，31 档合计 103.478。
+    /// 这是水位常数和当场 Σ(1/赔率) 的差，不是分布没归一。
+    /// </summary>
+    [Fact]
+    public void FixedMarginMarketSum_IsNotADistributionFailure()
+    {
+        const decimal odds = 21.25m;
+        const decimal over = 1.410m;
+        var marketEach = Math.Round(100m / odds / over, 3);
+        Assert.Equal(3.338m, marketEach);
+
+        var bfPure = Math.Round(100m / 31m, 3);
+        Assert.Equal(3.226m, bfPure);
+        Assert.Equal(100.006m, bfPure * 31m);
+        Assert.Equal(103.478m, marketEach * 31m);
+
+        var rows = new List<MilkProbSnapshot>();
+        foreach (var code in JcPlayDomain.Bf)
+            rows.Add(Row(1503020, JcPlayTypes.Bf, code, bfPure, marketEach, bfPure));
+
+        var jq = Math.Round(100m / 8m, 3);
+        Assert.Equal(12.500m, jq);
+        for (var g = 0; g <= 7; g++)
+            rows.Add(Row(1503020, JcPlayTypes.Jq, g.ToString(), jq, jq, jq));
+
+        // 九格：前 8 格 11.111，最后一格补到 100.000−8×11.111=11.112。合计正好 100。
+        decimal bqSum = 0m;
+        for (var i = 0; i < JcPlayDomain.Bq.Count; i++)
+        {
+            var pct = i == JcPlayDomain.Bq.Count - 1 ? 100m - bqSum : 11.111m;
+            bqSum += pct;
+            rows.Add(Row(1503020, JcPlayTypes.Bq, JcPlayDomain.Bq[i], pct, pct, pct));
+        }
+        Assert.Equal(100m, bqSum);
+        Assert.Equal(9, JcPlayDomain.Bq.Count);
+        Assert.Equal(8, JcPlayDomain.Jq.Count);
+        Assert.Equal(31, JcPlayDomain.Bf.Count);
+
+        Assert.Empty(MilkProbScale.Verify(rows));
+    }
+
+    /// <summary>
+    /// 把 3.500 再加进「胜其它」，31 档纯模型从 100.006 变成 103.506。
+    /// 这才是尾部被重复计入。市场列仍是上面的 103.478，不能拿它当这条的原因。
+    /// </summary>
+    [Fact]
+    public void DoubleCountedTail_FailsTheModelColumnOnly()
+    {
+        var bfPure = Math.Round(100m / 31m, 3);
+        var marketEach = Math.Round(100m / 21.25m / 1.410m, 3);
+        var rows = JcPlayDomain.Bf
+            .Select(code => Row(1503020, JcPlayTypes.Bf, code, bfPure, marketEach, bfPure))
+            .ToList();
+        var other = rows.Single(r => r.OptionCode == "胜其它");
+        other.ModelPctPure += 3.500m;
+
+        var issues = MilkProbScale.Verify(rows);
+
+        var hit = Assert.Single(issues);
+        Assert.Equal("prob-not-normalized", hit.Kind);
+        Assert.Contains("ModelPctPure", hit.Key);
+        Assert.Contains("sum=103.506", hit.Key);
+        Assert.Equal(100, hit.Expected);
+        Assert.Equal(104, hit.Actual);
+        Assert.DoesNotContain("MarketPct", hit.Key);
+    }
 }
