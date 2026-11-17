@@ -142,6 +142,166 @@ public class MaintenanceGateTests
     }
 
     [Fact]
+    public async Task Timeout_Then_Real_Completion_Does_Not_Keep_A_Current_Timeout_Reason()
+    {
+        var gate = new MaintenanceGate();
+        var hold = Hold();
+        Assert.True(gate.TrySchedule(MaintenanceScope.ModelRefresh, () => hold.Task, out var work));
+
+        var timed = await gate.EnterAndWaitAsync(TimeSpan.Zero);
+        Assert.Equal("draining", timed.Phase);
+        Assert.False(timed.Drained);
+        Assert.Equal(1, timed.ActivityCount);
+        Assert.Contains("未排空", timed.TimeoutReason);
+
+        hold.SetResult();
+        await work!.Task;
+
+        var snap = gate.Snapshot();
+        Assert.Equal("drained", snap.Phase);
+        Assert.True(snap.Drained);
+        Assert.Equal(0, snap.ActivityCount);
+        Assert.Null(snap.TimeoutReason);
+    }
+
+    [Fact]
+    public async Task Timeout_Then_Fault_Or_Cancel_Clears_The_Current_Reason_And_Stays_In_Maintenance()
+    {
+        var faulted = new MaintenanceGate();
+        var faultHold = Hold();
+        Assert.True(faulted.TrySchedule(MaintenanceScope.ModelRefresh, () => faultHold.Task, out var faultWork));
+        var faultTimed = await faulted.EnterAndWaitAsync(TimeSpan.Zero);
+        Assert.Equal("draining", faultTimed.Phase);
+        Assert.Contains("未排空", faultTimed.TimeoutReason);
+        faultHold.SetException(new InvalidOperationException("boom"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => faultWork!.Task);
+        var faultSnap = faulted.Snapshot();
+        Assert.Equal("drained", faultSnap.Phase);
+        Assert.True(faultSnap.Drained);
+        Assert.Equal(0, faultSnap.ActivityCount);
+        Assert.Null(faultSnap.TimeoutReason);
+        Assert.Equal("boom", faultSnap.LastError);
+
+        var cancelled = new MaintenanceGate();
+        var cancelHold = Hold();
+        Assert.True(cancelled.TrySchedule(MaintenanceScope.ModelRefresh, () => cancelHold.Task, out var cancelWork));
+        Assert.Contains("未排空", (await cancelled.EnterAndWaitAsync(TimeSpan.Zero)).TimeoutReason);
+        cancelHold.SetCanceled();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelWork!.Task);
+        var cancelSnap = cancelled.Snapshot();
+        Assert.Equal("drained", cancelSnap.Phase);
+        Assert.True(cancelSnap.Drained);
+        Assert.Equal(0, cancelSnap.ActivityCount);
+        Assert.Null(cancelSnap.TimeoutReason);
+        Assert.False(string.IsNullOrEmpty(cancelSnap.LastError));
+    }
+
+    [Fact]
+    public async Task Concurrent_Queries_Do_Not_Mix_A_Drained_Snapshot_With_A_Timeout()
+    {
+        var gate = new MaintenanceGate();
+        var hold = Hold();
+        Assert.True(gate.TrySchedule(MaintenanceScope.ModelRefresh, () => hold.Task, out var work));
+        Assert.Contains("未排空", (await gate.EnterAndWaitAsync(TimeSpan.Zero)).TimeoutReason);
+
+        var seen = new List<MaintenanceSnapshot>();
+        var list = new object();
+        var start = Hold();
+        var readers = Enumerable.Range(0, 8).Select(_ => Task.Run(async () =>
+        {
+            await start.Task;
+            for (var i = 0; i < 40; i++)
+            {
+                var snap = gate.Snapshot();
+                lock (list) seen.Add(snap);
+            }
+        })).ToArray();
+
+        start.SetResult();
+        hold.SetResult();
+        await work!.Task;
+        await Task.WhenAll(readers);
+
+        Assert.NotEmpty(seen);
+        foreach (var snap in seen)
+        {
+            if (snap.Drained)
+            {
+                Assert.Equal("drained", snap.Phase);
+                Assert.Equal(0, snap.ActivityCount);
+                Assert.Empty(snap.Activities);
+                Assert.Null(snap.TimeoutReason);
+            }
+            else
+            {
+                Assert.Equal("draining", snap.Phase);
+                Assert.False(snap.Drained);
+                Assert.True(snap.ActivityCount > 0);
+                Assert.NotEmpty(snap.Activities);
+                Assert.Contains("未排空", snap.TimeoutReason);
+            }
+        }
+
+        var final = gate.Snapshot();
+        Assert.True(final.Drained);
+        Assert.Null(final.TimeoutReason);
+        Assert.Equal("drained", final.Phase);
+    }
+
+    [Fact]
+    public async Task Repeat_Enter_And_Exit_After_Timeout_Do_Not_Clear_Live_Work_Or_Auto_Leave()
+    {
+        var gate = new MaintenanceGate();
+        var hold = Hold();
+        Assert.True(gate.TrySchedule(MaintenanceScope.ModelRefresh, () => hold.Task, out var work));
+        var first = await gate.EnterAndWaitAsync(TimeSpan.Zero);
+        var second = await gate.EnterAndWaitAsync(TimeSpan.Zero);
+        Assert.Equal("draining", second.Phase);
+        Assert.Equal(1, second.ActivityCount);
+        Assert.Contains("未排空", second.TimeoutReason);
+        Assert.Equal(first.MaintenanceStartedAt, second.MaintenanceStartedAt);
+        Assert.False(work!.Task.IsCompleted);
+
+        var leftWhileRunning = gate.Exit();
+        Assert.Equal("normal", leftWhileRunning.Phase);
+        Assert.Equal(1, leftWhileRunning.ActivityCount);
+        Assert.Null(leftWhileRunning.TimeoutReason);
+        Assert.False(work.Task.IsCompleted);
+
+        var back = await gate.EnterAndWaitAsync(TimeSpan.Zero);
+        Assert.Equal("draining", back.Phase);
+        Assert.Equal(1, back.ActivityCount);
+        Assert.Contains("未排空", back.TimeoutReason);
+
+        hold.SetResult();
+        await work.Task;
+        var done = gate.Snapshot();
+        Assert.Equal("drained", done.Phase);
+        Assert.Null(done.TimeoutReason);
+
+        var enteredAgain = await gate.EnterAndWaitAsync(TimeSpan.Zero);
+        Assert.Equal("drained", enteredAgain.Phase);
+        Assert.Null(enteredAgain.TimeoutReason);
+        var exited = gate.Exit();
+        Assert.Equal("normal", exited.Phase);
+        Assert.Null(exited.TimeoutReason);
+        Assert.Equal(0, exited.ActivityCount);
+        var reentered = await gate.EnterAndWaitAsync(TimeSpan.Zero);
+        Assert.Equal("drained", reentered.Phase);
+        Assert.Null(reentered.TimeoutReason);
+        Assert.Equal(0, reentered.ActivityCount);
+    }
+
+    [Fact]
+    public void Loopback_Uses_The_Remote_Address_And_Ignores_A_Forwarded_Header()
+    {
+        Assert.True(MaintenanceCommands.DirectLoopback(System.Net.IPAddress.Loopback, "8.8.8.8"));
+        Assert.True(MaintenanceCommands.DirectLoopback(System.Net.IPAddress.IPv6Loopback, "8.8.8.8"));
+        Assert.False(MaintenanceCommands.DirectLoopback(System.Net.IPAddress.Parse("8.8.8.8"), "127.0.0.1"));
+        Assert.False(MaintenanceCommands.DirectLoopback(null, "127.0.0.1"));
+    }
+
+    [Fact]
     public async Task Repeat_Enter_Exit_And_Queries_Do_Not_Drop_Work()
     {
         var gate = new MaintenanceGate();

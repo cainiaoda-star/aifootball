@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -50,7 +51,7 @@ public sealed record MaintenanceSnapshot(
     DateTime? MaintenanceStartedAt,
     bool Drained,
     string? TimeoutReason,
-    string? LastError);
+    string? LastError); // TimeoutReason 只描述当前这次等待。已排空时为 null，不另留历史字段。
 
 public sealed class MaintenanceWork
 {
@@ -265,15 +266,18 @@ public sealed class MaintenanceGate
             lock (_gate) _lastError = ex.Message;
             throw;
         }
-        finally
-        {
-            lock (_gate)
+            finally
             {
-                _items.Remove(item.Id);
-                if (_phase == MaintenancePhase.Draining && _items.Count == 0)
-                    _phase = MaintenancePhase.Drained;
+                lock (_gate)
+                {
+                    _items.Remove(item.Id);
+                    if (_phase == MaintenancePhase.Draining && _items.Count == 0)
+                    {
+                        _phase = MaintenancePhase.Drained;
+                        _timeoutReason = null;
+                    }
+                }
             }
-        }
     }
 
     private MaintenanceSnapshot Copy()
@@ -287,13 +291,14 @@ public sealed class MaintenanceGate
         var activities = _items.Values
             .Select(i => new MaintenanceActivityView(i.Category, i.State, i.StartedAt))
             .ToList();
+        var drained = _phase == MaintenancePhase.Drained && activities.Count == 0;
         return new MaintenanceSnapshot(
             phase,
             activities.Count,
             activities,
             _startedAt,
-            _phase == MaintenancePhase.Drained && activities.Count == 0,
-            _timeoutReason,
+            drained,
+            drained ? null : _timeoutReason,
             _lastError);
     }
 
@@ -315,6 +320,16 @@ public sealed class MaintenanceGate
 
 public static class MaintenanceCommands
 {
+    /// <summary>
+    /// 只看这次 TCP 连接的对端。<paramref name="forwardedFor"/> 不参与判断。
+    /// 环回表示对端进程在本机，本机上的反向代理也会是环回。
+    /// </summary>
+    public static bool DirectLoopback(IPAddress? remoteAddress, string? forwardedFor)
+    {
+        _ = forwardedFor;
+        return remoteAddress is { } ip && IPAddress.IsLoopback(ip);
+    }
+
     public static bool Allows(bool bearerAuthenticated, bool fromLoopback, string? configuredToken, string? presentedToken)
     {
         if (!bearerAuthenticated || !fromLoopback) return false;

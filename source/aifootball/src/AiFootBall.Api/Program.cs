@@ -794,7 +794,10 @@ app.MapGet("/api/jobs", (JobScheduler scheduler) => Results.Ok(scheduler.Describ
 static bool MaintenanceAllowed(HttpRequest request, AuthService auth)
 {
     var bearer = request.Headers.Authorization.ToString().Replace("Bearer ", "");
-    var loopback = request.HttpContext.Connection.RemoteIpAddress is { } ip && System.Net.IPAddress.IsLoopback(ip);
+    // 环回只说明 TCP 对端在本机。不使用转发头判断原始调用者。
+    var loopback = MaintenanceCommands.DirectLoopback(
+        request.HttpContext.Connection.RemoteIpAddress,
+        request.Headers["X-Forwarded-For"].ToString());
     return MaintenanceCommands.Allows(
         auth.TryGet(bearer, out _, out _),
         loopback,
