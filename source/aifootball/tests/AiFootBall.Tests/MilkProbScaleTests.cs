@@ -173,4 +173,112 @@ public class MilkProbScaleTests
         Assert.Equal(104, hit.Actual);
         Assert.DoesNotContain("MarketPct", hit.Key);
     }
+
+    /// <summary>
+    /// 混合列单独偏离。市场列仍合计 100，不能靠「MarketPct 不再合计」把这一列也放过去。
+    /// </summary>
+    [Fact]
+    public void BlendSumFarFrom100_IsStillBlocked()
+    {
+        var rows = new[]
+        {
+            Row(1, JcPlayTypes.Spf, "3", 40m, 40m, 43.5m),
+            Row(1, JcPlayTypes.Spf, "1", 30m, 30m, 30m),
+            Row(1, JcPlayTypes.Spf, "0", 30m, 30m, 30m)
+        };
+
+        var hit = Assert.Single(MilkProbScale.Verify(rows));
+        Assert.Equal("prob-not-normalized", hit.Kind);
+        Assert.Contains("BlendedPct", hit.Key);
+        Assert.Contains("sum=103.5", hit.Key);
+        Assert.Equal(100, hit.Expected);
+        Assert.Equal(104, hit.Actual);
+    }
+
+    /// <summary>
+    /// 两列都是百分数量级，但比值走出 0.9 到 1.1。合计检查不再看 MarketPct，单位检查仍要拦。
+    /// 40+30+30=100，48+36+36=120，比值 100/120=0.833。
+    /// 反向：市场合计 80，比值 1.25。
+    /// </summary>
+    [Fact]
+    public void MarketRatioOutsidePointNineToOnePointOne_StillBlocks()
+    {
+        var low = new[]
+        {
+            Row(1, JcPlayTypes.Spf, "3", 40m, 48m, 40m),
+            Row(1, JcPlayTypes.Spf, "1", 30m, 36m, 30m),
+            Row(1, JcPlayTypes.Spf, "0", 30m, 36m, 30m)
+        };
+        var high = new[]
+        {
+            Row(1, JcPlayTypes.Spf, "3", 40m, 32m, 40m),
+            Row(1, JcPlayTypes.Spf, "1", 30m, 24m, 30m),
+            Row(1, JcPlayTypes.Spf, "0", 30m, 24m, 30m)
+        };
+
+        var lowHit = Assert.Single(MilkProbScale.Verify(low));
+        Assert.Equal("unit-mismatch", lowHit.Kind);
+        Assert.Contains("pure=100", lowHit.Key);
+        Assert.Contains("market=120", lowHit.Key);
+
+        var highHit = Assert.Single(MilkProbScale.Verify(high));
+        Assert.Equal("unit-mismatch", highHit.Kind);
+        Assert.Contains("pure=100", highHit.Key);
+        Assert.Contains("market=80", highHit.Key);
+    }
+
+    /// <summary>
+    /// 容差是 0.05 个百分点，含边界。99.95 和 100.05 放行；99.94 和 100.06 拦截。
+    /// 99.96 与 100.04 在界内。实际字段是合计四舍五入后的整数，所以 100.06 的实际仍显示 100，精确和在键里。
+    /// </summary>
+    [Fact]
+    public void RoundingBand_IsFiveHundredthsInclusive()
+    {
+        Assert.Empty(MilkProbScale.Verify(Spf(33.32m, 33.32m, 33.32m)));
+        Assert.Empty(MilkProbScale.Verify(Spf(33.34m, 33.35m, 33.35m)));
+        Assert.Empty(MilkProbScale.Verify(Spf(33.31m, 33.32m, 33.32m)));
+        Assert.Empty(MilkProbScale.Verify(Spf(33.35m, 33.35m, 33.35m)));
+
+        var under = Assert.Single(MilkProbScale.Verify(Spf(33.31m, 33.31m, 33.32m)), i => i.Key.Contains("ModelPctPure"));
+        Assert.Equal("prob-not-normalized", under.Kind);
+        Assert.Contains("sum=99.94", under.Key);
+
+        var over = Assert.Single(MilkProbScale.Verify(Spf(33.35m, 33.35m, 33.36m)), i => i.Key.Contains("ModelPctPure"));
+        Assert.Equal("prob-not-normalized", over.Kind);
+        Assert.Contains("sum=100.06", over.Key);
+        Assert.Equal(100, over.Actual);
+    }
+
+    /// <summary>
+    /// 2026-11-17 RunId 20261117T164001-a67bb5 读到的三场列合计。
+    /// 这里只复现这三组合计，不读取数据库，也不使用当时每一档的存档。
+    /// 前 30 档写成 3.000，最后一档补差，使三列合计等于记录值。
+    /// </summary>
+    [Fact]
+    public void RecordedColumnSums_From20261117_Pass()
+    {
+        var rows = new List<MilkProbSnapshot>();
+        AddRecorded(rows, 1503020, 100.000m, 103.506m, 100.001m);
+        AddRecorded(rows, 1495247, 99.999m, 103.486m, 99.998m);
+        AddRecorded(rows, 1398664, 99.998m, 103.475m, 99.999m);
+
+        Assert.Empty(MilkProbScale.Verify(rows));
+    }
+
+    private static MilkProbSnapshot[] Spf(decimal a, decimal b, decimal c)
+        => new[]
+        {
+            Row(1, JcPlayTypes.Spf, "3", a, a, a),
+            Row(1, JcPlayTypes.Spf, "1", b, b, b),
+            Row(1, JcPlayTypes.Spf, "0", c, c, c)
+        };
+
+    private static void AddRecorded(List<MilkProbSnapshot> rows, long matchId, decimal pureSum, decimal marketSum, decimal blendSum)
+    {
+        var codes = JcPlayDomain.Bf;
+        Assert.Equal(31, codes.Count);
+        for (var i = 0; i < 30; i++)
+            rows.Add(Row(matchId, JcPlayTypes.Bf, codes[i], 3.000m, 3.000m, 3.000m));
+        rows.Add(Row(matchId, JcPlayTypes.Bf, codes[30], pureSum - 90m, marketSum - 90m, blendSum - 90m));
+    }
 }
