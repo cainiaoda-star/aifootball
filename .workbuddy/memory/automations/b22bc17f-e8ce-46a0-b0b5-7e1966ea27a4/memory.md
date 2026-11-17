@@ -1,5 +1,10 @@
 # AiFootBall 代码自动同步到码云（Gitee）— 执行历史
 
+## 2026-11-17 18:00 — 阻断（敏感信息，未提交未推送）
+- 待提交改动：新增 `cursor-prediction-evidence-20261117/` 目录（+同名 zip，约 15MB，回放取证数据）+ 1 个其他自动化 memory.md 日志。
+- 核查发现该证据目录内 11 个文件内嵌内网数据库连接串 `Data Source=tcp:192.168.1.222,1433;Initial Catalog=AiFootBall`（export-readonly.ps1 / export-samples-monthly.ps1 / export-score-diag-light.ps1 / export-sideinputs*.ps1 / 00-meta.txt / REPORT.txt / export-log.txt）。IP 首次引入仓库，HEAD 历史无此 IP。
+- 属敏感信息（内网 IP+库名），虽未命中 .gitignore 预设排除项，但违反「严禁推送敏感文件」原则 → 按规则停下、取消暂存、不提交不推送。已如实报告，待用户决定是否忽略或加 .gitignore 排除。
+
 ## 2026-11-16 18:00
 - 25 文件改动（+958 增 241 删）：Backtest 侧 DirectionStudy/LeagueProbeStudy/ScoreProbeStudy/WeightReplayStudy/Program；Core 新增 JcPlayDomain/LeagueCategory/MilkRunLedger/MilkSourceSlate/NoPickLeagues 模型；Sources 侧 MilkPickEngine/RecommendationService/SteadyPickEngine；测试组多文件 + 新增 MilkBandAndScoreTests.cs；1 个其他自动化 memory.md 日志。
 - 提交 e3172ae 并成功推送到 origin main（a47488f..e3172ae）。未触碰 github 远端。无敏感文件。

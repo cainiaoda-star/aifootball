@@ -1,0 +1,5 @@
+MatchId	OpenWin	OpenCapturedAt	CurrWin	CurrCapturedAt	SourceTable	Certification
+1398687	1.810	2026-11-15T11:06:00.0000000	2.130	2026-11-15T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1398689	1.340	2026-11-15T11:06:00.0000000	1.290	2026-11-15T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1398691	1.610	2026-11-15T11:06:00.0000000	1.830	2026-11-15T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1398695					dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	uncertified-incomplete

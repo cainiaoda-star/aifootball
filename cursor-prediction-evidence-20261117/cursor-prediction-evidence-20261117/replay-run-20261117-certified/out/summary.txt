@@ -1,0 +1,53 @@
+hostname=SQL2025TEST
+finishedAt=2026-11-17 12:03:30 Asia/Shanghai
+pack=football-replay-diag-20261116c (evaluation only, not deployable)
+entry=MilkReplay.Run (offline-only; not wired into SaveMilkAsync)
+sideInputsCertified=true (spf-water, score-diag, price-span, euro-close, handicap) where historical as-of rows existed
+handicapSource=dbo.BettingCard Board=jc CapturedAt<=DecisionAt
+
+---- 2026-11-14 ----
+runId=20261114T225008-4408e9
+decisionAt=2026-11-14 22:50:08.9833333
+includedMatches=12 skipped=0
+coverage full/partial/impossible=12/0/0
+comparableToOfficial=True
+officialPathPickCount=4
+followPathPickCount=16
+samplesUsed=179005
+publishedPickAgreement=0/2
+elapsedMs=1364
+json=C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117-certified\out\replay-2026-11-14.json
+posthocEvaluablePicks=3 hits=1 unevaluated=1
+posthocNote=Post-hoc only, using current FbMatch full-time scores after the decision. Not produced by MilkReplay.Run. BQ needs half-time scores (not used here). NSPF needs a certified as-of handicap (cleared in this run). This is not yield, not an official comparable, and not evidence of improvement. Do not treat a short window as a hit-rate result.
+
+---- 2026-11-15 ----
+runId=20261115T225017-c6849c
+decisionAt=2026-11-15 22:50:17.8133333
+includedMatches=3 skipped=1
+coverage full/partial/impossible=3/0/0
+comparableToOfficial=True
+officialPathPickCount=4
+followPathPickCount=4
+samplesUsed=180160
+publishedPickAgreement=0/0
+elapsedMs=1050
+json=C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117-certified\out\replay-2026-11-15.json
+posthocEvaluablePicks=3 hits=0 unevaluated=1
+posthocNote=Post-hoc only, using current FbMatch full-time scores after the decision. Not produced by MilkReplay.Run. BQ needs half-time scores (not used here). NSPF needs a certified as-of handicap (cleared in this run). This is not yield, not an official comparable, and not evidence of improvement. Do not treat a short window as a hit-rate result.
+
+---- 2026-11-16 ----
+runId=20261116T215008-c60013
+decisionAt=2026-11-16 21:50:08.2566667
+includedMatches=8 skipped=0
+coverage full/partial/impossible=8/0/0
+comparableToOfficial=True
+officialPathPickCount=8
+followPathPickCount=15
+samplesUsed=180753
+publishedPickAgreement=8/8
+elapsedMs=734
+json=C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117-certified\out\replay-2026-11-16.json
+posthocEvaluablePicks=5 hits=1 unevaluated=3
+posthocNote=Post-hoc only, using current FbMatch full-time scores after the decision. Not produced by MilkReplay.Run. BQ needs half-time scores (not used here). NSPF needs a certified as-of handicap (cleared in this run). This is not yield, not an official comparable, and not evidence of improvement. Do not treat a short window as a hit-rate result.
+
+Distinction: coverage is input completeness at DecisionAt. Pick counts are engine output on those inputs. Hit/yield below is post-hoc on later FbMatch scores, not produced by MilkReplay.Run, and is not a claim of improvement over production.

@@ -1,0 +1,13 @@
+MatchId	OpenWin	OpenCapturedAt	CurrWin	CurrCapturedAt	SourceTable	Certification
+1362429	6.900	2026-11-14T11:08:00.0000000	6.900	2026-11-14T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1362554	1.820	2026-11-14T11:08:00.0000000	1.880	2026-11-14T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1398632	2.680	2026-11-14T11:08:00.0000000	3.140	2026-11-14T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1398638	1.360	2026-11-14T11:08:00.0000000	1.280	2026-11-14T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1398641	3.700	2026-11-14T11:08:00.0000000	4.950	2026-11-14T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1398644	1.440	2026-11-14T11:08:00.0000000	1.400	2026-11-14T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1398681	1.160	2026-11-14T11:08:00.0000000	1.130	2026-11-14T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1398683	1.340	2026-11-14T11:08:00.0000000	1.340	2026-11-14T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1416115	1.420	2026-11-13T11:04:00.0000000	1.300	2026-11-14T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1416117	1.310	2026-11-13T11:04:00.0000000	1.260	2026-11-14T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1416124	1.870	2026-11-13T11:04:00.0000000	1.830	2026-11-14T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified
+1416128	1.670	2026-11-13T11:04:00.0000000	2.060	2026-11-14T22:50:00.0000000	dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt	certified

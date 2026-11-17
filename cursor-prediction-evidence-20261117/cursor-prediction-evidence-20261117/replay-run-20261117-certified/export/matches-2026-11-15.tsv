@@ -1,0 +1,5 @@
+RunId	SalesDate	MatchId	MatchNo	LeagueName	HomeTeam	AwayTeam	MatchTime	Outcome	Reason	Evidence	Accepted	OptionCount	Plays	LastSampleAt
+20261115T225017-c6849c	2026-11-15T00:00:00.0000000	1398695	周日008	欧国联	芬兰	圣马力诺	2026-11-16T01:00:00.0000000	rejected	league-excluded	list=NoPickLeagues;league=欧国联	False	42	BF=31,JQ=8,NSPF=3	2026-11-15T22:48:00.0000000
+20261115T225017-c6849c	2026-11-15T00:00:00.0000000	1398689	周日009	欧国联	克罗地亚	捷克	2026-11-16T03:45:00.0000000	rejected	league-excluded	list=NoPickLeagues;league=欧国联	False	54	BF=31,BQ=9,JQ=8,NSPF=3,SPF=3	2026-11-15T22:48:00.0000000
+20261115T225017-c6849c	2026-11-15T00:00:00.0000000	1398691	周日010	欧国联	西班牙	英格兰	2026-11-16T03:45:00.0000000	rejected	league-excluded	list=NoPickLeagues;league=欧国联	False	54	BF=31,BQ=9,JQ=8,NSPF=3,SPF=3	2026-11-15T22:48:00.0000000
+20261115T225017-c6849c	2026-11-15T00:00:00.0000000	1398687	周日011	欧国联	比利时	意大利	2026-11-16T03:45:00.0000000	rejected	league-excluded	list=NoPickLeagues;league=欧国联	False	54	BF=31,BQ=9,JQ=8,NSPF=3,SPF=3	2026-11-15T22:48:00.0000000

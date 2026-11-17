@@ -1,0 +1,7 @@
+﻿packagedAt=2026-11-17 12:22:32 Asia/Shanghai
+hostname=SQL2025Test
+operation=local filesystem copy, hash verification, exported-field projection, derived full-time review, zip only
+databaseConnections=0
+productionMachineTouched=false
+originalEvidenceModified=false
+sourceFilesCopied=88

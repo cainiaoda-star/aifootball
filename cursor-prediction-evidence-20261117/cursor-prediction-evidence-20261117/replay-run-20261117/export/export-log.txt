@@ -1,0 +1,81 @@
+﻿2026-11-17 11:41:29 hostname begin-export
+2026-11-17 11:41:29 SQL2025Test
+2026-11-17 11:41:29 user=Administrator
+2026-11-17 11:41:29 target=tcp:192.168.1.222,1433 database=AiFootBall auth=integrated intent=ReadOnly access=SELECT-only
+2026-11-17 11:41:29 connection=open
+2026-11-17 11:41:30 START ping -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\ping.tsv
+2026-11-17 11:41:30 OK ping rows=1 seconds=0.124
+2026-11-17 11:41:30 START matches-2026-11-14 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\matches-2026-11-14.tsv
+2026-11-17 11:41:30 OK matches-2026-11-14 rows=12 seconds=0.033
+2026-11-17 11:41:30 START jc-odds-2026-11-14 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\jc-odds-2026-11-14.tsv
+2026-11-17 11:41:31 OK jc-odds-2026-11-14 rows=648 seconds=1.023
+2026-11-17 11:41:31 START ou-2026-11-14 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\ou-2026-11-14.tsv
+2026-11-17 11:41:31 OK ou-2026-11-14 rows=207 seconds=0.113
+2026-11-17 11:41:31 START official-picks-2026-11-14 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\official-picks-2026-11-14.tsv
+2026-11-17 11:41:31 OK official-picks-2026-11-14 rows=2 seconds=0.012
+2026-11-17 11:41:31 START matches-2026-11-15 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\matches-2026-11-15.tsv
+2026-11-17 11:41:31 OK matches-2026-11-15 rows=4 seconds=0.012
+2026-11-17 11:41:31 START jc-odds-2026-11-15 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\jc-odds-2026-11-15.tsv
+2026-11-17 11:41:31 OK jc-odds-2026-11-15 rows=204 seconds=0.225
+2026-11-17 11:41:31 START ou-2026-11-15 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\ou-2026-11-15.tsv
+2026-11-17 11:41:31 OK ou-2026-11-15 rows=73 seconds=0.061
+2026-11-17 11:41:31 START official-picks-2026-11-15 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\official-picks-2026-11-15.tsv
+2026-11-17 11:41:31 OK official-picks-2026-11-15 rows=0 seconds=0.012
+2026-11-17 11:41:31 START matches-2026-11-16 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\matches-2026-11-16.tsv
+2026-11-17 11:41:31 OK matches-2026-11-16 rows=8 seconds=0.014
+2026-11-17 11:41:31 START jc-odds-2026-11-16 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\jc-odds-2026-11-16.tsv
+2026-11-17 11:41:32 OK jc-odds-2026-11-16 rows=432 seconds=0.423
+2026-11-17 11:41:32 START ou-2026-11-16 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\ou-2026-11-16.tsv
+2026-11-17 11:41:32 OK ou-2026-11-16 rows=221 seconds=0.108
+2026-11-17 11:41:32 START official-picks-2026-11-16 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\official-picks-2026-11-16.tsv
+2026-11-17 11:41:32 OK official-picks-2026-11-16 rows=8 seconds=0.015
+2026-11-17 11:41:32 START outcomes-posthoc -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\outcomes-posthoc.tsv
+2026-11-17 11:41:32 OK outcomes-posthoc rows=24 seconds=0.023
+2026-11-17 11:41:32 START samples -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples.tsv
+2026-11-17 11:42:43 OK samples rows=180939 seconds=70.622
+2026-11-17 11:42:43 FAIL samples seconds=70.622 number= message=Query samples exceeded 30 seconds (70.622s). Stopped after write; do not retry.
+2026-11-17 11:42:43 connection=closed
+2026-11-17 11:43:49 hostname=SQL2025Test
+2026-11-17 11:43:49 sample-chunks=19 from=2025-05-14 00:00:00.0000000 to=2026-11-16 19:20:08.2566667
+2026-11-17 11:43:50 connection=open samples-monthly
+2026-11-17 11:43:50 START samples-001-202505 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-001-202505.tsv
+2026-11-17 11:43:51 OK samples-001-202505 rows=3089 seconds=1.479
+2026-11-17 11:43:51 START samples-002-202506 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-002-202506.tsv
+2026-11-17 11:43:52 OK samples-002-202506 rows=2312 seconds=0.919
+2026-11-17 11:43:52 START samples-003-202507 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-003-202507.tsv
+2026-11-17 11:43:53 OK samples-003-202507 rows=3360 seconds=1.349
+2026-11-17 11:43:53 START samples-004-202508 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-004-202508.tsv
+2026-11-17 11:43:56 OK samples-004-202508 rows=6878 seconds=2.708
+2026-11-17 11:43:56 START samples-005-202509 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-005-202509.tsv
+2026-11-17 11:44:01 OK samples-005-202509 rows=13019 seconds=5.112
+2026-11-17 11:44:01 START samples-006-202510 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-006-202510.tsv
+2026-11-17 11:44:06 OK samples-006-202510 rows=13064 seconds=5.134
+2026-11-17 11:44:06 START samples-007-202511 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-007-202511.tsv
+2026-11-17 11:44:10 OK samples-007-202511 rows=9867 seconds=3.859
+2026-11-17 11:44:10 START samples-008-202512 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-008-202512.tsv
+2026-11-17 11:44:13 OK samples-008-202512 rows=6215 seconds=2.485
+2026-11-17 11:44:13 START samples-009-202601 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-009-202601.tsv
+2026-11-17 11:44:18 OK samples-009-202601 rows=12187 seconds=4.789
+2026-11-17 11:44:18 START samples-010-202602 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-010-202602.tsv
+2026-11-17 11:44:22 OK samples-010-202602 rows=11912 seconds=4.711
+2026-11-17 11:44:22 START samples-011-202603 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-011-202603.tsv
+2026-11-17 11:44:28 OK samples-011-202603 rows=14842 seconds=5.837
+2026-11-17 11:44:28 START samples-012-202604 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-012-202604.tsv
+2026-11-17 11:44:34 OK samples-012-202604 rows=13779 seconds=5.457
+2026-11-17 11:44:34 START samples-013-202605 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-013-202605.tsv
+2026-11-17 11:44:37 OK samples-013-202605 rows=8346 seconds=3.271
+2026-11-17 11:44:37 START samples-014-202606 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-014-202606.tsv
+2026-11-17 11:44:40 OK samples-014-202606 rows=6193 seconds=2.460
+2026-11-17 11:44:40 START samples-015-202607 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-015-202607.tsv
+2026-11-17 11:44:44 OK samples-015-202607 rows=10286 seconds=4.094
+2026-11-17 11:44:44 START samples-016-202608 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-016-202608.tsv
+2026-11-17 11:44:50 OK samples-016-202608 rows=15063 seconds=5.948
+2026-11-17 11:44:50 START samples-017-202609 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-017-202609.tsv
+2026-11-17 11:44:55 OK samples-017-202609 rows=12348 seconds=4.861
+2026-11-17 11:44:55 START samples-018-202610 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-018-202610.tsv
+2026-11-17 11:45:01 OK samples-018-202610 rows=15685 seconds=6.201
+2026-11-17 11:45:01 START samples-019-202611 -> C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples-chunks\samples-019-202611.tsv
+2026-11-17 11:45:02 OK samples-019-202611 rows=2494 seconds=1.025
+2026-11-17 11:45:02 connection=closed samples-monthly
+2026-11-17 11:45:03 MERGED samples rows=180939 path=C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples.tsv
+2026-11-17 11:45:03 samples-monthly-done

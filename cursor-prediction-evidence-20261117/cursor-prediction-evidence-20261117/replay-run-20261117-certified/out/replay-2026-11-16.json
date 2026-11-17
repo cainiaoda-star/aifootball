@@ -1,0 +1,1064 @@
+{
+  "hostname": "SQL2025TEST",
+  "salesDate": "2026-11-16",
+  "runId": "20261116T215008-c60013",
+  "decisionAt": "2026-11-16 21:50:08.2566667",
+  "trainFrom": "2025-05-16 00:00:00.0000000",
+  "trainUntil": "2026-11-16 19:20:08.2566667",
+  "samplesLoaded": 180939,
+  "samplesUsed": 180753,
+  "sourceMatches": 8,
+  "includedMatchCount": 8,
+  "skipped": [],
+  "exchangeGapsNoted": [],
+  "note": "",
+  "comparableToOfficial": true,
+  "exchangeScope": "必发只用于精选方向回归。大奶回放不读它，缺必发不排除大奶场次。",
+  "trainIngestLimit": "训练右边界是开赛加150分钟，不是赛果首次入库时间。不能把已完赛当成当时已经入库。",
+  "handicapPolicy": "JC handicap taken only from dbo.BettingCard Board=jc when CapturedAt <= DecisionAt and CapturedAt <= MatchTime. Current FbMatch.Handicap was not used.",
+  "sideInputs": "Water/ScoreDiag/PriceSpan/EuroClose certified as-of DecisionAt from historical tables. asian/teamProfiles/teamForms remain null (MilkReplay.Run never passes them). See certificationLedger.",
+  "certificationLedger": [
+    {
+      "MatchId": 1398699,
+      "MatchNo": "周一001",
+      "skipped": false,
+      "handicap": {
+        "certified": true,
+        "value": -1.00,
+        "knownAt": "2026-11-16T20:30:19",
+        "source": "dbo.BettingCard Board=jc"
+      },
+      "spfWater": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt"
+      },
+      "scoreDiag": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory BF first/last qualifying snapshots as-of DecisionAt"
+      },
+      "priceSpan": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory + dbo.FbExchange first/last as-of DecisionAt"
+      },
+      "euroClose": {
+        "certified": true,
+        "value": 1.840,
+        "capturedAt": "2026-11-16T21:50:00",
+        "source": "dbo.FbOddsHistory EU CompanyId=0 last as-of DecisionAt"
+      }
+    },
+    {
+      "MatchId": 1398700,
+      "MatchNo": "周一002",
+      "skipped": false,
+      "handicap": {
+        "certified": true,
+        "value": 1.00,
+        "knownAt": "2026-11-16T20:30:19",
+        "source": "dbo.BettingCard Board=jc"
+      },
+      "spfWater": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt"
+      },
+      "scoreDiag": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory BF first/last qualifying snapshots as-of DecisionAt"
+      },
+      "priceSpan": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory + dbo.FbExchange first/last as-of DecisionAt"
+      },
+      "euroClose": {
+        "certified": true,
+        "value": 4.020,
+        "capturedAt": "2026-11-16T21:50:00",
+        "source": "dbo.FbOddsHistory EU CompanyId=0 last as-of DecisionAt"
+      }
+    },
+    {
+      "MatchId": 1398702,
+      "MatchNo": "周一003",
+      "skipped": false,
+      "handicap": {
+        "certified": true,
+        "value": -1.00,
+        "knownAt": "2026-11-16T20:30:19",
+        "source": "dbo.BettingCard Board=jc"
+      },
+      "spfWater": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt"
+      },
+      "scoreDiag": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory BF first/last qualifying snapshots as-of DecisionAt"
+      },
+      "priceSpan": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory + dbo.FbExchange first/last as-of DecisionAt"
+      },
+      "euroClose": {
+        "certified": true,
+        "value": 1.940,
+        "capturedAt": "2026-11-16T21:50:00",
+        "source": "dbo.FbOddsHistory EU CompanyId=0 last as-of DecisionAt"
+      }
+    },
+    {
+      "MatchId": 1398701,
+      "MatchNo": "周一004",
+      "skipped": false,
+      "handicap": {
+        "certified": true,
+        "value": -1.00,
+        "knownAt": "2026-11-16T20:30:19",
+        "source": "dbo.BettingCard Board=jc"
+      },
+      "spfWater": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt"
+      },
+      "scoreDiag": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory BF first/last qualifying snapshots as-of DecisionAt"
+      },
+      "priceSpan": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory + dbo.FbExchange first/last as-of DecisionAt"
+      },
+      "euroClose": {
+        "certified": true,
+        "value": 1.190,
+        "capturedAt": "2026-11-16T21:50:00",
+        "source": "dbo.FbOddsHistory EU CompanyId=0 last as-of DecisionAt"
+      }
+    },
+    {
+      "MatchId": 1398647,
+      "MatchNo": "周一005",
+      "skipped": false,
+      "handicap": {
+        "certified": true,
+        "value": -1.00,
+        "knownAt": "2026-11-16T20:30:19",
+        "source": "dbo.BettingCard Board=jc"
+      },
+      "spfWater": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt"
+      },
+      "scoreDiag": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory BF first/last qualifying snapshots as-of DecisionAt"
+      },
+      "priceSpan": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory + dbo.FbExchange first/last as-of DecisionAt"
+      },
+      "euroClose": {
+        "certified": true,
+        "value": 1.770,
+        "capturedAt": "2026-11-16T21:50:00",
+        "source": "dbo.FbOddsHistory EU CompanyId=0 last as-of DecisionAt"
+      }
+    },
+    {
+      "MatchId": 1398692,
+      "MatchNo": "周一006",
+      "skipped": false,
+      "handicap": {
+        "certified": true,
+        "value": -1.00,
+        "knownAt": "2026-11-16T20:30:19",
+        "source": "dbo.BettingCard Board=jc"
+      },
+      "spfWater": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt"
+      },
+      "scoreDiag": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory BF first/last qualifying snapshots as-of DecisionAt"
+      },
+      "priceSpan": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory + dbo.FbExchange first/last as-of DecisionAt"
+      },
+      "euroClose": {
+        "certified": true,
+        "value": 1.880,
+        "capturedAt": "2026-11-16T21:50:00",
+        "source": "dbo.FbOddsHistory EU CompanyId=0 last as-of DecisionAt"
+      }
+    },
+    {
+      "MatchId": 1398649,
+      "MatchNo": "周一007",
+      "skipped": false,
+      "handicap": {
+        "certified": true,
+        "value": 1.00,
+        "knownAt": "2026-11-16T20:30:19",
+        "source": "dbo.BettingCard Board=jc"
+      },
+      "spfWater": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt"
+      },
+      "scoreDiag": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory BF first/last qualifying snapshots as-of DecisionAt"
+      },
+      "priceSpan": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory + dbo.FbExchange first/last as-of DecisionAt"
+      },
+      "euroClose": {
+        "certified": true,
+        "value": 6.780,
+        "capturedAt": "2026-11-16T21:50:00",
+        "source": "dbo.FbOddsHistory EU CompanyId=0 last as-of DecisionAt"
+      }
+    },
+    {
+      "MatchId": 1398694,
+      "MatchNo": "周一008",
+      "skipped": false,
+      "handicap": {
+        "certified": true,
+        "value": -1.00,
+        "knownAt": "2026-11-16T20:30:19",
+        "source": "dbo.BettingCard Board=jc"
+      },
+      "spfWater": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory SPF option 3 first/last as-of DecisionAt"
+      },
+      "scoreDiag": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory BF first/last qualifying snapshots as-of DecisionAt"
+      },
+      "priceSpan": {
+        "certified": true,
+        "source": "dbo.FbJcOddsHistory + dbo.FbExchange first/last as-of DecisionAt"
+      },
+      "euroClose": {
+        "certified": true,
+        "value": 1.430,
+        "capturedAt": "2026-11-16T21:50:00",
+        "source": "dbo.FbOddsHistory EU CompanyId=0 last as-of DecisionAt"
+      }
+    }
+  ],
+  "coverage": [
+    {
+      "MatchId": 1398699,
+      "MatchNo": "周一001",
+      "Coverage": "full",
+      "Missing": [],
+      "MissingUses": [],
+      "quoteUntil": "2026-11-16 21:50:08.2566667",
+      "oddsCapturedAt": "2026-11-16 21:50:00.0000000",
+      "AffectsOfficialPicks": false
+    },
+    {
+      "MatchId": 1398700,
+      "MatchNo": "周一002",
+      "Coverage": "full",
+      "Missing": [],
+      "MissingUses": [],
+      "quoteUntil": "2026-11-16 21:50:08.2566667",
+      "oddsCapturedAt": "2026-11-16 21:50:00.0000000",
+      "AffectsOfficialPicks": false
+    },
+    {
+      "MatchId": 1398702,
+      "MatchNo": "周一003",
+      "Coverage": "full",
+      "Missing": [],
+      "MissingUses": [],
+      "quoteUntil": "2026-11-16 21:50:08.2566667",
+      "oddsCapturedAt": "2026-11-16 21:50:00.0000000",
+      "AffectsOfficialPicks": false
+    },
+    {
+      "MatchId": 1398701,
+      "MatchNo": "周一004",
+      "Coverage": "full",
+      "Missing": [],
+      "MissingUses": [],
+      "quoteUntil": "2026-11-16 21:50:08.2566667",
+      "oddsCapturedAt": "2026-11-16 21:50:00.0000000",
+      "AffectsOfficialPicks": false
+    },
+    {
+      "MatchId": 1398647,
+      "MatchNo": "周一005",
+      "Coverage": "full",
+      "Missing": [],
+      "MissingUses": [],
+      "quoteUntil": "2026-11-16 21:50:08.2566667",
+      "oddsCapturedAt": "2026-11-16 21:50:00.0000000",
+      "AffectsOfficialPicks": false
+    },
+    {
+      "MatchId": 1398692,
+      "MatchNo": "周一006",
+      "Coverage": "full",
+      "Missing": [],
+      "MissingUses": [],
+      "quoteUntil": "2026-11-16 21:50:08.2566667",
+      "oddsCapturedAt": "2026-11-16 21:50:00.0000000",
+      "AffectsOfficialPicks": false
+    },
+    {
+      "MatchId": 1398649,
+      "MatchNo": "周一007",
+      "Coverage": "full",
+      "Missing": [],
+      "MissingUses": [],
+      "quoteUntil": "2026-11-16 21:50:08.2566667",
+      "oddsCapturedAt": "2026-11-16 21:50:00.0000000",
+      "AffectsOfficialPicks": false
+    },
+    {
+      "MatchId": 1398694,
+      "MatchNo": "周一008",
+      "Coverage": "full",
+      "Missing": [],
+      "MissingUses": [],
+      "quoteUntil": "2026-11-16 21:50:08.2566667",
+      "oddsCapturedAt": "2026-11-16 21:50:00.0000000",
+      "AffectsOfficialPicks": false
+    }
+  ],
+  "coverageCounts": {
+    "full": 8,
+    "partial": 0,
+    "impossible": 0
+  },
+  "officialPath": {
+    "pickCount": 8,
+    "picks": [
+      {
+        "MatchId": 1398702,
+        "MatchNo": "周一003",
+        "LeagueName": "欧国联",
+        "HomeTeam": "爱沙尼亚",
+        "AwayTeam": "保加利亚",
+        "PlayType": "BQ",
+        "OptionCode": "3-3",
+        "OptionName": "半全场 胜胜",
+        "Odds": 3.350,
+        "ModelProbability": 27.79,
+        "ModelPctPure": 31.78,
+        "Ev": 0.931,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398692,
+        "MatchNo": "周一006",
+        "LeagueName": "欧国联",
+        "HomeTeam": "德国",
+        "AwayTeam": "荷兰",
+        "PlayType": "BQ",
+        "OptionCode": "1-0",
+        "OptionName": "半全场 平负",
+        "Odds": 9.000,
+        "ModelProbability": 12.36,
+        "ModelPctPure": 15.84,
+        "Ev": 1.112,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "LeagueName": "欧国联",
+        "HomeTeam": "冰岛",
+        "AwayTeam": "卢森堡",
+        "PlayType": "NSPF",
+        "OptionCode": "1",
+        "OptionName": "让球胜平负 让平",
+        "Odds": 4.150,
+        "ModelProbability": 22.38,
+        "ModelPctPure": 25.26,
+        "Ev": 0.929,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398694,
+        "MatchNo": "周一008",
+        "LeagueName": "欧国联",
+        "HomeTeam": "希腊",
+        "AwayTeam": "塞尔维亚",
+        "PlayType": "JQ",
+        "OptionCode": "2",
+        "OptionName": "总进球 2球",
+        "Odds": 4.150,
+        "ModelProbability": 20.19,
+        "ModelPctPure": 24.08,
+        "Ev": 0.838,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398699,
+        "MatchNo": "周一001",
+        "LeagueName": "欧国联",
+        "HomeTeam": "法罗群岛",
+        "AwayTeam": "摩尔多瓦",
+        "PlayType": "JQ",
+        "OptionCode": "1",
+        "OptionName": "总进球 1球",
+        "Odds": 4.200,
+        "ModelProbability": 19.88,
+        "ModelPctPure": 23.46,
+        "Ev": 0.835,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398702,
+        "MatchNo": "周一003",
+        "LeagueName": "欧国联",
+        "HomeTeam": "爱沙尼亚",
+        "AwayTeam": "保加利亚",
+        "PlayType": "BF",
+        "OptionCode": "3:0",
+        "OptionName": "比分 3:0",
+        "Odds": 18.000,
+        "ModelProbability": 4.96,
+        "ModelPctPure": 5.39,
+        "Ev": 0.893,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "LeagueName": "欧国联",
+        "HomeTeam": "冰岛",
+        "AwayTeam": "卢森堡",
+        "PlayType": "BF",
+        "OptionCode": "2:1",
+        "OptionName": "比分 2:1",
+        "Odds": 8.500,
+        "ModelProbability": 9.38,
+        "ModelPctPure": 9.82,
+        "Ev": 0.797,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "LeagueName": "欧国联",
+        "HomeTeam": "冰岛",
+        "AwayTeam": "卢森堡",
+        "PlayType": "BF",
+        "OptionCode": "1:0",
+        "OptionName": "比分 1:0",
+        "Odds": 6.500,
+        "ModelProbability": 12.00,
+        "ModelPctPure": 12.47,
+        "Ev": 0.780,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      }
+    ],
+    "funnel": {
+      "ScoresReady": true,
+      "type": "AiFootBall.Core.Models.MilkFunnel",
+      "raw": "AiFootBall.Core.Models.MilkFunnel"
+    },
+    "coherence": [
+      {
+        "MatchId": 1398699,
+        "AnchorPlayType": "BF",
+        "AnchorOptionCode": "1:1",
+        "AnchorModelPct": 12.57,
+        "AnchorDirection": "1",
+        "GridHomePct": 44.02,
+        "GridDrawPct": 27.73,
+        "GridAwayPct": 28.26,
+        "GridDirection": "3",
+        "DirectionsDiffer": true,
+        "DroppedByCoherence": [
+          "BQ:1-0",
+          "BF:0:1",
+          "BF:1:2"
+        ]
+      },
+      {
+        "MatchId": 1398700,
+        "AnchorPlayType": "BQ",
+        "AnchorOptionCode": "1-1",
+        "AnchorModelPct": 14.82,
+        "AnchorDirection": "1",
+        "GridHomePct": 23.11,
+        "GridDrawPct": 25.29,
+        "GridAwayPct": 51.61,
+        "GridDirection": "0",
+        "DirectionsDiffer": true,
+        "DroppedByCoherence": [
+          "JQ:1"
+        ]
+      },
+      {
+        "MatchId": 1398702,
+        "AnchorPlayType": "BQ",
+        "AnchorOptionCode": "3-3",
+        "AnchorModelPct": 27.79,
+        "AnchorDirection": "3",
+        "GridHomePct": 52.79,
+        "GridDrawPct": 27.00,
+        "GridAwayPct": 20.21,
+        "GridDirection": "3",
+        "DirectionsDiffer": false,
+        "DroppedByCoherence": [
+          "BF:0:1"
+        ]
+      },
+      {
+        "MatchId": 1398701,
+        "AnchorPlayType": "BF",
+        "AnchorOptionCode": "1:0",
+        "AnchorModelPct": 12.00,
+        "AnchorDirection": "3",
+        "GridHomePct": 60.86,
+        "GridDrawPct": 22.09,
+        "GridAwayPct": 17.05,
+        "GridDirection": "3",
+        "DirectionsDiffer": false,
+        "DroppedByCoherence": [
+          "BQ:1-1"
+        ]
+      },
+      {
+        "MatchId": 1398647,
+        "AnchorPlayType": "BQ",
+        "AnchorOptionCode": "1-1",
+        "AnchorModelPct": 14.11,
+        "AnchorDirection": "1",
+        "GridHomePct": 58.35,
+        "GridDrawPct": 23.70,
+        "GridAwayPct": 17.95,
+        "GridDirection": "3",
+        "DirectionsDiffer": true,
+        "DroppedByCoherence": [
+          "JQ:1",
+          "BF:1:0",
+          "BF:0:1"
+        ]
+      },
+      {
+        "MatchId": 1398692,
+        "AnchorPlayType": "BQ",
+        "AnchorOptionCode": "1-0",
+        "AnchorModelPct": 12.36,
+        "AnchorDirection": "0",
+        "GridHomePct": 25.86,
+        "GridDrawPct": 21.71,
+        "GridAwayPct": 52.43,
+        "GridDirection": "0",
+        "DirectionsDiffer": false,
+        "DroppedByCoherence": [
+          "BF:1:1"
+        ]
+      },
+      {
+        "MatchId": 1398649,
+        "AnchorPlayType": "BQ",
+        "AnchorOptionCode": "1-1",
+        "AnchorModelPct": 15.75,
+        "AnchorDirection": "1",
+        "GridHomePct": 17.89,
+        "GridDrawPct": 25.32,
+        "GridAwayPct": 56.79,
+        "GridDirection": "0",
+        "DirectionsDiffer": true,
+        "DroppedByCoherence": [
+          "JQ:1"
+        ]
+      },
+      {
+        "MatchId": 1398694,
+        "AnchorPlayType": "BF",
+        "AnchorOptionCode": "1:1",
+        "AnchorModelPct": 10.83,
+        "AnchorDirection": "1",
+        "GridHomePct": 42.67,
+        "GridDrawPct": 25.14,
+        "GridAwayPct": 32.19,
+        "GridDirection": "3",
+        "DirectionsDiffer": true,
+        "DroppedByCoherence": [
+          "BF:1:0"
+        ]
+      }
+    ],
+    "finalNotes": [
+      {
+        "MatchId": 1398699,
+        "MatchNo": "周一001",
+        "PlayType": "JQ",
+        "OptionCode": "1",
+        "Odds": 4.200,
+        "ModelPctPure": 23.46,
+        "BlendedPct": 19.88,
+        "MarketPct": 18.986861092124250018986861093,
+        "Ev": 0.835,
+        "KeptByGates": true,
+        "InFinal": true,
+        "SampleBand": "own-rate",
+        "HomeRateSource": "own",
+        "AwayRateSource": "own",
+        "HomeGames": 5,
+        "AwayGames": 5
+      },
+      {
+        "MatchId": 1398702,
+        "MatchNo": "周一003",
+        "PlayType": "BF",
+        "OptionCode": "3:0",
+        "Odds": 18.000,
+        "ModelPctPure": 5.39,
+        "BlendedPct": 4.96,
+        "MarketPct": 3.9401103230890464933018124508,
+        "Ev": 0.893,
+        "KeptByGates": true,
+        "InFinal": true,
+        "SampleBand": "own-rate",
+        "HomeRateSource": "own",
+        "AwayRateSource": "own",
+        "HomeGames": 5,
+        "AwayGames": 5
+      },
+      {
+        "MatchId": 1398702,
+        "MatchNo": "周一003",
+        "PlayType": "BQ",
+        "OptionCode": "3-3",
+        "Odds": 3.350,
+        "ModelPctPure": 31.78,
+        "BlendedPct": 27.79,
+        "MarketPct": 23.804422861767716441714870623,
+        "Ev": 0.931,
+        "KeptByGates": true,
+        "InFinal": true,
+        "SampleBand": "own-rate",
+        "HomeRateSource": "own",
+        "AwayRateSource": "own",
+        "HomeGames": 5,
+        "AwayGames": 5
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "PlayType": "BF",
+        "OptionCode": "1:0",
+        "Odds": 6.500,
+        "ModelPctPure": 12.47,
+        "BlendedPct": 12.00,
+        "MarketPct": 10.911074740861974904528096018,
+        "Ev": 0.780,
+        "KeptByGates": true,
+        "InFinal": true,
+        "SampleBand": "own-rate",
+        "HomeRateSource": "own",
+        "AwayRateSource": "own",
+        "HomeGames": 5,
+        "AwayGames": 7
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "PlayType": "BF",
+        "OptionCode": "2:1",
+        "Odds": 8.500,
+        "ModelPctPure": 9.82,
+        "BlendedPct": 9.38,
+        "MarketPct": 8.343763037129745515227367543,
+        "Ev": 0.797,
+        "KeptByGates": true,
+        "InFinal": true,
+        "SampleBand": "own-rate",
+        "HomeRateSource": "own",
+        "AwayRateSource": "own",
+        "HomeGames": 5,
+        "AwayGames": 7
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "PlayType": "NSPF",
+        "OptionCode": "1",
+        "Odds": 4.150,
+        "ModelPctPure": 25.26,
+        "BlendedPct": 22.38,
+        "MarketPct": 21.155737965029565143806128817,
+        "Ev": 0.929,
+        "KeptByGates": true,
+        "InFinal": true,
+        "SampleBand": "own-rate",
+        "HomeRateSource": "own",
+        "AwayRateSource": "own",
+        "HomeGames": 5,
+        "AwayGames": 7
+      },
+      {
+        "MatchId": 1398692,
+        "MatchNo": "周一006",
+        "PlayType": "BQ",
+        "OptionCode": "1-0",
+        "Odds": 9.000,
+        "ModelPctPure": 15.84,
+        "BlendedPct": 12.36,
+        "MarketPct": 8.860535176324650008860535176,
+        "Ev": 1.112,
+        "KeptByGates": true,
+        "InFinal": true,
+        "SampleBand": "own-rate",
+        "HomeRateSource": "own",
+        "AwayRateSource": "own",
+        "HomeGames": 7,
+        "AwayGames": 5
+      },
+      {
+        "MatchId": 1398694,
+        "MatchNo": "周一008",
+        "PlayType": "JQ",
+        "OptionCode": "2",
+        "Odds": 4.150,
+        "ModelPctPure": 24.08,
+        "BlendedPct": 20.19,
+        "MarketPct": 19.215618454679963874637305202,
+        "Ev": 0.838,
+        "KeptByGates": true,
+        "InFinal": true,
+        "SampleBand": "own-rate",
+        "HomeRateSource": "own",
+        "AwayRateSource": "own",
+        "HomeGames": 5,
+        "AwayGames": 5
+      }
+    ]
+  },
+  "followPath": {
+    "pickCount": 15,
+    "picks": [
+      {
+        "MatchId": 1398699,
+        "MatchNo": "周一001",
+        "LeagueName": "欧国联",
+        "HomeTeam": "法罗群岛",
+        "AwayTeam": "摩尔多瓦",
+        "PlayType": "JQ",
+        "OptionCode": "1",
+        "OptionName": "总进球 1球",
+        "Odds": 4.200,
+        "ModelProbability": 19.88,
+        "ModelPctPure": 23.46,
+        "Ev": 0.835,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398699,
+        "MatchNo": "周一001",
+        "LeagueName": "欧国联",
+        "HomeTeam": "法罗群岛",
+        "AwayTeam": "摩尔多瓦",
+        "PlayType": "JQ",
+        "OptionCode": "4",
+        "OptionName": "总进球 4球",
+        "Odds": 6.200,
+        "ModelProbability": 12.61,
+        "ModelPctPure": 11.61,
+        "Ev": 0.782,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398700,
+        "MatchNo": "周一002",
+        "LeagueName": "欧国联",
+        "HomeTeam": "哈萨克",
+        "AwayTeam": "斯洛伐克",
+        "PlayType": "JQ",
+        "OptionCode": "4",
+        "OptionName": "总进球 4球",
+        "Odds": 5.750,
+        "ModelProbability": 13.76,
+        "ModelPctPure": 13.38,
+        "Ev": 0.791,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398702,
+        "MatchNo": "周一003",
+        "LeagueName": "欧国联",
+        "HomeTeam": "爱沙尼亚",
+        "AwayTeam": "保加利亚",
+        "PlayType": "BQ",
+        "OptionCode": "3-3",
+        "OptionName": "半全场 胜胜",
+        "Odds": 3.350,
+        "ModelProbability": 27.79,
+        "ModelPctPure": 31.78,
+        "Ev": 0.931,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398702,
+        "MatchNo": "周一003",
+        "LeagueName": "欧国联",
+        "HomeTeam": "爱沙尼亚",
+        "AwayTeam": "保加利亚",
+        "PlayType": "JQ",
+        "OptionCode": "4",
+        "OptionName": "总进球 4球",
+        "Odds": 7.000,
+        "ModelProbability": 11.25,
+        "ModelPctPure": 10.65,
+        "Ev": 0.788,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398702,
+        "MatchNo": "周一003",
+        "LeagueName": "欧国联",
+        "HomeTeam": "爱沙尼亚",
+        "AwayTeam": "保加利亚",
+        "PlayType": "BF",
+        "OptionCode": "3:0",
+        "OptionName": "比分 3:0",
+        "Odds": 18.000,
+        "ModelProbability": 4.96,
+        "ModelPctPure": 5.39,
+        "Ev": 0.893,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "LeagueName": "欧国联",
+        "HomeTeam": "冰岛",
+        "AwayTeam": "卢森堡",
+        "PlayType": "NSPF",
+        "OptionCode": "1",
+        "OptionName": "让球胜平负 让平",
+        "Odds": 4.150,
+        "ModelProbability": 22.38,
+        "ModelPctPure": 25.26,
+        "Ev": 0.929,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "LeagueName": "欧国联",
+        "HomeTeam": "冰岛",
+        "AwayTeam": "卢森堡",
+        "PlayType": "JQ",
+        "OptionCode": "1",
+        "OptionName": "总进球 1球",
+        "Odds": 6.000,
+        "ModelProbability": 14.29,
+        "ModelPctPure": 18.30,
+        "Ev": 0.857,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "LeagueName": "欧国联",
+        "HomeTeam": "冰岛",
+        "AwayTeam": "卢森堡",
+        "PlayType": "BF",
+        "OptionCode": "2:1",
+        "OptionName": "比分 2:1",
+        "Odds": 8.500,
+        "ModelProbability": 9.38,
+        "ModelPctPure": 9.82,
+        "Ev": 0.797,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "LeagueName": "欧国联",
+        "HomeTeam": "冰岛",
+        "AwayTeam": "卢森堡",
+        "PlayType": "BF",
+        "OptionCode": "1:0",
+        "OptionName": "比分 1:0",
+        "Odds": 6.500,
+        "ModelProbability": 12.00,
+        "ModelPctPure": 12.47,
+        "Ev": 0.780,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398647,
+        "MatchNo": "周一005",
+        "LeagueName": "欧国联",
+        "HomeTeam": "瑞士",
+        "AwayTeam": "苏格兰",
+        "PlayType": "JQ",
+        "OptionCode": "4",
+        "OptionName": "总进球 4球",
+        "Odds": 5.500,
+        "ModelProbability": 14.29,
+        "ModelPctPure": 13.47,
+        "Ev": 0.786,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398692,
+        "MatchNo": "周一006",
+        "LeagueName": "欧国联",
+        "HomeTeam": "德国",
+        "AwayTeam": "荷兰",
+        "PlayType": "BQ",
+        "OptionCode": "1-0",
+        "OptionName": "半全场 平负",
+        "Odds": 9.000,
+        "ModelProbability": 12.36,
+        "ModelPctPure": 15.84,
+        "Ev": 1.112,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398649,
+        "MatchNo": "周一007",
+        "LeagueName": "欧国联",
+        "HomeTeam": "北马其顿",
+        "AwayTeam": "斯洛文尼",
+        "PlayType": "JQ",
+        "OptionCode": "4",
+        "OptionName": "总进球 4球",
+        "Odds": 6.550,
+        "ModelProbability": 12.06,
+        "ModelPctPure": 11.62,
+        "Ev": 0.790,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398694,
+        "MatchNo": "周一008",
+        "LeagueName": "欧国联",
+        "HomeTeam": "希腊",
+        "AwayTeam": "塞尔维亚",
+        "PlayType": "JQ",
+        "OptionCode": "2",
+        "OptionName": "总进球 2球",
+        "Odds": 4.150,
+        "ModelProbability": 20.19,
+        "ModelPctPure": 24.08,
+        "Ev": 0.838,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398694,
+        "MatchNo": "周一008",
+        "LeagueName": "欧国联",
+        "HomeTeam": "希腊",
+        "AwayTeam": "塞尔维亚",
+        "PlayType": "JQ",
+        "OptionCode": "1",
+        "OptionName": "总进球 1球",
+        "Odds": 6.400,
+        "ModelProbability": 13.54,
+        "ModelPctPure": 17.84,
+        "Ev": 0.867,
+        "ModelVersion": "dc1|2025-05-16..2026-11-16|n=180639|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      }
+    ],
+    "note": "Follow is the perMatch=true path on the same inputs. Do not mix with official-path picks into one hit rate."
+  },
+  "officialPublishedComparison": {
+    "publishedPickCount": 8,
+    "replayOfficialPickCount": 8,
+    "agreementCount": 8,
+    "officialOnly": [],
+    "replayOnly": [],
+    "note": "Agreement is coverage of pick keys (MatchId|PlayType|OptionCode), not hit rate and not proof of improvement. Published picks were produced by the live 2026-11-16 18:48 pack with then-current side inputs; this replay uses football-replay-diag-20261116c and uncertified side inputs."
+  },
+  "posthocEvaluation": {
+    "Evaluable": 5,
+    "Hits": 1,
+    "Unevaluated": 3,
+    "MissingResult": 0,
+    "HitRateAmongEvaluable": 0.2,
+    "Details": [
+      {
+        "MatchId": 1398702,
+        "MatchNo": "周一003",
+        "PlayType": "BQ",
+        "OptionCode": "3-3",
+        "reason": "not-evaluable-with-available-outcomes"
+      },
+      {
+        "MatchId": 1398692,
+        "MatchNo": "周一006",
+        "PlayType": "BQ",
+        "OptionCode": "1-0",
+        "reason": "not-evaluable-with-available-outcomes"
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "PlayType": "NSPF",
+        "OptionCode": "1",
+        "reason": "not-evaluable-with-available-outcomes"
+      },
+      {
+        "MatchId": 1398694,
+        "MatchNo": "周一008",
+        "PlayType": "JQ",
+        "OptionCode": "2",
+        "Odds": 4.150,
+        "hit": false,
+        "homeScore": 1,
+        "awayScore": 0
+      },
+      {
+        "MatchId": 1398699,
+        "MatchNo": "周一001",
+        "PlayType": "JQ",
+        "OptionCode": "1",
+        "Odds": 4.200,
+        "hit": true,
+        "homeScore": 1,
+        "awayScore": 0
+      },
+      {
+        "MatchId": 1398702,
+        "MatchNo": "周一003",
+        "PlayType": "BF",
+        "OptionCode": "3:0",
+        "Odds": 18.000,
+        "hit": false,
+        "homeScore": 2,
+        "awayScore": 1
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "PlayType": "BF",
+        "OptionCode": "2:1",
+        "Odds": 8.500,
+        "hit": false,
+        "homeScore": 3,
+        "awayScore": 0
+      },
+      {
+        "MatchId": 1398701,
+        "MatchNo": "周一004",
+        "PlayType": "BF",
+        "OptionCode": "1:0",
+        "Odds": 6.500,
+        "hit": false,
+        "homeScore": 3,
+        "awayScore": 0
+      }
+    ],
+    "Note": "Post-hoc only, using current FbMatch full-time scores after the decision. Not produced by MilkReplay.Run. BQ needs half-time scores (not used here). NSPF needs a certified as-of handicap (cleared in this run). This is not yield, not an official comparable, and not evidence of improvement. Do not treat a short window as a hit-rate result."
+  },
+  "elapsedMs": 734
+}

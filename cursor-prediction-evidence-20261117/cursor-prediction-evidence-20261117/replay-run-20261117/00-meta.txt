@@ -1,0 +1,14 @@
+﻿hostname=SQL2025Test
+startedAt=2026-11-17 11:41:21 Asia/Shanghai
+zip=C:\Users\Administrator\FitTraceTest\football-replay-diag-20261116c.zip
+extracted=C:\Users\Administrator\FitTraceTest\football-replay-diag-20261116c
+results=C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117
+zipSHA256=a95c006e8747662b41b2d91e185b4a6af1fb40c165db5672b6f66b81e7c5b0a4
+zipSize=2490743
+zipSHA256Match=yes
+dllCore=192555061a20d08e97fc3197c37800970c9d5147ba49f770503044cee9e6fa35 401920
+dllData=427e7f0d07268e0e945a783efc7711019278a7fcbfb7a683ee77f56b005abb82 1507840
+dllSources=a0dd54b601ebe3bda8976f3301083adb88592a3318bd00bcd82721eca5b31bcb 838656
+dllTests=b56f2d3837407e0270cc935c1f5a3937e08476f6404c86c664369f390a493fba 570880
+purpose=offline MilkReplay only; no deploy; no live DLL/job/gate changes
+productionAccess=read-only SELECT via tcp:192.168.1.222,1433 AiFootBall integrated

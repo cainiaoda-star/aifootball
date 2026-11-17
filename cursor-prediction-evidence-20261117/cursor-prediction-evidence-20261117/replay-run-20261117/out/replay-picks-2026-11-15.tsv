@@ -1,0 +1,5 @@
+MatchId	MatchNo	LeagueName	HomeTeam	AwayTeam	PlayType	OptionCode	OptionName	Odds	ModelProbability	ModelPctPure	Ev	ModelEv
+1398687	周日011	欧国联	比利时	意大利	BQ	1-1	半全场 平平	6.000	14.07	14.84	0.844	
+1398691	周日010	欧国联	西班牙	英格兰	JQ	2	总进球 2球	4.400	19.08	22.92	0.840	
+1398689	周日009	欧国联	克罗地亚	捷克	JQ	1	总进球 1球	5.750	14.77	18.41	0.849	
+1398687	周日011	欧国联	比利时	意大利	BF	1:1	比分 1:1	7.500	11.13	11.85	0.835	

@@ -1,0 +1,407 @@
+{
+  "hostname": "SQL2025TEST",
+  "salesDate": "2026-11-15",
+  "runId": "20261115T225017-c6849c",
+  "decisionAt": "2026-11-15 22:50:17.8133333",
+  "trainFrom": "2025-05-15 00:00:00.0000000",
+  "trainUntil": "2026-11-15 20:20:17.8133333",
+  "samplesLoaded": 180939,
+  "samplesUsed": 180160,
+  "sourceMatches": 4,
+  "includedMatchCount": 3,
+  "skipped": [
+    {
+      "MatchId": 1398695,
+      "MatchNo": "周日008",
+      "Reason": "SKIP 周日008 / MatchId 1398695 because JcBookGap=1 (SPF=0, BQ=0, ExchangeBeforeKickoff=0); cannot do a full milk replay."
+    }
+  ],
+  "exchangeGapsNoted": [],
+  "note": "SKIP 周日008 / MatchId 1398695 because JcBookGap=1 (SPF=0, BQ=0, ExchangeBeforeKickoff=0); cannot do a full milk replay.",
+  "comparableToOfficial": false,
+  "exchangeScope": "必发只用于精选方向回归。大奶回放不读它，缺必发不排除大奶场次。",
+  "trainIngestLimit": "训练右边界是开赛加150分钟，不是赛果首次入库时间。不能把已完赛当成当时已经入库。",
+  "handicapPolicy": "Handicap left unknown (HandicapKnownAt=null, Handicap=null). Current FbMatch.Handicap was not used.",
+  "sideInputs": "WaterCertifiedAsOf=false, ScoreDiagCertifiedAsOf=false, PriceSpanCertifiedAsOf=false, EuroCloseCertifiedAsOf=false. These were not rebuilt from as-of history, so MilkReplay records them as missing side inputs (coverage=partial). asian/teamProfiles/teamForms are always null in MilkReplay.Run.",
+  "coverage": [
+    {
+      "MatchId": 1398689,
+      "MatchNo": "周日009",
+      "Coverage": "partial",
+      "Missing": [
+        "spf-water",
+        "score-diag",
+        "price-span"
+      ],
+      "MissingUses": [
+        "milk-side-input",
+        "milk-side-input",
+        "milk-side-input"
+      ],
+      "quoteUntil": "2026-11-15 22:50:17.8133333",
+      "oddsCapturedAt": "2026-11-15 22:50:00.0000000",
+      "AffectsOfficialPicks": true
+    },
+    {
+      "MatchId": 1398691,
+      "MatchNo": "周日010",
+      "Coverage": "partial",
+      "Missing": [
+        "spf-water",
+        "score-diag",
+        "price-span"
+      ],
+      "MissingUses": [
+        "milk-side-input",
+        "milk-side-input",
+        "milk-side-input"
+      ],
+      "quoteUntil": "2026-11-15 22:50:17.8133333",
+      "oddsCapturedAt": "2026-11-15 22:50:00.0000000",
+      "AffectsOfficialPicks": true
+    },
+    {
+      "MatchId": 1398687,
+      "MatchNo": "周日011",
+      "Coverage": "partial",
+      "Missing": [
+        "spf-water",
+        "score-diag",
+        "price-span"
+      ],
+      "MissingUses": [
+        "milk-side-input",
+        "milk-side-input",
+        "milk-side-input"
+      ],
+      "quoteUntil": "2026-11-15 22:50:17.8133333",
+      "oddsCapturedAt": "2026-11-15 22:50:00.0000000",
+      "AffectsOfficialPicks": true
+    }
+  ],
+  "coverageCounts": {
+    "full": 0,
+    "partial": 3,
+    "impossible": 0
+  },
+  "officialPath": {
+    "pickCount": 4,
+    "picks": [
+      {
+        "MatchId": 1398687,
+        "MatchNo": "周日011",
+        "LeagueName": "欧国联",
+        "HomeTeam": "比利时",
+        "AwayTeam": "意大利",
+        "PlayType": "BQ",
+        "OptionCode": "1-1",
+        "OptionName": "半全场 平平",
+        "Odds": 6.000,
+        "ModelProbability": 14.07,
+        "ModelPctPure": 14.84,
+        "Ev": 0.844,
+        "ModelVersion": "dc1|2025-05-15..2026-11-15|n=180046|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398691,
+        "MatchNo": "周日010",
+        "LeagueName": "欧国联",
+        "HomeTeam": "西班牙",
+        "AwayTeam": "英格兰",
+        "PlayType": "JQ",
+        "OptionCode": "2",
+        "OptionName": "总进球 2球",
+        "Odds": 4.400,
+        "ModelProbability": 19.08,
+        "ModelPctPure": 22.92,
+        "Ev": 0.840,
+        "ModelVersion": "dc1|2025-05-15..2026-11-15|n=180046|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398689,
+        "MatchNo": "周日009",
+        "LeagueName": "欧国联",
+        "HomeTeam": "克罗地亚",
+        "AwayTeam": "捷克",
+        "PlayType": "JQ",
+        "OptionCode": "1",
+        "OptionName": "总进球 1球",
+        "Odds": 5.750,
+        "ModelProbability": 14.77,
+        "ModelPctPure": 18.41,
+        "Ev": 0.849,
+        "ModelVersion": "dc1|2025-05-15..2026-11-15|n=180046|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398687,
+        "MatchNo": "周日011",
+        "LeagueName": "欧国联",
+        "HomeTeam": "比利时",
+        "AwayTeam": "意大利",
+        "PlayType": "BF",
+        "OptionCode": "1:1",
+        "OptionName": "比分 1:1",
+        "Odds": 7.500,
+        "ModelProbability": 11.13,
+        "ModelPctPure": 11.85,
+        "Ev": 0.835,
+        "ModelVersion": "dc1|2025-05-15..2026-11-15|n=180046|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      }
+    ],
+    "funnel": {
+      "ScoresReady": true,
+      "type": "AiFootBall.Core.Models.MilkFunnel",
+      "raw": "AiFootBall.Core.Models.MilkFunnel"
+    },
+    "coherence": [
+      {
+        "MatchId": 1398689,
+        "AnchorPlayType": "BF",
+        "AnchorOptionCode": "1:1",
+        "AnchorModelPct": 11.06,
+        "AnchorDirection": "1",
+        "GridHomePct": 40.10,
+        "GridDrawPct": 25.54,
+        "GridAwayPct": 34.36,
+        "GridDirection": "3",
+        "DirectionsDiffer": true,
+        "DroppedByCoherence": []
+      },
+      {
+        "MatchId": 1398691,
+        "AnchorPlayType": "BQ",
+        "AnchorOptionCode": "1-1",
+        "AnchorModelPct": 13.10,
+        "AnchorDirection": "1",
+        "GridHomePct": 32.10,
+        "GridDrawPct": 24.26,
+        "GridAwayPct": 43.64,
+        "GridDirection": "0",
+        "DirectionsDiffer": true,
+        "DroppedByCoherence": [
+          "BQ:1-0",
+          "BF:1:2"
+        ]
+      },
+      {
+        "MatchId": 1398687,
+        "AnchorPlayType": "BQ",
+        "AnchorOptionCode": "1-1",
+        "AnchorModelPct": 14.07,
+        "AnchorDirection": "1",
+        "GridHomePct": 34.03,
+        "GridDrawPct": 25.09,
+        "GridAwayPct": 40.87,
+        "GridDirection": "0",
+        "DirectionsDiffer": true,
+        "DroppedByCoherence": [
+          "JQ:1",
+          "BF:0:1",
+          "BF:1:0",
+          "BF:0:2"
+        ]
+      }
+    ],
+    "finalNotes": [
+      {
+        "MatchId": 1398689,
+        "MatchNo": "周日009",
+        "PlayType": "JQ",
+        "OptionCode": "1",
+        "Odds": 5.750,
+        "ModelPctPure": 18.41,
+        "BlendedPct": 14.77,
+        "MarketPct": 13.868663754247278274738228971,
+        "Ev": 0.849,
+        "KeptByGates": true,
+        "InFinal": true,
+        "SampleBand": "own-rate",
+        "HomeRateSource": "own",
+        "AwayRateSource": "own",
+        "HomeGames": 5,
+        "AwayGames": 5
+      },
+      {
+        "MatchId": 1398691,
+        "MatchNo": "周日010",
+        "PlayType": "JQ",
+        "OptionCode": "2",
+        "Odds": 4.400,
+        "ModelPctPure": 22.92,
+        "BlendedPct": 19.08,
+        "MarketPct": 18.123821951573147745396549224,
+        "Ev": 0.840,
+        "KeptByGates": true,
+        "InFinal": true,
+        "SampleBand": "own-rate",
+        "HomeRateSource": "own",
+        "AwayRateSource": "own",
+        "HomeGames": 7,
+        "AwayGames": 5
+      },
+      {
+        "MatchId": 1398687,
+        "MatchNo": "周日011",
+        "PlayType": "BF",
+        "OptionCode": "1:1",
+        "Odds": 7.500,
+        "ModelPctPure": 11.85,
+        "BlendedPct": 11.13,
+        "MarketPct": 9.456264775413711583924349882,
+        "Ev": 0.835,
+        "KeptByGates": true,
+        "InFinal": true,
+        "SampleBand": "own-rate",
+        "HomeRateSource": "own",
+        "AwayRateSource": "own",
+        "HomeGames": 5,
+        "AwayGames": 5
+      },
+      {
+        "MatchId": 1398687,
+        "MatchNo": "周日011",
+        "PlayType": "BQ",
+        "OptionCode": "1-1",
+        "Odds": 6.000,
+        "ModelPctPure": 14.84,
+        "BlendedPct": 14.07,
+        "MarketPct": 13.290802764486975013290802765,
+        "Ev": 0.844,
+        "KeptByGates": true,
+        "InFinal": true,
+        "SampleBand": "own-rate",
+        "HomeRateSource": "own",
+        "AwayRateSource": "own",
+        "HomeGames": 5,
+        "AwayGames": 5
+      }
+    ]
+  },
+  "followPath": {
+    "pickCount": 4,
+    "picks": [
+      {
+        "MatchId": 1398689,
+        "MatchNo": "周日009",
+        "LeagueName": "欧国联",
+        "HomeTeam": "克罗地亚",
+        "AwayTeam": "捷克",
+        "PlayType": "JQ",
+        "OptionCode": "1",
+        "OptionName": "总进球 1球",
+        "Odds": 5.750,
+        "ModelProbability": 14.77,
+        "ModelPctPure": 18.41,
+        "Ev": 0.849,
+        "ModelVersion": "dc1|2025-05-15..2026-11-15|n=180046|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398691,
+        "MatchNo": "周日010",
+        "LeagueName": "欧国联",
+        "HomeTeam": "西班牙",
+        "AwayTeam": "英格兰",
+        "PlayType": "JQ",
+        "OptionCode": "2",
+        "OptionName": "总进球 2球",
+        "Odds": 4.400,
+        "ModelProbability": 19.08,
+        "ModelPctPure": 22.92,
+        "Ev": 0.840,
+        "ModelVersion": "dc1|2025-05-15..2026-11-15|n=180046|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398687,
+        "MatchNo": "周日011",
+        "LeagueName": "欧国联",
+        "HomeTeam": "比利时",
+        "AwayTeam": "意大利",
+        "PlayType": "BQ",
+        "OptionCode": "1-1",
+        "OptionName": "半全场 平平",
+        "Odds": 6.000,
+        "ModelProbability": 14.07,
+        "ModelPctPure": 14.84,
+        "Ev": 0.844,
+        "ModelVersion": "dc1|2025-05-15..2026-11-15|n=180046|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      },
+      {
+        "MatchId": 1398687,
+        "MatchNo": "周日011",
+        "LeagueName": "欧国联",
+        "HomeTeam": "比利时",
+        "AwayTeam": "意大利",
+        "PlayType": "BF",
+        "OptionCode": "1:1",
+        "OptionName": "比分 1:1",
+        "Odds": 7.500,
+        "ModelProbability": 11.13,
+        "ModelPctPure": 11.85,
+        "Ev": 0.835,
+        "ModelVersion": "dc1|2025-05-15..2026-11-15|n=180046|rho=0.010|1.0.0.0+cc65a154|w=70/70/50/80/30|bf=on"
+      }
+    ],
+    "note": "Follow is the perMatch=true path on the same inputs. Do not mix with official-path picks into one hit rate."
+  },
+  "officialPublishedComparison": {
+    "publishedPickCount": 0,
+    "replayOfficialPickCount": 4,
+    "agreementCount": 0,
+    "officialOnly": [],
+    "replayOnly": [
+      "1398687|BQ|1-1",
+      "1398691|JQ|2",
+      "1398689|JQ|1",
+      "1398687|BF|1:1"
+    ],
+    "note": "Agreement is coverage of pick keys (MatchId|PlayType|OptionCode), not hit rate and not proof of improvement. Published picks were produced by the live 2026-11-16 18:48 pack with then-current side inputs; this replay uses football-replay-diag-20261116c and uncertified side inputs."
+  },
+  "posthocEvaluation": {
+    "Evaluable": 3,
+    "Hits": 0,
+    "Unevaluated": 1,
+    "MissingResult": 0,
+    "HitRateAmongEvaluable": 0,
+    "Details": [
+      {
+        "MatchId": 1398687,
+        "MatchNo": "周日011",
+        "PlayType": "BQ",
+        "OptionCode": "1-1",
+        "reason": "not-evaluable-with-available-outcomes"
+      },
+      {
+        "MatchId": 1398691,
+        "MatchNo": "周日010",
+        "PlayType": "JQ",
+        "OptionCode": "2",
+        "Odds": 4.400,
+        "hit": false,
+        "homeScore": 2,
+        "awayScore": 3
+      },
+      {
+        "MatchId": 1398689,
+        "MatchNo": "周日009",
+        "PlayType": "JQ",
+        "OptionCode": "1",
+        "Odds": 5.750,
+        "hit": false,
+        "homeScore": 2,
+        "awayScore": 1
+      },
+      {
+        "MatchId": 1398687,
+        "MatchNo": "周日011",
+        "PlayType": "BF",
+        "OptionCode": "1:1",
+        "Odds": 7.500,
+        "hit": false,
+        "homeScore": 4,
+        "awayScore": 1
+      }
+    ],
+    "Note": "Post-hoc only, using current FbMatch full-time scores after the decision. Not produced by MilkReplay.Run. BQ needs half-time scores (not used here). NSPF needs a certified as-of handicap (cleared in this run). This is not yield, not an official comparable, and not evidence of improvement. Do not treat a short window as a hit-rate result."
+  },
+  "elapsedMs": 1116
+}

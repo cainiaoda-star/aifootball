@@ -1,0 +1,12 @@
+﻿hostname=SQL2025Test
+startedAt=2026-11-17 11:55:08 Asia/Shanghai
+zip=C:\Users\Administrator\FitTraceTest\football-replay-diag-20261116c.zip
+extracted=C:\Users\Administrator\FitTraceTest\football-replay-diag-20261116c
+results=C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117-certified
+priorRun=C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117
+zipSHA256=a95c006e8747662b41b2d91e185b4a6af1fb40c165db5672b6f66b81e7c5b0a4
+zipSize=2490743
+zipSHA256Match=yes
+samplesReused=C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples.tsv
+purpose=certify as-of side inputs and rerun offline MilkReplay; no deploy
+productionAccess=read-only SELECT via tcp:192.168.1.222,1433 AiFootBall integrated

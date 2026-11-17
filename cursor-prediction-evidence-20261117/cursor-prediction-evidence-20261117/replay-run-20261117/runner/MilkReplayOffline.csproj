@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="AiFootBall.Core">
+      <HintPath>C:\Users\Administrator\FitTraceTest\football-replay-diag-20261116c\bin\AiFootBall.Core.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="AiFootBall.Data">
+      <HintPath>C:\Users\Administrator\FitTraceTest\football-replay-diag-20261116c\bin\AiFootBall.Data.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="AiFootBall.Sources">
+      <HintPath>C:\Users\Administrator\FitTraceTest\football-replay-diag-20261116c\bin\AiFootBall.Sources.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Dapper" Version="2.1.89" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
+  </ItemGroup>
+</Project>

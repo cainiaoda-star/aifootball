@@ -1,0 +1,13 @@
+MatchId	HomeWinEuClose	Draw	AwayWin	CapturedAt	SourceTable	Certification
+1362429	6.080	4.480	1.510	2026-11-14T10:15:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1362554	1.990	3.450	3.520	2026-11-14T10:15:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398632	3.120	3.090	2.370	2026-11-14T22:05:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398638	1.500	4.330	5.870	2026-11-14T10:15:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398641	3.880	3.710	1.850	2026-11-14T10:15:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398644	1.570	4.020	5.450	2026-11-14T10:15:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398681	1.250	6.320	9.690	2026-11-14T22:05:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398683	1.480	4.590	5.810	2026-11-14T10:15:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1416115	1.440	4.580	5.580	2026-11-14T22:05:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1416117	1.360	5.050	6.240	2026-11-14T22:05:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1416124	1.930	3.700	3.260	2026-11-14T22:05:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1416128	2.040	3.780	2.960	2026-11-14T22:05:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified

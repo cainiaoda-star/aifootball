@@ -1,0 +1,9 @@
+MatchId	JcOpenHome	JcCurrHome	JcOpenAway	JcCurrAway	ExOpenHome	ExCurrHome	ExOpenAway	ExCurrAway	SourceTable	Certification
+1398647	1.450	1.500	5.450	5.050					dbo.FbJcOddsHistory spf first/last as-of + dbo.FbExchange first/last as-of (official GetPriceSpanAsync with DecisionAt/MatchTime cutoff)	certified-jc
+1398649	6.250	7.600	1.410	1.290					dbo.FbJcOddsHistory spf first/last as-of + dbo.FbExchange first/last as-of (official GetPriceSpanAsync with DecisionAt/MatchTime cutoff)	certified-jc
+1398692	1.710	1.690	3.350	3.470					dbo.FbJcOddsHistory spf first/last as-of + dbo.FbExchange first/last as-of (official GetPriceSpanAsync with DecisionAt/MatchTime cutoff)	certified-jc
+1398694	1.290	1.240	7.000	7.900					dbo.FbJcOddsHistory spf first/last as-of + dbo.FbExchange first/last as-of (official GetPriceSpanAsync with DecisionAt/MatchTime cutoff)	certified-jc
+1398699	1.580	1.630	4.800	4.920					dbo.FbJcOddsHistory spf first/last as-of + dbo.FbExchange first/last as-of (official GetPriceSpanAsync with DecisionAt/MatchTime cutoff)	certified-jc
+1398700	4.500	4.000	1.580	1.670					dbo.FbJcOddsHistory spf first/last as-of + dbo.FbExchange first/last as-of (official GetPriceSpanAsync with DecisionAt/MatchTime cutoff)	certified-jc
+1398701	1.160	1.080	12.000	16.000					dbo.FbJcOddsHistory spf first/last as-of + dbo.FbExchange first/last as-of (official GetPriceSpanAsync with DecisionAt/MatchTime cutoff)	certified-jc
+1398702	1.900	1.710	3.500	4.560					dbo.FbJcOddsHistory spf first/last as-of + dbo.FbExchange first/last as-of (official GetPriceSpanAsync with DecisionAt/MatchTime cutoff)	certified-jc

@@ -1,0 +1,5 @@
+MatchId	HomeWinEuClose	Draw	AwayWin	CapturedAt	SourceTable	Certification
+1398687	2.120	3.660	3.090	2026-11-15T09:00:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398689	1.560	4.260	5.350	2026-11-15T09:00:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398691	1.750	3.960	4.200	2026-11-15T09:00:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398695	1.020	19.170	58.500	2026-11-14T11:05:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified

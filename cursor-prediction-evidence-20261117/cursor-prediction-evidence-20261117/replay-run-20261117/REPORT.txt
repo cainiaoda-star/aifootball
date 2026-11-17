@@ -1,0 +1,149 @@
+离线历史 MilkReplay 报告（evaluation only，不可部署）
+
+一、机器与路径
+hostname（本机命令）: SQL2025Test
+Environment.MachineName: SQL2025TEST
+时区: Asia/Shanghai
+开始: 2026-11-17 11:41:21 Asia/Shanghai
+结束: 2026-11-17 11:45:43 Asia/Shanghai
+
+zip 完整路径:
+  C:\Users\Administrator\FitTraceTest\football-replay-diag-20261116c.zip
+解压目录完整路径:
+  C:\Users\Administrator\FitTraceTest\football-replay-diag-20261116c
+结果目录完整路径:
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117
+
+二、包核验
+本机复算 zip SHA256: a95c006e8747662b41b2d91e185b4a6af1fb40c165db5672b6f66b81e7c5b0a4
+zip 大小: 2490743 字节
+与冻结值: 一致
+
+使用的冻结 DLL（再次核验，并与 runner 输出目录中的副本一致）:
+  Core    192555061a20d08e97fc3197c37800970c9d5147ba49f770503044cee9e6fa35  401920
+  Data    427e7f0d07268e0e945a783efc7711019278a7fcbfb7a683ee77f56b005abb82  1507840
+  Sources a0dd54b601ebe3bda8976f3301083adb88592a3318bd00bcd82721eca5b31bcb  838656
+  Tests   b56f2d3837407e0270cc935c1f5a3937e08476f6404c86c664369f390a493fba  570880  （未替换现网，仅核对）
+
+入口: MilkReplay.Run（包内离线入口）。未接入 SaveMilkAsync / RecommendMilkWithGateAsync / RecommendAllAndSaveAsync / 作业。
+本地 runner 放在结果目录下: ...\replay-run-20261117\runner\ ，未改冻结包源码。
+
+三、生产与现网状态
+工作机是 SQL2025Test，不是 WinSev25Data。未把生产机当跳板，未在生产机放文件。
+生产库访问: 只读 SELECT，sql 连接 tcp:192.168.1.222,1433，数据库 AiFootBall，集成认证，ApplicationIntent=ReadOnly。
+证实连接到 WinSev25Data / AiFootBall（见 export\ping.tsv）。无 INSERT/UPDATE/DELETE/TRUNCATE/MERGE/CREATE/ALTER/DROP/EXEC。
+LOCK_TIMEOUT 5000，READ COMMITTED。未提高锁超时，未对超时查询自动重试。
+未改现网 DLL、作业、「能中」门槛（PassesSafetyGate / PassesValueGate / PassesBaselineEv；MinEvPaybackRatio=1.05，MinBaselineEvRatio=0.85，MinBaselineEvRatioBq=1.00，MaxEv=2.5）。
+未从当前 FbOdds / FbTeamProfile / FbMatch.Handicap 填输入缺口。
+AIFOOTBALL_FITTRACE_CONN 未指向生产。
+本包仍不可部署。现网仍应是 2026-11-16 18:48 Core+Sources gap pack。269 项测试通过和这次回放都不是命中率提升，也不是可上线候选。
+
+四、输入快照
+场次名单来自对应 RunId 的 dbo.FbMilkSourceMatch（历史落库）。
+竞彩赔率: dbo.FbJcOddsHistory，CapturedAt <= DecisionAt 且 CapturedAt <= MatchTime，每场每玩法每选项取截止前最后一条。
+大小球: dbo.FbOddsHistory OddsType=OU CompanyId=0，同样截止规则。
+训练样本: ScoreSampleReplaySql 口径，右边界决策时刻减 150 分钟，左边界 2025-05-14 00:00:00（11-14 的 TrainFrom）。MilkReplay.Run 仍按各日 SampleUsable 再过滤。
+
+样本导出说明:
+  一次拉取全部 18 个月的查询用了 70.622 秒，已按 30 秒规则停止，文件被隔离为
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples.tsv.overtime-rejected
+  随后按月分段 SELECT（19 段，每段 0.9–6.2 秒，均未超 30 秒，无 1222）。本地合并得到 samples.tsv，180939 行，与被隔离文件行数相同。回放使用的是分段合并后的 samples.tsv。
+
+未认证、因此未喂给引擎的侧向输入:
+  WaterCertifiedAsOf=false
+  ScoreDiagCertifiedAsOf=false
+  PriceSpanCertifiedAsOf=false
+  EuroCloseCertifiedAsOf=false
+  HandicapKnownAt=null，Handicap=null（不用当前让球）。
+  MilkReplay.Run 本身也不传入 asian / teamProfiles / teamForms。
+  因此所有进入回放的场次 coverage=partial，ComparableToOfficial=false。
+  这是覆盖度结论，不是命中率。缺的是 spf-water / score-diag / price-span，不是竞彩五玩法档（已纳入的场次 JcBookGap=0，且均有决策前大小球）。
+
+五、分日结果（MilkReplay.Run 实际产出）
+
+口径必须分开:
+  覆盖度 = 决策时刻输入是否齐全。
+  选注数 = 当前冻结引擎在这些输入上的官方路径 / 跟进路径输出。跟进路径（perMatch=true）不得与官方路径混成一个命中率。
+  与当时落库榜的键重合 = 只比较 MatchId|PlayType|OptionCode，不是命中率，也不能证明比现网更好。当时榜由现网 18:48 包和当时的侧向输入生成。
+  事后命中/收益 = 本工具不生产收益。下面若提到赛后全场比分，只是不完整的事后对照，样本极少，不是命中率结论，更不是提升。
+
+1) 2026-11-14
+   RunId: 20261114T225008-4408e9
+   DecisionAt: 2026-11-14 22:50:08.9833333 Asia/Shanghai（库内时间，按该墙上时钟理解）
+   纳入 12 场，跳过 0 场。
+   必发缺口（仅精选回归，不挡大奶，已纳入）: 周六005 1416115，周六009 1416128，周六010 1416117。
+   覆盖度: full/partial/impossible = 0/12/0；ComparableToOfficial=false。
+   训练样本使用: 179005。
+   官方路径选注 6:
+     周六006 格鲁吉亚-匈牙利 BQ 1-3 7.000
+     周六010 阿尔梅勒-海尔蒙特 BQ 0-1 22.000
+     周六016 沙佩科-达伽马 JQ 2 4.000
+     周六007 挪威-威尔士 JQ 3 4.000
+     周六006 格鲁吉亚-匈牙利 BF 1:0 8.000
+     周六009 瓦尔韦克-登博思 BF 1:1 9.000
+   跟进路径选注 18（单独计数，不与上面混算）。
+   当时落库官方榜 2 注，键重合 0/2。落库仅有 周六005 JQ 2、周六008 JQ 2；回放官方路径没有这两注。
+   耗时 1355 ms。
+
+2) 2026-11-15
+   RunId: 20261115T225017-c6849c
+   DecisionAt: 2026-11-15 22:50:17.8133333
+   纳入 3 场（周日009/010/011），跳过 1 场:
+     周日008 / MatchId 1398695，原因 JcBookGap=1（SPF=0，BQ=0，ExchangeBeforeKickoff=0），不能做完整大奶回放。
+   覆盖度: 0/3/0；ComparableToOfficial=false。
+   训练样本使用: 180160。
+   官方路径选注 4:
+     周日011 比利时-意大利 BQ 1-1 6.000
+     周日010 西班牙-英格兰 JQ 2 4.400
+     周日009 克罗地亚-捷克 JQ 1 5.750
+     周日011 比利时-意大利 BF 1:1 7.500
+   跟进路径选注 4（与官方路径同一组注，计数仍分开）。
+   当时该轮落库官方榜 0 注；键重合 0/0。
+   耗时 1116 ms。
+
+3) 2026-11-16
+   RunId: 20261116T215008-c60013
+   DecisionAt: 2026-11-16 21:50:08.2566667
+   纳入 8 场（周一001–008），跳过 0 场。竞彩与大小球均完整，必发亦有。
+   覆盖度: 0/8/0；ComparableToOfficial=false。
+   训练样本使用: 180753。
+   官方路径选注 7:
+     周一003 爱沙尼亚-保加利亚 BQ 3-3 3.350
+     周一006 德国-荷兰 BQ 1-0 9.000
+     周一008 希腊-塞尔维亚 JQ 2 4.150
+     周一001 法罗群岛-摩尔多瓦 JQ 1 4.200
+     周一003 爱沙尼亚-保加利亚 BF 3:0 18.000
+     周一004 冰岛-卢森堡 BF 2:1 8.500
+     周一004 冰岛-卢森堡 BF 1:0 6.500
+   跟进路径选注 14（单独计数）。
+   当时落库官方榜 8 注，键重合 7/8。回放少的那一注是 周一004 NSPF 1（让平）。回放故意清空了未认证让球，因此不能出让球玩法，这个差异是预期的，不是效果验证。
+   耗时 700 ms。
+
+六、事后对照（不是工具产出，不是收益，不是提升）
+仅用赛后 FbMatch 全场比分核对可结算玩法（SPF/JQ/精确 BF）。BQ 缺半场比分未评，NSPF 缺认证让球未评。三日可评注很少（4+3+5），不能当命中率，也不能算收益。详情见各日 JSON 的 posthocEvaluation。不要把这些数字写成效果。
+
+七、关键证据文件（完整路径）
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\00-meta.txt
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\commands.log
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\REPORT.txt
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\export-readonly.ps1
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\export-samples-monthly.ps1
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\export-log.txt
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\ping.tsv
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples.tsv
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\export\samples.tsv.overtime-rejected
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\out\summary.txt
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\out\replay-2026-11-14.json
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\out\replay-2026-11-15.json
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\out\replay-2026-11-16.json
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\out\replay-picks-2026-11-14.tsv
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\out\replay-picks-2026-11-15.tsv
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\out\replay-picks-2026-11-16.tsv
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\runner\Program.cs
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-run-20261117\runner\MilkReplayOffline.csproj
+
+未改写、仅读取的既有目录:
+  C:\Users\Administrator\FitTraceTest\env-evidence\test-run-20261117-replay-diag-c\
+  C:\Users\Administrator\FitTraceTest\env-evidence\replay-coverage-inventory\
+
+结论: 离线回放在 SQL2025Test 上已完成。生产只读，现网二进制/作业/门槛未动。football-replay-diag-20261116c 仍只是评估包，不可部署。

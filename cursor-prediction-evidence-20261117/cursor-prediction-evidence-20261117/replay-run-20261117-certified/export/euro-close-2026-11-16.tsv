@@ -1,0 +1,9 @@
+MatchId	HomeWinEuClose	Draw	AwayWin	CapturedAt	SourceTable	Certification
+1398647	1.770	3.650	4.400	2026-11-16T21:50:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398649	6.780	3.900	1.510	2026-11-16T21:50:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398692	1.880	4.170	3.510	2026-11-16T21:50:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398694	1.430	4.720	6.800	2026-11-16T21:50:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398699	1.840	3.320	4.390	2026-11-16T21:50:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398700	4.020	3.480	1.870	2026-11-16T21:50:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398701	1.190	6.280	14.700	2026-11-16T21:50:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
+1398702	1.940	3.270	4.010	2026-11-16T21:50:00.0000000	dbo.FbOddsHistory EU CompanyId=0 last row as-of DecisionAt (official GetClosingEu history branch; current FbOdds not used)	certified
