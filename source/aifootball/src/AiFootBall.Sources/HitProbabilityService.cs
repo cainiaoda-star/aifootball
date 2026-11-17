@@ -8,11 +8,11 @@ public sealed class HitProbabilityService
 {
     private readonly BettingRepository _repo;
     private readonly MilkModelFitStore? _fitStore;
+    private readonly MaintenanceGate _maintenance;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
     private Snapshot _cache = Snapshot.Empty;
     private DateTime _cachedAt = DateTime.MinValue;
-    private int _refreshing;
 
     /// <summary>
     /// 上一次拟合失败的原因（成功时清空）。
@@ -58,47 +58,56 @@ public sealed class HitProbabilityService
         _cachedAt = DateTime.UtcNow;
     }
 
-    public HitProbabilityService(BettingRepository repo, MilkModelFitStore? fitStore = null)
+    /// <summary>测试替换真实拟合。生产为 null。</summary>
+    internal Func<CancellationToken, Task>? RefreshOverride { get; set; }
+
+    public MaintenanceGate Maintenance => _maintenance;
+
+    public HitProbabilityService(BettingRepository repo, MilkModelFitStore? fitStore = null, MaintenanceGate? maintenance = null)
     {
         _repo = repo;
         _fitStore = fitStore;
+        _maintenance = maintenance ?? new MaintenanceGate();
     }
+
+    internal void MarkCacheExpired() => _cachedAt = DateTime.UtcNow - CacheTtl - TimeSpan.FromMinutes(1);
 
     public async Task<Snapshot> GetSnapshotAsync(CancellationToken ct = default)
     {
-        // 有旧快照就先给旧的，过期了也只触发后台刷新。
-        // 2026-11-05 改：样本涨到 25 万场后拟合要 30~40 秒，原来每 30 分钟过期一次，
-        // 就有一个倒霉的请求（往往是用户点大奶榜那一下）要干等半分钟。宁可用 30 分钟前的模型，
-        // 也不要卡住人——反正这期间也不会有什么变化值得为它暂停一次交互。
-        if (_cache.Loaded)
-        {
-            if (DateTime.UtcNow - _cachedAt < CacheTtl) return _cache;
-            StartBackgroundRefresh();
+        // 有未过期的快照就直接返回，不启动拟合。
+        // 过期但仍有快照时，正常态在后台刷新并立刻返回旧快照（2026-11-05：避免请求干等 30 秒）。
+        // 维护态不启动新拟合。有快照就继续用它；没有快照就明确不可用，不造一份空分布。
+        if (_cache.Loaded && DateTime.UtcNow - _cachedAt < CacheTtl)
             return _cache;
+
+        var scheduled = _maintenance.TrySchedule(MaintenanceScope.ModelRefresh, RunTrackedRefreshAsync, out var work);
+        if (!scheduled)
+        {
+            if (_cache.Loaded) return _cache;
+            throw new MaintenanceUnavailableException();
         }
 
-        return await RefreshAsync(ct);
+        if (_cache.Loaded) return _cache;
+
+        // 冷启动必须等这一次拟合写完。调用方取消只结束等待，登记要等任务自己结束才释放。
+        await work!.Task.WaitAsync(ct).ConfigureAwait(false);
+        return _cache;
     }
 
-    /// <summary>后台刷新。同一时刻只允许一个在跑，失败时保留旧快照。</summary>
-    private void StartBackgroundRefresh()
+    private async Task RunTrackedRefreshAsync()
     {
-        if (Interlocked.Exchange(ref _refreshing, 1) == 1) return;
-        _ = Task.Run(async () =>
+        try
         {
-            try
-            {
-                await RefreshAsync(CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                LastError = ex.Message;
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _refreshing, 0);
-            }
-        });
+            if (RefreshOverride is not null)
+                await RefreshOverride(CancellationToken.None).ConfigureAwait(false);
+            else
+                await RefreshAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LastError = ex.Message;
+            throw;
+        }
     }
 
     private async Task<Snapshot> RefreshAsync(CancellationToken ct)

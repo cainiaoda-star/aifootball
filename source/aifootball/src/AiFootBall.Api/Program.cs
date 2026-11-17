@@ -74,6 +74,7 @@ builder.Services.AddSingleton(_ => HttpClients.Create(collectorOptions));
 builder.Services.AddSingleton<CollectionService>();
 builder.Services.AddSingleton(sp => new BettingCardSource(sp.GetRequiredService<HttpClient>()));
 builder.Services.AddSingleton<MilkModelFitStore>();
+builder.Services.AddSingleton<MaintenanceGate>();
 builder.Services.AddSingleton<HitProbabilityService>();
 builder.Services.AddSingleton(sp => new RecommendationService(
     sp.GetRequiredService<BettingCardSource>(),
@@ -133,8 +134,12 @@ builder.Services.AddSingleton(sp => new JobScheduler(
 builder.Services.AddHostedService<SchedulerHostedService>();
 // token 健康守护：连续被人机验证拦截时自动用本机浏览器续期，避免回补空转
 builder.Services.AddHostedService<TokenHealthService>();
+// 最后注册，停止时最先执行：先挡住新拟合，再等已登记的刷新。不改宿主 ShutdownTimeout。
+builder.Services.AddHostedService<MaintenanceStopService>();
 
 var app = builder.Build();
+app.Services.GetRequiredService<MaintenanceGate>().Notice =
+    msg => app.Logger.LogInformation("维护 {Message}", msg);
 
 // 装载 500.com 人机验证 token（环境变量优先，其次在内容目录及其上级找 secrets/500-cookie.txt）
 {
@@ -192,6 +197,13 @@ app.UseCors();
 app.UseExceptionHandler(a => a.Run(async context =>
 {
     var feature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>();
+    if (feature?.Error is MaintenanceUnavailableException)
+    {
+        context.Response.StatusCode = 503;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        await context.Response.WriteAsJsonAsync(new { message = "维护中，没有可用的模型缓存" });
+        return;
+    }
     if (feature?.Error is not null)
     {
         app.Logger.LogError(feature.Error, "未处理异常 {Path}", context.Request.Path);
@@ -778,6 +790,38 @@ app.MapGet("/api/football/odds-signal", async (OddsRepository repo) => Results.O
 /* ---------------- 定时作业 ---------------- */
 
 app.MapGet("/api/jobs", (JobScheduler scheduler) => Results.Ok(scheduler.Describe()));
+
+static bool MaintenanceAllowed(HttpRequest request, AuthService auth)
+{
+    var bearer = request.Headers.Authorization.ToString().Replace("Bearer ", "");
+    var loopback = request.HttpContext.Connection.RemoteIpAddress is { } ip && System.Net.IPAddress.IsLoopback(ip);
+    return MaintenanceCommands.Allows(
+        auth.TryGet(bearer, out _, out _),
+        loopback,
+        Environment.GetEnvironmentVariable("AIFOOTBALL_MAINTENANCE_TOKEN"),
+        request.Headers["X-Maintenance-Token"].ToString());
+}
+
+app.MapGet("/api/maintenance", (HttpRequest request, AuthService auth, MaintenanceGate gate) =>
+{
+    var snap = MaintenanceCommands.Query(gate, MaintenanceAllowed(request, auth));
+    return snap is null ? Results.Unauthorized() : Results.Ok(snap);
+});
+
+app.MapPost("/api/maintenance/enter", async (HttpRequest request, AuthService auth, MaintenanceGate gate, int? timeoutSeconds) =>
+{
+    var allowed = MaintenanceAllowed(request, auth);
+    var wait = TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds ?? 30, 0, 120));
+    var snap = await MaintenanceCommands.EnterAsync(gate, allowed, wait);
+    if (snap is null) return Results.Unauthorized();
+    return snap.Drained ? Results.Ok(snap) : Results.Json(snap, statusCode: 409);
+});
+
+app.MapPost("/api/maintenance/exit", (HttpRequest request, AuthService auth, MaintenanceGate gate) =>
+{
+    var snap = MaintenanceCommands.Exit(gate, MaintenanceAllowed(request, auth));
+    return snap is null ? Results.Unauthorized() : Results.Ok(snap);
+});
 
 app.MapPut("/api/jobs/{name}", (string name, JobScheduleEntry req, JobScheduler scheduler, IWebHostEnvironment env) =>
 {

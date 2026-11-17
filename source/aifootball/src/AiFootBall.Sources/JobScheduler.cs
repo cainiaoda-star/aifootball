@@ -440,11 +440,13 @@ public sealed class JobScheduler
             }
         }
 
-        // 进程要退了，给脱离的任务一点时间收尾（否则采样会在写库中途被掐断）
+        // 进程要退了，给脱离的任务一点时间收尾（否则采样会在写库中途被掐断）。
+        // 这 15 秒不是写入已经完成的证明。超时后任务可能还在跑，不能当成排空成功。
+        // 模型刷新不在这个列表里，由 MaintenanceGate 单独等待。数字彩任务不在这里取消。
         if (detached.Count > 0)
         {
             try { await Task.WhenAll(detached).WaitAsync(TimeSpan.FromSeconds(15)); }
-            catch { /* 收尾超时就算了，下次启动会重新采 */ }
+            catch { /* 收尾超时就算了，下次启动会重新采。超时本身不是排空成功。 */ }
         }
     }
 

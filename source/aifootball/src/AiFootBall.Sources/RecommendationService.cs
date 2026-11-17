@@ -185,6 +185,7 @@ public sealed class RecommendationService
         HitProbabilityService.Snapshot snap;
         try { snap = await _hit.GetSnapshotAsync(ct); }
         catch (OperationCanceledException) { throw; }
+        catch (MaintenanceUnavailableException) { throw; }
         catch { snap = HitProbabilityService.Snapshot.Empty; }
         AfterMilkSnapshotCaptured?.Invoke();
 
@@ -371,6 +372,7 @@ public sealed class RecommendationService
         {
             try { hitSnap = await _hit.GetSnapshotAsync(ct); }
             catch (OperationCanceledException) { throw; }
+            catch (MaintenanceUnavailableException) { throw; }
             catch { /* 模型拟合失败时仍给出推荐，只是没有预计命中率 */ }
         }
 
