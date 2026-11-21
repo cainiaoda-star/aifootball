@@ -1,0 +1,13 @@
+{
+  "windowDirectory": "C:/path/to/NEW_compatible_window",
+  "play": "JQ",
+  "historyTsv": "./inputs/history.tsv",
+  "matchesTsv": "./inputs/matches.tsv",
+  "oddsTsv": "./inputs/odds.tsv",
+  "connectionString": "Server=localhost,1433;Database=AiFootBall;User Id=...;Password=...;TrustServerCertificate=True;ApplicationIntent=ReadOnly",
+  "notes": [
+    "1825 window is incompatible — do not write declares into it",
+    "SQL export requires separate authorization + --allow-sql",
+    "Uncalibrated research uses T=1.10; not a qualified Fit"
+  ]
+}

@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="8.0.11" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
@@ -15,10 +16,17 @@
   </ItemGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AiFootBall.Api\AiFootBall.Api.csproj" />
     <ProjectReference Include="..\..\src\AiFootBall.Sources\AiFootBall.Sources.csproj" />
+    <ProjectReference Include="..\..\src\AiFootBall.SaveChain\AiFootBall.SaveChain.csproj" />
     <!-- 2026-11-10 加：SyncLog 的列宽截断是可测的纯函数，而 SyncLogRepository 在 Data 层。
          不加这条引用就只能靠「读代码确认」，那不是验证。 -->
     <ProjectReference Include="..\..\src\AiFootBall.Data\AiFootBall.Data.csproj" />
+    <ProjectReference Include="..\..\tools\TicketLogOnce\TicketLogOnce.csproj" />
   </ItemGroup>
 
 </Project>

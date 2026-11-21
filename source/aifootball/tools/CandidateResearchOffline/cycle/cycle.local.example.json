@@ -1,0 +1,15 @@
+{
+  "baselinePackage": "C:\\Users\\Administrator\\Desktop\\2026-11-18-发榜改错方案\\20261121-2000-T125独立未见验证准备-v10",
+  "windowDirectory": "C:\\Users\\Administrator\\Desktop\\2026-11-18-发榜改错方案\\20261121-2000-T125独立未见验证准备-v10\\evidence-window",
+  "historyFixedPath": "C:\\Users\\Administrator\\Desktop\\2026-11-18-发榜改错方案\\20261121-2020-未见验证持续循环-v10\\config\\history-samples.FIXED.tsv",
+  "researchExe": "C:\\Users\\Administrator\\Desktop\\2026-11-18-发榜改错方案\\20261121-2020-未见验证持续循环-v10\\bin-ref\\CandidateResearchOffline\\CandidateResearchOffline.exe",
+  "evidenceExe": "C:\\Users\\Administrator\\Desktop\\2026-11-18-发榜改错方案\\20261121-2020-未见验证持续循环-v10\\bin-ref\\CandidateEvidenceOffline\\CandidateEvidenceOffline.exe",
+  "connFile": "C:\\Users\\Administrator\\Desktop\\2026-11-18-发榜改错方案\\20261121-2020-未见验证持续循环-v10\\notes\\conn.readonly.env.txt",
+  "cycleRoot": "C:\\Users\\Administrator\\Desktop\\2026-11-18-发榜改错方案\\20261121-2020-未见验证持续循环-v10\\cycle-runs",
+  "expectedModelVersion": "dc1|rho=0.010|temperature=1.25|tau=0-0,1-0,0-1,1-1|1.0.0.0+60641d2e",
+  "expectedCodeHash": "1.0.0.0+60641d2e",
+  "expectedMetaHash": "77939DDAD23D1BDE987C80C9B5C5594B1DF0CF0C48966AA34F5B13D6B8C1F33E",
+  "mutexName": "Global\\AiFootBall-ResearchUnseen-Cycle",
+  "minTestMatches": 400,
+  "note": "Do not put connection string literals in this file for distribution. connFile is local-only and excluded from SHA256."
+}

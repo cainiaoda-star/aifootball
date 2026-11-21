@@ -1,0 +1,4 @@
+﻿DEPRECATED — DO NOT INSTALL
+Path: ..\20261121-2000-T125独立未见验证准备-v10\schedules-proposal\install-research-bridge.ps1
+Why: fixed TSV predict-archive only; no live SELECT export; no attach-results; trigger once in +10 years and disabled.
+Replacement: this package scripts\UnseenValidationCycle.ps1 + schedules\Install-UnseenCycleTask.ps1 (not installed this round).

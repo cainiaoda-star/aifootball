@@ -1,0 +1,18 @@
+﻿# 操作说明 — 未见验证持续循环
+
+## 基线（勿改）
+- 验证窗：20261121-2000-...\evidence-window（EvidenceId=ev-real-unseen-20261121-200202-77bad69f）
+- T=1.25 指纹已冻结；TrainCutoff / ModelVersion / CodeHash 不得更换
+- history：config\history-samples.FIXED.tsv（1942 固定快照）
+
+## 手动跑一轮
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\UnseenValidationCycle.ps1 -ConfigPath config\cycle.local.json
+
+退出码：0=完成(Activity|Idle)；1=FAULT；2=mutex busy
+
+## 离线测试
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-UnseenValidationCycle.ps1
+
+## 调度（未安装）
+见 schedules\README-调度仅交付未安装.txt
+废弃：2000\schedules-proposal\install-research-bridge.ps1（固定TSV/无导出/无附果/十年触发）
